@@ -59,6 +59,8 @@ function renderPending(rows) {
   for (const r of rows) {
     const el = document.createElement('div');
     el.className = 'card';
+    el.dataset.id = r.id;
+    el.dataset.score = r.score;
     el.innerHTML = `
       <div>
         <div><a href="${r.vacancy.url}" target="_blank" rel="noopener">${r.vacancy.title}</a></div>
@@ -138,9 +140,16 @@ async function post(url, body) {
 }
 
 document.getElementById('approveAll').onclick = async () => {
-  const rows = await fetchJson('/api/pending');
-  for (const r of rows.filter((x) => x.score >= 75)) {
-    await post('/api/approve', { id: r.id, letter: r.letter });
+  // Читаем текущее значение textarea из живого DOM, а не письмо из
+  // последнего fetch — если человек успел отредактировать черновик, но не
+  // нажал "Отправить" для конкретной карточки, эта правка не должна тихо
+  // потеряться при массовом одобрении. Textarea — источник истины.
+  const cards = document.querySelectorAll('#list .card[data-score]');
+  for (const card of cards) {
+    if (Number(card.dataset.score) < 75) continue;
+    const id = Number(card.dataset.id);
+    const letter = card.querySelector('textarea').value;
+    await post('/api/approve', { id, letter });
   }
   load();
 };
