@@ -57,3 +57,27 @@ Task 5: complete (commits 96e13ad..8f7da77, review clean after TWO fix rounds)
   - countStuckApproved's `sent_at IS NULL` clause is not independently
     mutation-killed; no public-API state separates it from status='approved'.
   - queue.ts expectedLabel ternary duplicates the quoting logic per branch.
+Task 6: complete (commits 5e38167..f98ef18, review clean, no fix round)
+  Implementer improved on the plan: narrowed the brief's whole-request `as never`
+  to a cast on `thinking` alone (SDK 0.70.1 has no 'adaptive' variant), and
+  replaced the response-parsing cast with a type predicate. Reviewer confirmed
+  tsc clean and the cache-ordering tests non-vacuous (swapping blocks or dropping
+  cache_control both break a test).
+  Minor OPEN (final review triage):
+  - generateLetter: a successful call whose content has no text block returns
+    letter '' but mode 'hybrid'/'full' rather than 'none'. Stored letterMode is
+    then misleading. Inherited from the plan; human outcome is the same.
+Task 7: REWRITTEN by controller before dispatch (commit follows).
+  I attempted the original manual browser capture myself (browser pane is
+  session-scoped, no subagent can reach it). The pane would not render hr.ge
+  (viewport 0x0, empty accessibility tree), so no UI-triggered search was
+  possible. From the page's own origin I brute-forced the payload shape:
+  6 wrapper forms, 9 page-size field names, 4 tenants -- every one returns
+  500 "Attempted to divide by zero". The error does not vary with payload,
+  so the missing divisor is not a field I can name by guessing.
+  Decision: capture the contract with Playwright network interception instead
+  (scripts/capture-hrge.ts). Playwright intercepts properly, needs no human,
+  and doubles as the seam for the adapter. A negative result -- request only
+  works from inside the browser -- is an explicit, allowed outcome that
+  escalates to the human, because it would make BOTH first-iteration adapters
+  browser-based and destroy the "two extremes" check the iteration exists for.

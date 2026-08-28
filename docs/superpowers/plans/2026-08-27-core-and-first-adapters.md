@@ -1293,117 +1293,124 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-### Task 7: Снять настоящий контракт API hr.ge
+### Task 7: Снять настоящий контракт API hr.ge перехватом Playwright
 
 **Files:**
+- Create: `scripts/capture-hrge.ts`
 - Create: `tests/fixtures/hrge-search-request.json`, `tests/fixtures/hrge-search-response.json`
 - Create: `docs/hrge-api.md`
 
 **Interfaces:**
 - Consumes: ничего
-- Produces: зафиксированный формат запроса и ответа `announcement-search` — на них опирается Task 8
+- Produces: зафиксированные формат запроса и ответа `announcement-search` — на них опирается Task 8
 
-Известно точно (разведка 2026-08-27): эндпоинт `POST https://api.p.hr.ge/public-portal/tenant/1/api/v3/announcement-search`, соседние маршруты `announcement/{id}`, `apply`, `search-field`, `announcement-view`. Модель фильтра из бандла:
+**Что уже установлено разведкой (2026-08-27/28), перепроверять не нужно:**
 
-```
-localityIds[], categoryIds[], specializationCodes[], industryCodes[],
-workScheduleCodes[], announcementTypeId, publishDateRangeOptionId,
-seniorityLevelCodes, employmentFormTypeIds[], transportTypeIds[],
-drivingLicenceIds[], worldLanguageIds[], educationLevelCodes[],
-experienceRangeOptionIds[], experienceRange{from,to},
-withoutWorkExperience, anyExperience, employmentFormIds[],
-isWorkFromHome, query, salaryRangeOptionId, onlySelectedSalary, currentPage
-```
+- Эндпоинт: `POST https://api.p.hr.ge/public-portal/tenant/1/api/v3/announcement-search`
+- Соседние маршруты из бандла `main-*.js`: `announcement/{id}`, `apply`, `search-field`, `announcement-view`, `announcement-stats/{id}`
+- Модель фильтра, снятая из бандла дословно:
+  `localityIds[]`, `categoryIds[]`, `specializationCodes[]`, `industryCodes[]`, `workScheduleCodes[]`, `announcementTypeId`, `publishDateRangeOptionId`, `seniorityLevelCodes`, `employmentFormTypeIds[]`, `transportTypeIds[]`, `drivingLicenceIds[]`, `worldLanguageIds[]`, `educationLevelCodes[]`, `experienceRangeOptionIds[]`, `experienceRange{from,to}`, `withoutWorkExperience`, `anyExperience`, `employmentFormIds[]`, `isWorkFromHome`, `query`, `salaryRangeOptionId`, `onlySelectedSalary`, `currentPage`
+- `GET .../api/v3/public/configs` отвечает **200 без авторизации** и отдаёт, среди прочего, `uxSettings.websiteSettings.generalDefaultNumberOfListItemsOnPage = 20` и `recaptchaSiteKey`
+- На сайте подключён AWS WAF (`challenge.js`)
 
-Неизвестна обёртка запроса: все пробы через `curl` дают `500 "Attempted to divide by zero"`. Значит сервер ждёт поле, которого в фильтре нет (вероятно размер страницы) или заголовок. Угадывать дальше бессмысленно — снимаем настоящий запрос.
+**Чего разведка НЕ добыла и что должна добыть эта задача:** точная форма тела запроса. Сервер отвечает `500 "Attempted to divide by zero"` на все перебранные варианты — проверены голый фильтр, обёртка `{filter}`, добавление `pageSize` / `take` / `rowCount` / `numberOfItemsOnPage` / `itemsOnPage` / `numberOfListItemsOnPage` / `listItemsOnPage` / `pageItemCount` / `numberOfItems`, а также тенанты 1, 2, 4, 5. Ошибка не зависит от payload — делится на ноль что-то, чего в запросе нет вовсе.
 
-- [ ] **Step 1: Открыть страницу поиска в браузерной панели**
+**Перебор прекращён намеренно.** Снимаем настоящий запрос перехватом, а не угадыванием.
 
-Открыть `https://www.hr.ge/search-posting` через браузерную панель (`preview_start` с этим URL).
+- [ ] **Step 1: Написать скрипт перехвата**
 
-- [ ] **Step 2: Поставить хук на fetch до того, как приложение сделает запрос**
+Создать `scripts/capture-hrge.ts`:
 
-Выполнить в консоли страницы:
+```typescript
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { chromium } from 'playwright';
 
-```javascript
-window.__captured = [];
-const origFetch = window.fetch;
-window.fetch = async function (...args) {
-  const [input, init] = args;
-  const url = typeof input === 'string' ? input : input.url;
-  if (url.includes('announcement-search')) {
-    window.__captured.push({
-      url,
-      method: init?.method ?? 'GET',
-      headers: init?.headers ?? null,
-      body: init?.body ?? null,
-    });
+const OUT = 'tests/fixtures';
+const TARGET = 'announcement-search';
+
+const browser = await chromium.launch({ headless: false });
+const page = await browser.newPage();
+
+let captured = false;
+
+page.on('request', (req) => {
+  if (!req.url().includes(TARGET)) return;
+  mkdirSync(OUT, { recursive: true });
+  writeFileSync(`${OUT}/hrge-search-request.json`, JSON.stringify({
+    url: req.url(),
+    method: req.method(),
+    headers: req.headers(),
+    body: req.postData(),
+  }, null, 2), 'utf8');
+  console.log('captured request:', req.method(), req.url());
+});
+
+page.on('response', async (res) => {
+  if (!res.url().includes(TARGET) || res.status() !== 200) return;
+  try {
+    const json = await res.json();
+    mkdirSync(OUT, { recursive: true });
+    writeFileSync(`${OUT}/hrge-search-response.json`, JSON.stringify(json, null, 2), 'utf8');
+    captured = true;
+    console.log('captured response:', res.status());
+  } catch (e) {
+    console.error('response not JSON:', e);
   }
-  return origFetch.apply(this, args);
-};
-'hook installed';
+});
+
+await page.goto('https://www.hr.ge/search-posting', { waitUntil: 'networkidle' });
+// Приложение шлёт запрос при загрузке маршрута; даём ему время и на догрузку.
+await page.waitForTimeout(8000);
+
+console.log(captured ? 'OK: fixtures written' : 'FAILED: no 200 response seen');
+await browser.close();
+process.exit(captured ? 0 : 1);
 ```
 
-- [ ] **Step 3: Спровоцировать поиск**
+- [ ] **Step 2: Запустить перехват**
 
-Ввести `analyst` в поле поиска на странице и нажать кнопку поиска. Если приложение вместо `fetch` использует `XMLHttpRequest`, хук выше ничего не поймает — тогда поставить второй хук:
+Run: `npx tsx scripts/capture-hrge.ts`
+Expected: `captured request: POST ...`, затем `captured response: 200`, затем `OK: fixtures written`.
 
-```javascript
-const origOpen = XMLHttpRequest.prototype.open;
-const origSend = XMLHttpRequest.prototype.send;
-XMLHttpRequest.prototype.open = function (m, u, ...rest) {
-  this.__m = m; this.__u = u; return origOpen.call(this, m, u, ...rest);
-};
-XMLHttpRequest.prototype.send = function (body) {
-  if (String(this.__u).includes('announcement-search')) {
-    window.__captured.push({ url: this.__u, method: this.__m, body });
-  }
-  return origSend.call(this, body);
-};
-'xhr hook installed';
-```
+Если запрос перехвачен, а ответ 200 не пришёл — записать фактический статус и тело ошибки в `docs/hrge-api.md` и перейти к Step 5.
 
-и повторить поиск.
+- [ ] **Step 3: Воспроизвести пойманный запрос обычным HTTP**
 
-- [ ] **Step 4: Забрать пойманный запрос**
-
-```javascript
-JSON.stringify(window.__captured, null, 2);
-```
-
-- [ ] **Step 5: Воспроизвести запрос через curl и убедиться, что он отвечает 200**
-
-Подставить пойманные тело и заголовки:
+Взять `body` и `headers` из `tests/fixtures/hrge-search-request.json` и повторить запрос через `curl` (или через `fetch` в отдельном скрипте) **вне браузера**:
 
 ```bash
 curl -s -m 20 -w "\n[HTTP %{http_code}]\n" -X POST \
   -H "Content-Type: application/json" \
   "https://api.p.hr.ge/public-portal/tenant/1/api/v3/announcement-search" \
-  -d '<ПОЙМАННОЕ_ТЕЛО>'
+  -d @- <<'BODY'
+<ПОЙМАННОЕ_ТЕЛО>
+BODY
 ```
 
-Expected: `HTTP 200` и JSON со списком вакансий.
+Это решающая проверка: она отвечает, возможен ли HTTP-адаптер вообще.
 
-Если 200 получается только с дополнительным заголовком — зафиксировать этот заголовок в `docs/hrge-api.md`. Если запрос проходит только из браузера (AWS WAF на пути), это меняет решение: адаптер `hrge` тоже становится браузерным, и Task 8 переписывается на Playwright. **Это допустимый исход разведки — записать его явно, а не обходить.**
+- [ ] **Step 4: Определить минимальный набор заголовков**
 
-- [ ] **Step 6: Сохранить фикстуры**
+Если Step 3 дал 200 — убрать заголовки по одному и найти минимальный работающий набор. Если Step 3 дал 403 или иную ошибку, повторить с заголовками из перехвата, добавляя их по одному, пока не пройдёт.
 
-Записать пойманное тело в `tests/fixtures/hrge-search-request.json`, полученный ответ — в `tests/fixtures/hrge-search-response.json`. Ответ обрезать до двух вакансий, чтобы фикстура читалась.
+- [ ] **Step 5: Записать вывод — включая отрицательный**
 
-- [ ] **Step 7: Задокументировать**
+Создать `docs/hrge-api.md`: базовый URL, точная форма тела с именами полей, минимальный набор обязательных заголовков, структура ответа с путями до `id`, `title`, `company`, `description`, `city`, `publishDate`, ссылка на страницу вакансии. Отдельным разделом — WAF и `recaptchaSiteKey`.
 
-Создать `docs/hrge-api.md`: базовый URL, точный формат запроса, обязательные заголовки, структура ответа с путями до `id`, `title`, `company`, `description`, `city`, `publishDate`, ссылка на страницу вакансии, и — отдельным разделом — что выяснилось про WAF и reCAPTCHA (`recaptchaSiteKey` присутствует в `public/configs`).
+**Отрицательный результат — валидный результат, и его надо записать явно.** Если запрос работает только изнутри браузера, зафиксировать это прямым текстом: тогда адаптер `hrge` в Task 8 строится на Playwright, а не на `fetch`, и первая итерация теряет проверку «две крайности» — обе площадки оказываются браузерными. Это меняет вывод итерации, поэтому решение принимает человек, а не реализующий.
 
-- [ ] **Step 8: Коммит**
+- [ ] **Step 6: Обрезать фикстуру ответа**
+
+Оставить в `tests/fixtures/hrge-search-response.json` две вакансии, сохранив структуру обёртки целиком. Фикстура должна читаться глазами.
+
+- [ ] **Step 7: Коммит**
 
 ```bash
-git add docs/hrge-api.md tests/fixtures/hrge-search-request.json tests/fixtures/hrge-search-response.json
-git commit -m "docs: capture real hr.ge announcement-search API contract
+git add scripts/capture-hrge.ts docs/hrge-api.md tests/fixtures/hrge-search-request.json tests/fixtures/hrge-search-response.json
+git commit -m "docs: capture real hr.ge announcement-search contract via Playwright
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
-
----
 
 ### Task 8: Адаптер hr.ge
 
