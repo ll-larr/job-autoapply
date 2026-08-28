@@ -96,9 +96,9 @@ export class Queue {
 
   skip(id: number): void {
     const result = this.db.prepare(
-      "UPDATE applications SET status='skipped', decided_at=? WHERE id=? AND status='pending'",
+      "UPDATE applications SET status='skipped', decided_at=? WHERE id=? AND status IN ('pending','approved')",
     ).run(Date.now(), id);
-    this.requireTransitioned(id, 'pending', result.changes);
+    this.requireTransitioned(id, ['pending', 'approved'], result.changes);
   }
 
   markSent(id: number): void {
@@ -117,26 +117,34 @@ export class Queue {
 
   /**
    * Гвард на каждый переход статуса. Все четыре UPDATE выше несут
-   * `AND status=<ожидаемый>` в WHERE, так что переход физически не может
-   * случиться из чужого состояния — SQLite просто не находит строку для
-   * обновления и .run().changes остаётся 0. Молчаливый no-op здесь
-   * недопустим: строка sent, которую approve() тихо не тронул бы, выглядела
-   * бы для вызывающего кода как успешно одобренная и снова попала бы в
-   * listByStatus('approved') → повторная отправка отклика. Поэтому при
-   * changes=0 бросаем ошибку с id и фактическим статусом строки — каждый
-   * нелегальный переход в этой системе является багом вызывающего кода,
-   * а не штатной ситуацией, которую стоит проглатывать.
+   * `AND status=<ожидаемый>` (или, для skip, `AND status IN (<ожидаемые>)`)
+   * в WHERE, так что переход физически не может случиться из чужого
+   * состояния — SQLite просто не находит строку для обновления и
+   * .run().changes остаётся 0. Молчаливый no-op здесь недопустим: строка
+   * sent, которую approve() тихо не тронул бы, выглядела бы для вызывающего
+   * кода как успешно одобренная и снова попала бы в listByStatus('approved')
+   * → повторная отправка отклика. Поэтому при changes=0 бросаем ошибку с id
+   * и фактическим статусом строки — каждый нелегальный переход в этой
+   * системе является багом вызывающего кода, а не штатной ситуацией,
+   * которую стоит проглатывать.
    */
-  private requireTransitioned(id: number, expectedFrom: Status, changes: number | bigint): void {
+  private requireTransitioned(
+    id: number,
+    expectedFrom: Status | Status[],
+    changes: number | bigint,
+  ): void {
     if (Number(changes) > 0) return;
+    const expectedLabel = Array.isArray(expectedFrom)
+      ? expectedFrom.map((s) => `'${s}'`).join(' or ')
+      : `'${expectedFrom}'`;
     const existing = this.db
       .prepare('SELECT status FROM applications WHERE id = ?')
       .get(id) as unknown as { status: string } | undefined;
     if (existing === undefined) {
-      throw new Error(`Queue: no application with id=${id} (expected status '${expectedFrom}')`);
+      throw new Error(`Queue: no application with id=${id} (expected status ${expectedLabel})`);
     }
     throw new Error(
-      `Queue: illegal transition for id=${id} — expected status '${expectedFrom}', found '${existing.status}'`,
+      `Queue: illegal transition for id=${id} — expected status ${expectedLabel}, found '${existing.status}'`,
     );
   }
 

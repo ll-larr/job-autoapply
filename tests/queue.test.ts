@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 import { Queue } from '../src/core/queue.js';
 import { normalizeVacancy } from '../src/core/vacancy.js';
 
@@ -14,8 +15,10 @@ function mkVacancy(sourceId: string, source = 'hh') {
 }
 
 let q: Queue;
+let dbPath: string;
 beforeEach(() => {
-  q = new Queue(join(mkdtempSync(join(tmpdir(), 'jaa-q-')), 'test.db'));
+  dbPath = join(mkdtempSync(join(tmpdir(), 'jaa-q-')), 'test.db');
+  q = new Queue(dbPath);
 });
 afterEach(() => q.close());
 
@@ -39,6 +42,34 @@ describe('Queue дедупликация', () => {
     const row = q.listByStatus('pending')[0]!;
     q.skip(row.id);
     expect(q.has(v)).toBe(true);
+  });
+
+  it('уникальный индекс (source, source_id) отклоняет дубликат сам по себе, в обход insertPending', () => {
+    const v = mkVacancy('29');
+    expect(q.insertPending(v, 50, [], 'l', 'hybrid')).toBe(true);
+
+    // insertPending() никогда не дойдёт до второго INSERT для того же
+    // (source, source_id) — has() отсекает его раньше. Чтобы доказать, что
+    // гарантия живёт в схеме, а не только в этом ранн-ретёрне, открываем
+    // второе сырое соединение с тем же файлом БД и вставляем дубликат
+    // напрямую через SQL, полностью в обход insertPending и его guard'а.
+    // Если убрать `CREATE UNIQUE INDEX idx_dedupe` из схемы, эта вставка
+    // пройдёт молча и тест упадёт.
+    const raw = new DatabaseSync(dbPath);
+    try {
+      expect(() => {
+        raw.prepare(`
+          INSERT INTO applications
+            (source, source_id, vacancy_json, score, matched_json, letter, letter_mode, status, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+        `).run(
+          v.source, v.sourceId, JSON.stringify(v), 50,
+          JSON.stringify([]), 'дубликат в обход guard-а', 'hybrid', Date.now(),
+        );
+      }).toThrow(/UNIQUE constraint failed/);
+    } finally {
+      raw.close();
+    }
   });
 });
 
@@ -79,14 +110,6 @@ describe('Queue защита переходов статусов', () => {
     expect(q.listByStatus('pending')).toHaveLength(1);
   });
 
-  it('skip на уже approved строке отклоняется', () => {
-    q.insertPending(mkVacancy('22'), 50, [], 'l', 'hybrid');
-    const row = q.listByStatus('pending')[0]!;
-    q.approve(row.id);
-    expect(() => q.skip(row.id)).toThrow();
-    expect(q.listByStatus('skipped')).toHaveLength(0);
-  });
-
   it('markFailed на pending строке отклоняется', () => {
     q.insertPending(mkVacancy('23'), 50, [], 'l', 'hybrid');
     const row = q.listByStatus('pending')[0]!;
@@ -101,6 +124,11 @@ describe('Queue защита переходов статусов', () => {
     q.markSent(row.id);
     expect(() => q.approve(row.id)).toThrow(new RegExp(`${row.id}`));
     expect(() => q.approve(row.id)).toThrow(/sent/);
+  });
+
+  it('переход над несуществующим id называет id и явно говорит, что строки нет', () => {
+    expect(() => q.approve(999999)).toThrow(/no application with id=999999/);
+    expect(() => q.markFailed(999999, 'причина')).toThrow(/no application with id=999999/);
   });
 
   it('легальные переходы pending→approved→sent по-прежнему работают', () => {
@@ -127,6 +155,44 @@ describe('Queue защита переходов статусов', () => {
   });
 });
 
+describe('Queue skip: отмена доступна и из pending, и из approved', () => {
+  it('skip из pending работает', () => {
+    q.insertPending(mkVacancy('30'), 50, [], 'l', 'hybrid');
+    const row = q.listByStatus('pending')[0]!;
+    expect(() => q.skip(row.id)).not.toThrow();
+    expect(q.listByStatus('skipped')).toHaveLength(1);
+  });
+
+  it('skip из approved работает — человек может передумать до того, как отправитель заберёт строку', () => {
+    q.insertPending(mkVacancy('31'), 50, [], 'l', 'hybrid');
+    const row = q.listByStatus('pending')[0]!;
+    q.approve(row.id);
+    expect(() => q.skip(row.id)).not.toThrow();
+    expect(q.listByStatus('skipped')).toHaveLength(1);
+    expect(q.listByStatus('approved')).toHaveLength(0);
+  });
+
+  it('skip из sent отклоняется — отправленное нельзя отменить', () => {
+    q.insertPending(mkVacancy('32'), 50, [], 'l', 'hybrid');
+    const row = q.listByStatus('pending')[0]!;
+    q.approve(row.id);
+    q.markSent(row.id);
+    expect(() => q.skip(row.id)).toThrow();
+    expect(q.listByStatus('sent')).toHaveLength(1);
+    expect(q.listByStatus('skipped')).toHaveLength(0);
+  });
+
+  it('skip из failed отклоняется — не должен прятать причину неудачи', () => {
+    q.insertPending(mkVacancy('33'), 50, [], 'l', 'hybrid');
+    const row = q.listByStatus('pending')[0]!;
+    q.approve(row.id);
+    q.markFailed(row.id, 'причина');
+    expect(() => q.skip(row.id)).toThrow();
+    expect(q.listByStatus('failed')).toHaveLength(1);
+    expect(q.listByStatus('skipped')).toHaveLength(0);
+  });
+});
+
 describe('Queue восстановление после обрыва', () => {
   it('approved без sent_at остаются в работе и считаются countStuckApproved', () => {
     q.insertPending(mkVacancy('4'), 50, [], 'l', 'hybrid');
@@ -142,6 +208,25 @@ describe('Queue восстановление после обрыва', () => {
     q.approve(row.id);
     q.markSent(row.id);
     expect(q.countStuckApproved()).toBe(0);
+    expect(q.listByStatus('sent')).toHaveLength(1);
+  });
+
+  it('countStuckApproved считает ровно approved-без-sent_at, даже когда рядом одновременно есть pending и sent', () => {
+    q.insertPending(mkVacancy('6'), 50, [], 'l', 'hybrid'); // останется pending
+    q.insertPending(mkVacancy('7'), 50, [], 'l', 'hybrid'); // станет approved, sent_at IS NULL
+    q.insertPending(mkVacancy('8'), 50, [], 'l', 'hybrid'); // станет sent
+
+    const pending = q.listByStatus('pending');
+    const toApprove = pending.find((r) => r.sourceId === '7')!;
+    const toSend = pending.find((r) => r.sourceId === '8')!;
+
+    q.approve(toApprove.id);
+    q.approve(toSend.id);
+    q.markSent(toSend.id);
+
+    expect(q.countStuckApproved()).toBe(1);
+    expect(q.listByStatus('pending')).toHaveLength(1);
+    expect(q.listByStatus('approved')).toHaveLength(1);
     expect(q.listByStatus('sent')).toHaveLength(1);
   });
 });
