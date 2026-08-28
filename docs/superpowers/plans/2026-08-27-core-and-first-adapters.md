@@ -584,8 +584,14 @@ describe('scoreVacancy', () => {
   });
 
   it('скор ограничен сверху сотней', () => {
-    const all = Object.keys(DEFAULT_WEIGHTS).join(' ');
-    expect(scoreVacancy(v(all)).score).toBeLessThanOrEqual(100);
+    // По одному настоящему ключевику на каждую группу: сырая сумма весов 102,
+    // поэтому тест действительно проходит через Math.min(100, total).
+    // Через Object.keys(DEFAULT_WEIGHTS) он набирал бы 72 и проходил бы
+    // даже с удалённым капом — то есть не проверял бы ничего.
+    const everyGroup = 'LLM SQL DWH REST BRD ROI BPMN UML Kafka';
+    const r = scoreVacancy(v(everyGroup));
+    expect(r.matched).toHaveLength(Object.keys(DEFAULT_WEIGHTS).length);
+    expect(r.score).toBe(100);
   });
 
   it('возвращает совпавшие ключевики — они идут в письмо', () => {
