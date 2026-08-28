@@ -1,6 +1,8 @@
 import type { Vacancy } from './vacancy.js';
 
-export type KeywordWeights = Record<string, { weight: number; patterns: RegExp[] }>;
+export type KeywordWeights = Readonly<
+  Record<string, { readonly weight: number; readonly patterns: readonly RegExp[] }>
+>;
 
 export interface ScoreResult {
   score: number;
@@ -11,6 +13,10 @@ export interface ScoreResult {
  * Веса из карты рынка БА 1–3 года (14 вакансий бигтеха/финтеха, 2026-08-25).
  * AI/LLM — главный дифференциатор года, поэтому весит больше всего.
  * BPMN/UML — базовая гигиена, весят мало: они есть у всех и никого не отличают.
+ *
+ * Сумма весов всех девяти групп — 102 (22+18+12+12+10+8+6+6+8), сознательно
+ * больше ста: это делает потолок в scoreVacancy (Math.min(100, total))
+ * реально достижимым, а не защитным кодом на случай, которого не бывает.
  */
 export const DEFAULT_WEIGHTS: KeywordWeights = {
   'ai-llm':     { weight: 22, patterns: [/\bLLM\b/i, /\bAI[- ]?агент/i, /\bGenAI\b/i, /мультиагент/i, /\bRAG\b/i] },
