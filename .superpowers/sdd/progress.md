@@ -81,3 +81,23 @@ Task 7: REWRITTEN by controller before dispatch (commit follows).
   works from inside the browser -- is an explicit, allowed outcome that
   escalates to the human, because it would make BOTH first-iteration adapters
   browser-based and destroy the "two extremes" check the iteration exists for.
+Task 7: complete (commits 4ea812a..HEAD, review clean after one fix round
+  + a controller doc pass)
+  DECISIVE ANSWER: plain HTTP replay WORKS. hr.ge stays an HTTP adapter, so the
+  iteration's "two extremes" check of the Adapter interface survives.
+  Root cause of the long-standing 500 "divide by zero": the request was missing
+  `Limit`, the page-size divisor. None of the 9 names guessed in recon.
+  Real wire body is PascalCase and structurally unlike the bundle's filter model:
+  {"Query":"analyst","CategoryIds":[],"WorkExperience":{from,to},
+   "WithoutWorkExperience":false,"AnyExperience":false,"OnlySelectedSalary":false,
+   "Start":0,"Limit":100,"IsWorkFromHome":false}
+  Keyword field is `Query`. Verified live by two reviewers independently:
+  totalCount 3271 unfiltered vs 22 for Query="analyst" -- it genuinely filters,
+  and empty string behaves as omitted.
+  Trap recorded in docs/hrge-api.md: bundle names do NOT map to wire names by
+  case. experienceRange -> WorkExperience, and the remote-work checkbox sends
+  EmploymentFormTypeIds:[2], not IsWorkFromHome (both are real, different).
+  Task 8 builds against tests/fixtures/hrge-search-response-keyword.json.
+  Minor OPEN (final review triage):
+  - capture-hrge.ts can no longer regenerate the unfiltered baseline fixture;
+    it always types a keyword now.
