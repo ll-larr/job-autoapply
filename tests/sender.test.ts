@@ -22,10 +22,10 @@ function mkAdapter(results: ApplyResult[]): Adapter {
   };
 }
 
-function seed(q: Queue, n: number) {
+function seed(q: Queue, n: number, source = 'hh') {
   for (let i = 0; i < n; i++) {
     const v = normalizeVacancy({
-      source: 'hh', sourceId: String(i), title: 'БА', company: 'C',
+      source, sourceId: `${source}-${i}`, title: 'БА', company: 'C',
       url: 'u', description: 'd', geo: 'Москва', postedAt: '2026-08-20T00:00:00Z',
     });
     q.insertPending(v, 50, [], 'письмо', 'hybrid');
@@ -34,8 +34,10 @@ function seed(q: Queue, n: number) {
 }
 
 let q: Queue;
+let dbPath: string;
 beforeEach(() => {
-  q = new Queue(join(mkdtempSync(join(tmpdir(), 'jaa-s-')), 'test.db'));
+  dbPath = join(mkdtempSync(join(tmpdir(), 'jaa-s-')), 'test.db');
+  q = new Queue(dbPath);
 });
 
 describe('Sender троттлинг', () => {
@@ -51,9 +53,12 @@ describe('Sender троттлинг', () => {
 
   // Лимит должен пережить перезапуск процесса: он читается из БД
   // (countSentSince), а не накапливается в памяти этого экземпляра Sender.
-  // Второй, независимый экземпляр Sender над тем же файлом БД имитирует
-  // "новый процесс, старая очередь" — если бы лимит жил только в памяти
-  // первого Sender, этот второй прогон отправил бы ещё 2 письма.
+  // Настоящий перезапуск пересоздаёт и Queue, не только Sender — процесс
+  // умер, все его объекты вместе с ним. Поэтому здесь закрывается первое
+  // соединение и открывается новое поверх того же файла на диске: если бы
+  // лимит был закэширован где-то в Queue (а не пересчитывался из
+  // applications.sent_at при каждом countSentSince), второй прогон над
+  // свежим Queue отправил бы ещё 2 письма.
   it('лимит переживает перезапуск процесса — счётчик читается из БД, а не из памяти', async () => {
     seed(q, 3);
     const s1 = new Sender(q, new Map([['hh', mkAdapter([{ status: 'sent' }])]]), CONFIG, {
@@ -61,13 +66,35 @@ describe('Sender троттлинг', () => {
     });
     const rep1 = await s1.run();
     expect(rep1.sent).toBe(2);
+    q.close();
 
-    const s2 = new Sender(q, new Map([['hh', mkAdapter([{ status: 'sent' }])]]), CONFIG, {
+    const q2 = new Queue(dbPath);
+    const s2 = new Sender(q2, new Map([['hh', mkAdapter([{ status: 'sent' }])]]), CONFIG, {
       sleep: async () => {},
     });
     const rep2 = await s2.run();
     expect(rep2.sent).toBe(0);
-    expect(q.listByStatus('approved')).toHaveLength(1);
+    expect(q2.listByStatus('approved')).toHaveLength(1);
+    q2.close();
+  });
+
+  // maxPerHour is loose everywhere else in this file (10, always looser than
+  // the seeded volume), so the inDay >= rule.maxPerDay branch is never the
+  // binding constraint anywhere but here: maxPerHour is set to 100 (would
+  // never trip for 5 rows) while maxPerDay is set to 2, so only the daily
+  // check can be what stops sending at 2.
+  it('дневной лимит останавливает отправку раньше часового, когда именно он тесный', async () => {
+    seed(q, 5);
+    const config = {
+      ...CONFIG,
+      throttle: { hh: { maxPerHour: 100, maxPerDay: 2, minDelayMs: 0, maxDelayMs: 0 } },
+    };
+    const s = new Sender(q, new Map([['hh', mkAdapter([{ status: 'sent' }])]]), config, {
+      sleep: async () => {},
+    });
+    const rep = await s.run();
+    expect(rep.sent).toBe(2);
+    expect(q.listByStatus('approved')).toHaveLength(3);
   });
 
   // delays.length > 0 by itself would also pass if sleep fired only once,
@@ -87,6 +114,54 @@ describe('Sender троттлинг', () => {
     });
     await s.run();
     expect(order.slice(0, 3)).toEqual(['apply', 'sleep', 'apply']);
+  });
+});
+
+describe('Sender троттлинг: fail-closed без правила', () => {
+  // Источник есть в adapters, но отсутствует в config.throttle (опечатка в
+  // конфиге или забытая запись для нового адаптера). Раньше guard
+  // `if (rule !== undefined)` в sender.ts делал троттлинг необязательным:
+  // отсутствие правила означало "без лимита и без паузы", а не "не
+  // отправлять". Это ровно противоположность назначению модуля — он
+  // существует, чтобы аккаунт пользователя на hh.ru не забанили за
+  // нечеловеческую скорость подачи заявок.
+  //
+  // Правильное поведение: ни одна заявка по ЛЮБОМУ источнику в этом
+  // прогоне не должна уйти, пока не найден недостающий ключ конфига,
+  // включая заявки по источникам, для которых правило есть — частичный
+  // прогон, тихо обошедший защиту для одного источника, обманывает не
+  // меньше, чем полное отсутствие защиты. Ни одна строка не должна
+  // помечаться failed: сейчас в Queue нет пути failed → approved, так что
+  // это сделало бы заявку неотправляемой без ручного вмешательства в БД —
+  // а именно "никогда не терять заявку" здесь требование задачи.
+  it('источник в adapters без правила в config.throttle — apply не вызывается ни для кого, ошибка видна вызывающему', async () => {
+    seed(q, 2, 'hh');
+    seed(q, 2, 'hrge');
+
+    let hhApplyCalls = 0;
+    let hrgeApplyCalls = 0;
+    const adapters = new Map<string, Adapter>([
+      ['hh', {
+        name: 'hh',
+        async search() { return []; },
+        async apply() { hhApplyCalls++; return { status: 'sent' }; },
+      }],
+      ['hrge', {
+        name: 'hrge',
+        async search() { return []; },
+        async apply() { hrgeApplyCalls++; return { status: 'sent' }; },
+      }],
+    ]);
+    // CONFIG.throttle only has an 'hh' entry — 'hrge' is the missing one.
+    const s = new Sender(q, adapters, CONFIG, { sleep: async () => {} });
+
+    await expect(s.run()).rejects.toThrow(/hrge/);
+
+    expect(hhApplyCalls).toBe(0);
+    expect(hrgeApplyCalls).toBe(0);
+    expect(q.listByStatus('approved')).toHaveLength(4);
+    expect(q.listByStatus('failed')).toHaveLength(0);
+    expect(q.listByStatus('sent')).toHaveLength(0);
   });
 });
 
