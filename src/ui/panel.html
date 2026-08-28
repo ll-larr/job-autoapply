@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Job Autoapply — очередь</title>
+  <style>
+    body { font: 15px/1.5 system-ui, sans-serif; margin: 0; background: #f6f6f7; }
+    header { padding: 12px 20px; background: #fff; border-bottom: 1px solid #ddd;
+             position: sticky; top: 0; display: flex; gap: 12px; align-items: center; }
+    h2.section { margin: 20px 20px 0; font-size: 14px; color: #444;
+                 text-transform: uppercase; letter-spacing: 0.02em; }
+    .card { display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+            background: #fff; margin: 16px 20px; padding: 16px;
+            border: 1px solid #ddd; border-radius: 8px; }
+    .meta { font-size: 13px; color: #666; }
+    .score { font-weight: 700; }
+    .desc { max-height: 260px; overflow-y: auto; white-space: pre-wrap;
+            font-size: 13px; border: 1px solid #eee; padding: 8px; }
+    textarea { width: 100%; min-height: 260px; font: 13px/1.5 ui-monospace, monospace; }
+    button { padding: 6px 14px; cursor: pointer; }
+    .empty { padding: 40px 20px; color: #666; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>Очередь откликов</strong>
+    <span id="count"></span>
+    <button id="approveAll">Одобрить всё со скором ≥ 75</button>
+  </header>
+  <div id="list"></div>
+
+  <h2 class="section">Одобрено, ждёт отправки <span id="approvedCount"></span></h2>
+  <div id="approvedList"></div>
+
+<script>
+async function load() {
+  const [pendingRows, approvedRows] = await Promise.all([
+    fetchJson('/api/pending'),
+    fetchJson('/api/approved'),
+  ]);
+  renderPending(pendingRows);
+  renderApproved(approvedRows);
+}
+
+async function fetchJson(url) {
+  return (await fetch(url)).json();
+}
+
+function renderPending(rows) {
+  document.getElementById('count').textContent = rows.length + ' в ожидании';
+  const list = document.getElementById('list');
+  list.innerHTML = '';
+
+  if (rows.length === 0) {
+    list.innerHTML = '<div class="empty">Пусто. Запусти поиск.</div>';
+    return;
+  }
+
+  for (const r of rows) {
+    const el = document.createElement('div');
+    el.className = 'card';
+    el.innerHTML = `
+      <div>
+        <div><a href="${r.vacancy.url}" target="_blank" rel="noopener">${r.vacancy.title}</a></div>
+        <div class="meta">${r.vacancy.company} · ${r.vacancy.geo} · ${r.source}</div>
+        <div class="meta">скор <span class="score">${r.score}</span> ·
+             ${r.matched.join(', ') || 'без совпадений'} · режим ${r.letterMode}</div>
+        <div class="desc"></div>
+      </div>
+      <div>
+        <textarea></textarea>
+        <div style="margin-top:8px; display:flex; gap:8px;">
+          <button data-act="approve">Отправить</button>
+          <button data-act="skip">Пропустить</button>
+        </div>
+      </div>`;
+    el.querySelector('.desc').textContent = r.vacancy.description;
+    el.querySelector('textarea').value = r.letter;
+
+    el.querySelector('[data-act="approve"]').onclick = async () => {
+      await post('/api/approve', { id: r.id, letter: el.querySelector('textarea').value });
+      load();
+    };
+    el.querySelector('[data-act="skip"]').onclick = async () => {
+      await post('/api/skip', { id: r.id });
+      load();
+    };
+    list.appendChild(el);
+  }
+}
+
+function renderApproved(rows) {
+  document.getElementById('approvedCount').textContent = '(' + rows.length + ')';
+  const list = document.getElementById('approvedList');
+  list.innerHTML = '';
+
+  if (rows.length === 0) {
+    list.innerHTML = '<div class="empty">Нет одобренных заявок, ожидающих отправки.</div>';
+    return;
+  }
+
+  for (const r of rows) {
+    const el = document.createElement('div');
+    el.className = 'card';
+    el.innerHTML = `
+      <div>
+        <div><a href="${r.vacancy.url}" target="_blank" rel="noopener">${r.vacancy.title}</a></div>
+        <div class="meta">${r.vacancy.company} · ${r.vacancy.geo} · ${r.source}</div>
+        <div class="meta">скор <span class="score">${r.score}</span> · одобрено, ждёт отправки</div>
+        <div class="desc"></div>
+      </div>
+      <div>
+        <div class="desc letter-preview" style="max-height:none;"></div>
+        <div style="margin-top:8px; display:flex; gap:8px;">
+          <button data-act="cancel">Отменить</button>
+        </div>
+      </div>`;
+    el.querySelector('.desc').textContent = r.vacancy.description;
+    el.querySelector('.letter-preview').textContent = r.letter;
+
+    el.querySelector('[data-act="cancel"]').onclick = async () => {
+      // skip() принимает и approved: отправитель работает медленно, с
+      // паузами, так что у человека есть реальное окно передумать уже
+      // после одобрения, но до фактической отправки.
+      await post('/api/skip', { id: r.id });
+      load();
+    };
+    list.appendChild(el);
+  }
+}
+
+async function post(url, body) {
+  return fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+document.getElementById('approveAll').onclick = async () => {
+  const rows = await fetchJson('/api/pending');
+  for (const r of rows.filter((x) => x.score >= 75)) {
+    await post('/api/approve', { id: r.id, letter: r.letter });
+  }
+  load();
+};
+
+load();
+</script>
+</body>
+</html>
