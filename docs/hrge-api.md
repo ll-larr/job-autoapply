@@ -131,8 +131,9 @@ by how each field name was actually established:
   from the confirmed `employmentFormTypeIds` — do not conflate the two),
   `salaryRangeOptionId`, `currentPage`.
 
-Roughly 6 of the bundle's ~22 filter-related fields were ever actually seen in
-a wire request by this task; the rest remain bundle-only guesses. Anyone
+8 of the bundle's ~22 filter-related fields were actually seen in a wire
+request by this task — the 7 case-match names above plus `WorkExperience`;
+the rest remain bundle-only guesses. Anyone
 building the adapter should not derive a wire field name from the bundle by
 guessing — only the first bullet's names are confirmed, and even among those,
 `WorkExperience` shows confirmation still requires seeing the exact string on
@@ -257,7 +258,13 @@ in this page) — use it to drive pagination.
 ### Vacancy summary fields (`data.announcements.items[]`)
 
 Full trimmed example (2 real items, wrapper structure intact): see
-`tests/fixtures/hrge-search-response.json`.
+`tests/fixtures/hrge-search-response-keyword.json` — **this is the fixture
+Task 8 should build and test the adapter against**, because it is the one
+produced by a keyword search, which is what `search(filters)` actually does.
+
+`tests/fixtures/hrge-search-response.json` is the unfiltered baseline capture,
+kept for comparison. The field paths in the table below were verified to hold
+identically in both fixtures.
 
 | Adapter field | JSON path                         | Type            | Notes |
 |---|---|---|---|
