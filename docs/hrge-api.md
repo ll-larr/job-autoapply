@@ -4,6 +4,13 @@ Captured 2026-08-28 by intercepting the real `www.hr.ge` Angular app with Playwr
 (`scripts/capture-hrge.ts`), then verified against the API directly with `curl`.
 This document is the durable reference for building the `hrge` adapter (Task 8).
 
+A second capture pass, same day, closed two review findings on the first draft:
+it captured a real keyword search (the first pass had clicked search with an
+empty box, so no query field ever appeared) and corrected an overstated claim
+about how well the bundle-guessed filter field list had been confirmed. See
+"Keyword search — the `Query` field" and the correction note in "Request body"
+below.
+
 ## Decisive question: does plain HTTP replay work?
 
 **Yes.** The captured request replays successfully outside a browser with a bare
@@ -89,10 +96,137 @@ Only `Limit` is actually required to avoid the divide-by-zero 500. A body of jus
 `{"Limit": 5}` returns `200` with real results; `Start` defaults to `0` when
 omitted. Everything else in the shape above (`CategoryIds`, `WorkExperience`,
 `WithoutWorkExperience`, `AnyExperience`, `OnlySelectedSalary`, `IsWorkFromHome`) is
-filter state the UI always sends but the server does not require — this matches
-(and confirms) the filter field list already extracted from the bundle in the prior
-recon (`localityIds[]`, `categoryIds[]`, `specializationCodes[]`, etc. — same
-fields, just PascalCased and sent even when empty/default).
+filter state the UI always sends but the server does not require.
+
+**Correction (2026-08-28, closing a review finding on this doc's first draft):**
+this paragraph originally claimed the captured fields "matches (and confirms)
+the filter field list already extracted from the bundle... same fields, just
+PascalCased." That overstated the evidence. What is actually true, broken out
+by how each field name was actually established:
+
+- **Observed in a real request, wire name confirmed as a case-only PascalCase
+  of the bundle name:** `CategoryIds` (bundle: `categoryIds`),
+  `WithoutWorkExperience` (`withoutWorkExperience`), `AnyExperience`
+  (`anyExperience`), `OnlySelectedSalary` (`onlySelectedSalary`),
+  `IsWorkFromHome` (`isWorkFromHome`), `Query` (`query`),
+  `EmploymentFormTypeIds` (`employmentFormTypeIds[]`) — the last two added by
+  the second capture pass, see below.
+- **Observed in a real request, but the wire name is *not* a case change of
+  the bundle name — a different identifier entirely:** `WorkExperience{from,to}`.
+  The bundle's field for this is `experienceRange{from,to}`. Had the "just
+  PascalCased" claim been trusted literally, an adapter would have sent
+  `ExperienceRange` and silently gotten nothing (the server ignores unknown
+  fields rather than erroring). This is the concrete counterexample: **a
+  bundle field name cannot be converted to a wire name by guessing at a case
+  change.**
+- **Observed in a real request, not present anywhere in the bundle's 22-field
+  list:** `Start`, `Limit` — the pagination fields, including the one whose
+  absence caused every prior recon attempt's `500`.
+- **Never observed in any real request — name known only from the client
+  bundle, unconfirmed:** `localityIds`, `specializationCodes`,
+  `industryCodes`, `workScheduleCodes`, `announcementTypeId`,
+  `publishDateRangeOptionId`, `seniorityLevelCodes`, `transportTypeIds`,
+  `drivingLicenceIds`, `worldLanguageIds`, `educationLevelCodes`,
+  `experienceRangeOptionIds`, `employmentFormIds` (a *different* bundle field
+  from the confirmed `employmentFormTypeIds` — do not conflate the two),
+  `salaryRangeOptionId`, `currentPage`.
+
+Roughly 6 of the bundle's ~22 filter-related fields were ever actually seen in
+a wire request by this task; the rest remain bundle-only guesses. Anyone
+building the adapter should not derive a wire field name from the bundle by
+guessing — only the first bullet's names are confirmed, and even among those,
+`WorkExperience` shows confirmation still requires seeing the exact string on
+the wire, not just recognizing the concept.
+
+### Keyword search — the `Query` field
+
+The capture above was of an **empty search** (search button clicked with
+nothing typed into the search box), which is why no query/keyword field
+appears in it. `search(filters)` needs `filters.query` to reach the wire —
+that required a second, separate capture with a keyword actually typed in.
+
+Re-ran the capture (`scripts/capture-hrge.ts analyst`) with `analyst` typed
+into the search box (`input.search-query`, placeholder `"საძიებო სიტყვა"` =
+"search word") before clicking search. Diffing the new request body against
+the empty-search body above isolates exactly one new field, inserted as the
+first key:
+
+```diff
++ "Query": "analyst",
+  "CategoryIds": [],
+  "WorkExperience": { "from": null, "to": null },
+  "WithoutWorkExperience": false,
+  "AnyExperience": false,
+  "OnlySelectedSalary": false,
+  "Start": 0,
+  "Limit": 100,
+  "IsWorkFromHome": false
+```
+
+**The keyword field is `Query`.** Same case-insensitivity as the rest of the
+body (`query` also works, confirmed by `curl`). Full captured request/response
+pair: `tests/fixtures/hrge-search-request-keyword.json` /
+`tests/fixtures/hrge-search-response-keyword.json`.
+
+Verified independently by plain `curl` (no browser involved), both with this
+machine's proxy (`HTTP_PROXY`/`HTTPS_PROXY=127.0.0.1:10801`) and with it
+unset — identical results either way:
+
+```
+POST .../announcement-search  {"Query":"analyst","Start":0,"Limit":100}  → 200, totalCount: 22
+POST .../announcement-search  {"Start":0,"Limit":5}                      → 200, totalCount: 3271
+POST .../announcement-search  {"Query":"","Start":0,"Limit":5}           → 200, totalCount: 3271
+```
+
+The keyword genuinely filters — 22 results vs. 3271 unfiltered, not
+accepted-but-silently-ignored. An empty `Query` string behaves the same as
+omitting it entirely (sanity-checked, not assumed).
+
+**This is the fixture Task 8 should build the adapter's request against.**
+`hrge-search-request.json` / `hrge-search-response.json` (the original,
+empty-search capture) remain useful as the "no filters" baseline, but they do
+not exercise the field a keyword-search adapter actually needs — see
+"Fixtures" at the bottom of this doc.
+
+### A second filter mapping, captured the same way: `EmploymentFormTypeIds`
+
+While re-capturing, the "remote work" checkbox in the UI (`#workFromHome`) was
+also toggled on top of the same keyword search — one more UI-filter → wire-field
+mapping taken from a real request instead of assumed from the bundle, since it
+was cheap to do in the same session. Diffing that request against the
+keyword-only one above:
+
+```diff
+  "Query": "analyst",
++ "EmploymentFormTypeIds": [2],
+  "CategoryIds": [],
+  "WorkExperience": { "from": null, "to": null },
+  "WithoutWorkExperience": false,
+  "AnyExperience": false,
+  "OnlySelectedSalary": false,
+  "Start": 0,
+  "Limit": 100,
+  "IsWorkFromHome": false
+```
+
+Two things worth flagging:
+
+1. The field is `EmploymentFormTypeIds` (case-only match of the bundle's
+   `employmentFormTypeIds[]`) — **not** `IsWorkFromHome`, even though
+   `IsWorkFromHome` was already sitting right there in the body (as `false`,
+   unchanged by the checkbox) and looks like the obvious candidate for "remote
+   work."
+2. `IsWorkFromHome` is not a dead or fake field, either — `curl` confirms it
+   independently filters: `{"IsWorkFromHome":true}` → totalCount 33 (vs. 3271
+   unfiltered baseline). `{"EmploymentFormTypeIds":[2]}` alone → totalCount 37
+   — a different, overlapping-but-not-identical set from the same baseline.
+   Both fields are real and functional; only a live capture shows which one a
+   specific UI control actually sends.
+
+This mapping was not required for Task 8 (which only needs `query`), but is
+recorded here as a second, concrete illustration of why a bundle field name
+cannot be trusted to predict either the wire name or which UI control drives
+it.
 
 **Pagination:** `Start` is a zero-based **item offset**, not a page number
 (`currentPage`, guessed in the earlier bundle recon, is not what's sent — or if it
@@ -226,18 +360,54 @@ URL and is trivial to construct from `announcementId` alone.
 
 ## Open items for Task 8 (not answered by this task, scope was search only)
 
+Two different states get conflated easily if not kept separate: a field name
+seen on the wire but not exercised with a non-default value, versus a field
+name never seen on the wire at all.
+
+**Name known from a real request; value/effect not fully round-tripped:**
+- `CategoryIds`, `WithoutWorkExperience`, `AnyExperience`, `OnlySelectedSalary`,
+  `WorkExperience{from,to}` — all seen in the real captured body, but only ever
+  at their empty/default values (`[]`, `false`, `false`, `false`,
+  `{null,null}`). The server accepts them and doesn't require non-default
+  values, but no capture has set any of these to a non-default value and
+  confirmed the results actually change (unlike `Query` and
+  `EmploymentFormTypeIds`, both confirmed above to filter for real).
+- `IsWorkFromHome` — name confirmed on the wire (seen as `false` in every
+  capture to date) and independently confirmed by `curl` to be a real,
+  functioning filter (`true` → totalCount 33 vs. 3271 baseline). Not
+  confirmed to be wired to any specific UI control — the one control that
+  looked like an obvious match, `#workFromHome`, turned out to send
+  `EmploymentFormTypeIds` instead.
+
+**Name never observed in any real request — known only from the client
+bundle, unconfirmed:**
+`localityIds`, `specializationCodes`, `industryCodes`, `workScheduleCodes`,
+`announcementTypeId`, `publishDateRangeOptionId`, `seniorityLevelCodes`,
+`transportTypeIds`, `drivingLicenceIds`, `worldLanguageIds`,
+`educationLevelCodes`, `experienceRangeOptionIds`, `employmentFormIds`,
+`salaryRangeOptionId`, `currentPage`. **Do not build adapter code against any
+of these names without capturing them first** — `experienceRange` →
+`WorkExperience` (see "Request body" above) shows a bundle name is not a
+reliable predictor of the wire name.
+
+**Other routes, unrelated to filter fields:**
 - The `apply` route's request shape is unknown — this task did not attempt it.
   Same recon method (Playwright interception) should work if/when Task 8 needs it.
 - `search-field`, `announcement-view`, and `announcement-stats/{id}` (other
   neighbor routes noted in prior recon) were not investigated.
-- Filter fields beyond `Limit`/`Start` (`CategoryIds`, `localityIds`, etc.) were
-  not individually round-tripped against real filtered results — only confirmed
-  that the server accepts them and doesn't require them to be non-empty.
 
 ## Fixtures
 
-- `tests/fixtures/hrge-search-request.json` — the real request as captured
-  (URL, method, full header set, exact body string).
-- `tests/fixtures/hrge-search-response.json` — the real response, trimmed to 2
-  vacancy items, wrapper structure (`success`/`data`/`announcements`/`totalCount`/
-  `metaData`) kept intact and unmodified.
+- `tests/fixtures/hrge-search-request.json` / `hrge-search-response.json` —
+  the original empty-search capture (search button clicked with nothing typed
+  in). Useful as the "no filters" baseline, but does not exercise the keyword
+  field.
+- `tests/fixtures/hrge-search-request-keyword.json` /
+  `hrge-search-response-keyword.json` — captured with `Query: "analyst"`
+  actually set (search box filled before clicking search). **This is the
+  fixture Task 8's adapter should be built and tested against**, since it's
+  the one that exercises keyword search. Response trimmed to 2 vacancy items
+  the same way as the original (full header set and exact body string kept
+  intact in the request fixture); wrapper
+  (`success`/`data`/`announcements`/`totalCount`/`metaData`) kept intact, with
+  `totalCount` (22) preserved from the real, untrimmed response.

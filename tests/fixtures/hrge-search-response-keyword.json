@@ -1,0 +1,190 @@
+{
+  "success": true,
+  "data": {
+    "announcements": {
+      "items": [
+        {
+          "announcementId": 488233,
+          "customerId": 49853,
+          "customerName": "ბემონი ინჟინერია და მშენებლობა",
+          "isAnonymous": false,
+          "isVerified": false,
+          "customerUrl": null,
+          "isWithLogo": true,
+          "logoFilename": "https://d1hedpmorgly0j.cloudfront.net/announcementfiles/488233/9a3fea25-230a-488c-84cc-d8dcb01ea024.png",
+          "title": "უმცროსი ფინანსური ანალიტიკოსი",
+          "publishDate": "2026-08-10T12:02:39.397",
+          "renewalDate": null,
+          "deadlineDate": "2026-09-05T19:59:00",
+          "locations": [
+            "თბილისი"
+          ],
+          "extendedLocations": [
+            {
+              "announcementId": 488233,
+              "announcementExtendedLocationParts": [
+                {
+                  "id": "64f52ac94e1e50078bf4246a",
+                  "parentId": "64f52ac94e1e50078bf42469",
+                  "status": 1,
+                  "type": 6,
+                  "name": "თბილისი",
+                  "visible": true
+                }
+              ],
+              "isWithHiddenLocation": true,
+              "isWithInCompleteLocation": true
+            }
+          ],
+          "isSalaryAvailable": false,
+          "isContactPhoneAvailable": false,
+          "employmentForm": 0,
+          "applicationMethod": 1,
+          "module": null,
+          "listingSection": 1,
+          "isPreview": false,
+          "detailsProviderWebsite": {
+            "providerWebsiteId": 1,
+            "indexNumber": 2,
+            "name": "HR.ge",
+            "displayName": "hr.ge",
+            "isExternal": false,
+            "url": "https://www.hr.ge",
+            "logoFileName": "hr.png",
+            "isActive": true,
+            "launchYear": 2006,
+            "isMain": true,
+            "createDate": "2017-12-20T19:06:21.38",
+            "isCategorized": false,
+            "isAnnouncementProvider": true,
+            "isCvProvider": true,
+            "isCvBoxProvider": true,
+            "isRegistrable": true,
+            "isPreferred": false,
+            "occupationCategories": null,
+            "id": 1
+          },
+          "publishStatus": 3,
+          "frameType": null,
+          "isWithFrame": false,
+          "baubleType": null,
+          "isWithBauble": false,
+          "decorationType": null,
+          "isWithDecoration": false,
+          "status": "აქტიური",
+          "isPriority": false,
+          "isFavorite": false,
+          "isBeenApplied": false,
+          "isInvited": false,
+          "isSuitableForStudent": false,
+          "isWorkFromHome": false,
+          "distributionChannelId": 1,
+          "isEventSpecific": false,
+          "eventId": 0,
+          "isWithBranding": false,
+          "announcementBrandingListColor": "",
+          "brandingAnnouncementTileTypeId": null,
+          "hasCustomerUrl": false
+        },
+        {
+          "announcementId": 488234,
+          "customerId": 49853,
+          "customerName": "ბემონი ინჟინერია და მშენებლობა",
+          "isAnonymous": false,
+          "isVerified": false,
+          "customerUrl": null,
+          "isWithLogo": true,
+          "logoFilename": "https://d1hedpmorgly0j.cloudfront.net/announcementfiles/488234/972ebed5-a918-4497-87d0-1c2e90003376.png",
+          "title": "ფინანსური ანალიტიკოსი",
+          "publishDate": "2026-08-10T12:02:39.097",
+          "renewalDate": null,
+          "deadlineDate": "2026-09-05T19:59:00",
+          "locations": [
+            "თბილისი"
+          ],
+          "extendedLocations": [
+            {
+              "announcementId": 488234,
+              "announcementExtendedLocationParts": [
+                {
+                  "id": "64f52ac94e1e50078bf4246a",
+                  "parentId": "64f52ac94e1e50078bf42469",
+                  "status": 1,
+                  "type": 6,
+                  "name": "თბილისი",
+                  "visible": true
+                }
+              ],
+              "isWithHiddenLocation": true,
+              "isWithInCompleteLocation": true
+            }
+          ],
+          "isSalaryAvailable": false,
+          "isContactPhoneAvailable": false,
+          "employmentForm": 0,
+          "applicationMethod": 1,
+          "module": null,
+          "listingSection": 1,
+          "isPreview": false,
+          "detailsProviderWebsite": {
+            "providerWebsiteId": 1,
+            "indexNumber": 2,
+            "name": "HR.ge",
+            "displayName": "hr.ge",
+            "isExternal": false,
+            "url": "https://www.hr.ge",
+            "logoFileName": "hr.png",
+            "isActive": true,
+            "launchYear": 2006,
+            "isMain": true,
+            "createDate": "2017-12-20T19:06:21.38",
+            "isCategorized": false,
+            "isAnnouncementProvider": true,
+            "isCvProvider": true,
+            "isCvBoxProvider": true,
+            "isRegistrable": true,
+            "isPreferred": false,
+            "occupationCategories": null,
+            "id": 1
+          },
+          "publishStatus": 3,
+          "frameType": null,
+          "isWithFrame": false,
+          "baubleType": null,
+          "isWithBauble": false,
+          "decorationType": null,
+          "isWithDecoration": false,
+          "status": "აქტიური",
+          "isPriority": false,
+          "isFavorite": false,
+          "isBeenApplied": false,
+          "isInvited": false,
+          "isSuitableForStudent": false,
+          "isWorkFromHome": false,
+          "distributionChannelId": 1,
+          "isEventSpecific": false,
+          "eventId": 0,
+          "isWithBranding": false,
+          "announcementBrandingListColor": "",
+          "brandingAnnouncementTileTypeId": null,
+          "hasCustomerUrl": false
+        }
+      ],
+      "totalCount": 22
+    },
+    "metaData": {
+      "seoData": {
+        "title": "HR.ge: ვაკანსიები, CV-ების ბაზა",
+        "description": "დასაქმების ყველაზე დიდი საიტი საქართველოში - ეძებთ სამსახურს? ნახეთ ვაკანსიები | შექმენით CV | გამოიწერეთ ვაკანსიები ელ. ფოსტაზე | კომპანიებისთვის: განათავსეთ ვაკანსიები | მოძებნეთ კანდიდატების CV-ები/რეზიუმეები ონლაინ ბაზაში\n",
+        "keywords": "ვაკანსიები, ახალი ვაკანსიები, დასაქმება, დასაქმების სააგენტო, სამუშაო, სამსახური, სამუშაო ადგილები, ტრენინგები, ტენდერები, კარიერა, დისტანციური სამუშაო, ჰიბრიდული სამუშაო, ონლაინ სამუშაო, სპეციალობით ვაკანსიები, ინდუსტრიის ვაკანსიები, პროფესიული ვაკანსიები, სამუშაო საქართველოში, HR.ge  ვაკანსიები, vakansiebi, axali vakansiebi, dasakmeba, dasakmebis saagento, samushao, samsaxuri, samushao adgilebi, treningebi, tenderebi, kariera, distanciuri samushao, hibriiduli samushao, online samushao, specialobit vakansiebi, industriis vakansiebi, profesiuli vakansiebi, samushao saqartveloshi, HR.ge vakansiebi,vacancies, new vacancies, employment, recruitment agency, jobs, job opportunities, trainings, tenders, career, remote jobs, hybrid jobs, online jobs, vacancies by specialty, vacancies by industry, professional vacancies, jobs in Georgia, HR.ge jobs"
+      },
+      "openGraphData": {
+        "type": "website",
+        "title": "HR.ge: ვაკანსიები, CV-ების ბაზა",
+        "description": "დასაქმების ყველაზე დიდი საიტი საქართველოში - ეძებთ სამსახურს? ნახეთ ვაკანსიები | შექმენით CV | გამოიწერეთ ვაკანსიები ელ. ფოსტაზე | კომპანიებისთვის: განათავსეთ ვაკანსიები | მოძებნეთ კანდიდატების CV-ები/რეზიუმეები ონლაინ ბაზაში\n",
+        "image": "https://media.hr.ge/social-media/hr.png",
+        "isAvailable": true
+      }
+    }
+  }
+}

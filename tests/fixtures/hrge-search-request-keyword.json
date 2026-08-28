@@ -11,5 +11,5 @@
     "accept": "application/json, text/plain, */*",
     "content-type": "application/json"
   },
-  "body": "{\"CategoryIds\":[],\"WorkExperience\":{\"from\":null,\"to\":null},\"WithoutWorkExperience\":false,\"AnyExperience\":false,\"OnlySelectedSalary\":false,\"Start\":0,\"Limit\":100,\"IsWorkFromHome\":false}"
+  "body": "{\"Query\":\"analyst\",\"CategoryIds\":[],\"WorkExperience\":{\"from\":null,\"to\":null},\"WithoutWorkExperience\":false,\"AnyExperience\":false,\"OnlySelectedSalary\":false,\"Start\":0,\"Limit\":100,\"IsWorkFromHome\":false}"
 }
