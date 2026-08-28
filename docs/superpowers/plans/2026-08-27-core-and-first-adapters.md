@@ -1695,24 +1695,36 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `Adapter` (Task 3), `normalizeVacancy` (Task 1), `openProfile` (Task 9), фикстуры и селекторы из Task 9
-- Produces: класс `HhAdapter implements Adapter`; функция `parseSearchHtml(html: string): Vacancy[]`
+- Produces: класс `HhAdapter implements Adapter`; функция `parseSearchPage(page: Page): Promise<Vacancy[]>`; функция `classifyApplyOutcome(s: ApplySignals): ApplyResult`
 
-Парсер отделён от браузера: `parseSearchHtml` — чистая функция над строкой, тестируется на фикстуре без запуска Chromium. Браузер нужен только для навигации и клика.
+**Парсинг идёт через DOM Playwright, не через регулярки.** Playwright уже в зависимостях, а разбор HTML регулярками ломается на любой смене вёрстки и не переживает вложенные теги. `parseSearchPage` принимает `Page`, поэтому тестируется офлайн: фикстура загружается в страницу через `page.setContent(html)`, браузер при этом реальный, но сети нет.
 
 - [ ] **Step 1: Написать падающий тест**
 
 Создать `tests/hh.test.ts`:
 
 ```typescript
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { parseSearchHtml, classifyApplyOutcome } from '../src/adapters/hh.js';
+import { chromium, type Browser, type Page } from 'playwright';
+import { parseSearchPage, classifyApplyOutcome } from '../src/adapters/hh.js';
 
 const html = readFileSync('tests/fixtures/hh-search.html', 'utf8');
 
-describe('parseSearchHtml', () => {
-  it('вытаскивает вакансии из реальной выдачи', () => {
-    const vs = parseSearchHtml(html);
+let browser: Browser;
+let page: Page;
+
+beforeAll(async () => {
+  // Реальный браузер, но без сети: фикстура грузится через setContent.
+  browser = await chromium.launch({ headless: true });
+  page = await browser.newPage();
+});
+afterAll(async () => { await browser.close(); });
+
+describe('parseSearchPage', () => {
+  it('вытаскивает вакансии из реальной выдачи', async () => {
+    await page.setContent(html);
+    const vs = await parseSearchPage(page);
     expect(vs.length).toBeGreaterThan(0);
     const v = vs[0]!;
     expect(v.source).toBe('hh');
@@ -1722,12 +1734,14 @@ describe('parseSearchHtml', () => {
     expect(v.company).not.toBe('');
   });
 
-  it('на пустом HTML возвращает пустой массив', () => {
-    expect(parseSearchHtml('<html><body></body></html>')).toEqual([]);
+  it('на пустой странице возвращает пустой массив', async () => {
+    await page.setContent('<html><body></body></html>');
+    expect(await parseSearchPage(page)).toEqual([]);
   });
 
-  it('sourceId уникален внутри одной выдачи', () => {
-    const ids = parseSearchHtml(html).map((v) => v.sourceId);
+  it('sourceId уникален внутри одной выдачи', async () => {
+    await page.setContent(html);
+    const ids = (await parseSearchPage(page)).map((v) => v.sourceId);
     expect(new Set(ids).size).toBe(ids.length);
   });
 });
@@ -1765,6 +1779,7 @@ Expected: FAIL — модуль не найден
 Создать `src/adapters/hh.ts`. Селекторы взять из `docs/hh-selectors.md` (Task 9) — ниже помечены как `<СЕЛЕКТОР:...>`:
 
 ```typescript
+import type { Page, Locator } from 'playwright';
 import { normalizeVacancy, type Vacancy } from '../core/vacancy.js';
 import { openProfile } from '../browser.js';
 import type { Adapter, ApplyResult, SearchFilters } from './types.js';
@@ -1789,43 +1804,43 @@ export function classifyApplyOutcome(s: ApplySignals): ApplyResult {
   return { status: 'failed', reason: 'форма отклика не подтвердила отправку' };
 }
 
-export function parseSearchHtml(html: string): Vacancy[] {
+/**
+ * Разбор выдачи через DOM Playwright. Селекторы — из docs/hh-selectors.md.
+ * Функция принимает Page, а не строку, поэтому в тестах фикстура грузится
+ * через page.setContent и сеть не нужна.
+ */
+export async function parseSearchPage(page: Page): Promise<Vacancy[]> {
+  const cards = await page.locator('<СЕЛЕКТОР:card>').all();
   const out: Vacancy[] = [];
   const seen = new Set<string>();
 
-  // Каждая карточка выдачи содержит ссылку вида /vacancy/<id>.
-  // Точный селектор карточки — в docs/hh-selectors.md.
-  const cardRe = /<[^>]+data-qa="vacancy-serp__vacancy"[\s\S]*?(?=<[^>]+data-qa="vacancy-serp__vacancy"|$)/g;
-  const cards = html.match(cardRe) ?? [];
-
   for (const card of cards) {
-    const idMatch = /hh\.ru\/vacancy\/(\d+)/.exec(card);
-    const id = idMatch?.[1];
+    const href = await card.locator('<СЕЛЕКТОР:title-link>').first()
+      .getAttribute('href').catch(() => null);
+    const id = href === null ? undefined : /\/vacancy\/(\d+)/.exec(href)?.[1];
     if (id === undefined || seen.has(id)) continue;
     seen.add(id);
-
-    const title = textOf(card, '<СЕЛЕКТОР:title>');
-    const company = textOf(card, '<СЕЛЕКТОР:company>');
-    const geo = textOf(card, '<СЕЛЕКТОР:region>');
 
     out.push(normalizeVacancy({
       source: 'hh',
       sourceId: id,
-      title,
-      company,
+      title: await innerTextOr(card, '<СЕЛЕКТОР:title-link>', ''),
+      company: await innerTextOr(card, '<СЕЛЕКТОР:company>', ''),
       url: `https://hh.ru/vacancy/${id}`,
       description: '', // полное описание дочитывается на странице вакансии
-      geo: geo === '' ? 'не указан' : geo,
+      geo: await innerTextOr(card, '<СЕЛЕКТОР:region>', 'не указан'),
       postedAt: new Date(),
     }));
   }
   return out;
 }
 
-function textOf(fragment: string, dataQa: string): string {
-  const re = new RegExp(`data-qa="${dataQa}"[^>]*>([\\s\\S]*?)<`, 'i');
-  const m = re.exec(fragment);
-  return (m?.[1] ?? '').replace(/<[^>]+>/g, '').trim();
+async function innerTextOr(
+  scope: Locator, selector: string, fallback: string,
+): Promise<string> {
+  const text = await scope.locator(selector).first().innerText().catch(() => '');
+  const trimmed = text.trim();
+  return trimmed === '' ? fallback : trimmed;
 }
 
 export class HhAdapter implements Adapter {
@@ -1837,7 +1852,7 @@ export class HhAdapter implements Adapter {
       const page = await ctx.newPage();
       const url = `https://hh.ru/search/vacancy?text=${encodeURIComponent(filters.query)}&area=1`;
       await page.goto(url, { waitUntil: 'domcontentloaded' });
-      const vacancies = parseSearchHtml(await page.content());
+      const vacancies = await parseSearchPage(page);
 
       // Дочитываем полное описание — без него скоринг слепой.
       const limit = filters.maxResults ?? vacancies.length;
