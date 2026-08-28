@@ -292,32 +292,54 @@ bundle route list:
 GET https://api.p.hr.ge/public-portal/tenant/1/api/v3/announcement/{announcementId}
 ```
 
-Verified live (`curl`, no auth, no proxy needed, plain GET, `HTTP 200`):
+**Captured for Task 8, Step 1** (`npx tsx scripts/capture-hrge-detail.ts`, plain
+`fetch`, no auth, no proxy, no headers beyond defaults) against
+`announcementId: 488233` — the first item of
+`tests/fixtures/hrge-search-response-keyword.json` — and written verbatim to
+`tests/fixtures/hrge-detail-response.json`:
+
+```
+GET https://api.p.hr.ge/public-portal/tenant/1/api/v3/announcement/488233
+→ HTTP 200
+```
+
+**The description field's exact path is `data.announcement.description`** (a
+top-level `announcement` object, not `announcements` — different key from the
+search response's `data.announcements.items[]`). Confirmed:
 
 ```json
 {
   "data": {
     "announcement": {
-      "announcementId": 490990,
-      "title": "...",
-      "customerName": "...",
-      "description": "<div>&#4309;&#4312;&#4316; ...</div>",
+      "announcementId": 488233,
+      "title": "უმცროსი ფინანსური ანალიტიკოსი",
+      "customerName": "ბემონი ინჟინერია და მშენებლობა",
+      "description": "<div><span>&#4328;&#4318;&#4321; ...</span></div>",
       "addresses": ["თბილისი"],
-      "publishDate": "2026-08-27T16:20:44.143",
-      "deadlineDate": "2026-09-25T23:59:00",
+      "publishDate": "2026-08-10T12:02:39.397",
+      "deadlineDate": "2026-09-05T19:59:00",
       ...
     }
   }
 }
 ```
 
-- `description` is an **HTML string with numeric character references**
-  (`&#4309;...`), not plain text — decode HTML entities and (likely) strip tags
-  before using it (e.g. in a cover-letter prompt).
+- `description` is a **string, and it is HTML** — confirmed, not guessed: the
+  captured value opens with `<div><span>` and its Georgian text is encoded as
+  numeric character references (`&#4328;&#4318;&#4321;...`), not plain text.
+  10,590 characters for this vacancy. An adapter must decode entities and
+  strip tags before handing it to the scorer or a cover-letter prompt — this
+  is recorded here explicitly per the task brief's instruction not to strip
+  silently without documenting it.
+- The response also contains extensive employer/announcement metadata beyond
+  `description` — over 130 fields on `announcement` (`employerRequirements`,
+  `benefits`, `contactEmail`, `contactName`, `contactPhoneNumber`,
+  `applicationDetails`, `customerBranding`, site-wide config echoes like
+  `googleAnalyticsId`, and more) — none of it needed by Task 8, which reads
+  only `description`.
 - `addresses` mirrors `locations` from the search response (array of strings).
-- This endpoint was not part of this task's required scope beyond identifying it,
-  but since Task 8 will need `description`, this is enough to build on: same host,
-  same tenant path convention, plain GET, no auth.
+- This endpoint requires no auth, no proxy, and no special headers — a plain
+  unauthenticated `GET` is sufficient, same as `announcement-search`.
 
 ### Building the public vacancy URL
 
@@ -418,3 +440,8 @@ reliable predictor of the wire name.
   intact in the request fixture); wrapper
   (`success`/`data`/`announcements`/`totalCount`/`metaData`) kept intact, with
   `totalCount` (22) preserved from the real, untrimmed response.
+- `tests/fixtures/hrge-detail-response.json` — captured for Task 8, Step 1 via
+  `npx tsx scripts/capture-hrge-detail.ts` against `announcementId: 488233`
+  (the first item in `hrge-search-response-keyword.json`). Full, untrimmed
+  response body — this is the fixture `parseDetailResponse` is tested
+  against. See "Description — requires a second call" above.
