@@ -24,6 +24,14 @@ export interface SendReport {
   sent: number;
   failed: number;
   halted: null | { source: string; reason: 'captcha' | 'auth_required' | 'killed' };
+  /**
+   * Sources that had rows due to send but no `config.throttle` entry, so
+   * their rows were skipped (left `approved`, never sent unthrottled).
+   * Sorted, deduplicated. Empty when every source with pending rows was
+   * correctly configured. The caller is responsible for surfacing this —
+   * a skip that nobody looks at is as bad as no protection at all.
+   */
+  unthrottledSources: string[];
 }
 
 interface Deps {
@@ -55,42 +63,15 @@ export class Sender {
   }
 
   async run(): Promise<SendReport> {
-    const report: SendReport = { sent: 0, failed: 0, halted: null };
+    const report: SendReport = { sent: 0, failed: 0, halted: null, unthrottledSources: [] };
     const rows = this.queue.listByStatus('approved');
-
-    // Fail closed. A source with an adapter but no config.throttle entry
-    // is a configuration bug (typo, or a new adapter whose throttle entry
-    // was never added) — not permission to send at unlimited speed. This
-    // module exists solely to keep the user's hh.ru account from getting
-    // banned for inhuman send rates, so treating "no rule" as "no limit"
-    // would be the exact opposite of its purpose.
-    //
-    // Abort the whole run before anything is sent, rather than skipping
-    // only the misconfigured source's rows: a run that quietly sends for
-    // every *other* source while one is missing its rule is still a
-    // silent hole in the protection, and the point of this check is that
-    // a missing throttle entry must never be silent. Throwing before the
-    // loop starts means nothing has been touched — every row for every
-    // source is still exactly 'approved' and gets retried automatically
-    // on the next run once the human fixes config.json.
-    const missingRuleSources = new Set<string>();
-    for (const row of rows) {
-      if (this.adapters.has(row.source) && this.config.throttle[row.source] === undefined) {
-        missingRuleSources.add(row.source);
-      }
-    }
-    if (missingRuleSources.size > 0) {
-      const sources = [...missingRuleSources].sort().join(', ');
-      throw new Error(
-        `Sender: в config.throttle отсутствуют правила для площадок: ${sources} — ` +
-          'отправка остановлена до исправления конфигурации, ни одна заявка не отправлена',
-      );
-    }
+    const unthrottledSources = new Set<string>();
 
     for (const row of rows) {
       // Проверка перед каждой подачей: незавершённое остаётся approved.
       if (this.stopRequested()) {
         report.halted = { source: '-', reason: 'killed' };
+        report.unthrottledSources = [...unthrottledSources].sort();
         return report;
       }
 
@@ -103,12 +84,23 @@ export class Sender {
 
       const rule = this.config.throttle[row.source];
       if (rule === undefined) {
-        // Unreachable: the preflight check above already aborted the run
-        // if any adapter-backed source had no throttle rule. Thrown rather
-        // than asserted away with `!`, so a future change that breaks that
-        // guarantee fails loudly here instead of silently reintroducing
-        // the fail-open bug this check exists to prevent.
-        throw new Error(`Sender: internal invariant violated — no throttle rule for ${row.source}`);
+        // Fail closed, scoped to this source only. A source with an
+        // adapter but no config.throttle entry is a configuration bug
+        // (typo, or a new adapter whose throttle entry was never added) —
+        // not permission to send at unlimited speed. This module exists
+        // solely to keep the user's hh.ru account from getting banned for
+        // inhuman send rates, so treating "no rule" as "no limit" would be
+        // the exact opposite of its purpose.
+        //
+        // Skip only this row — never call apply() for it, leave it
+        // approved so it's retried automatically once config.json is
+        // fixed — rather than aborting the whole run. Every other,
+        // correctly-configured source keeps sending normally: one
+        // misconfigured adapter must not take down a working one. The gap
+        // still can't be silent, though, so it's recorded in the report
+        // for the caller to surface (see `unthrottledSources` above).
+        unthrottledSources.add(row.source);
+        continue;
       }
 
       const inHour = this.queue.countSentSince(row.source, this.now() - HOUR);
@@ -127,6 +119,7 @@ export class Sender {
         // `result.status` would need an unproven cast to fit SendReport's
         // narrower 'captcha' | 'auth_required' field.
         report.halted = { source: row.source, reason: result.status };
+        report.unthrottledSources = [...unthrottledSources].sort();
         return report;
       }
 
@@ -147,6 +140,7 @@ export class Sender {
       await this.sleep(rule.minDelayMs + Math.floor(this.random() * (span + 1)));
     }
 
+    report.unthrottledSources = [...unthrottledSources].sort();
     return report;
   }
 }

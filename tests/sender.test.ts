@@ -126,15 +126,14 @@ describe('Sender троттлинг: fail-closed без правила', () => {
   // существует, чтобы аккаунт пользователя на hh.ru не забанили за
   // нечеловеческую скорость подачи заявок.
   //
-  // Правильное поведение: ни одна заявка по ЛЮБОМУ источнику в этом
-  // прогоне не должна уйти, пока не найден недостающий ключ конфига,
-  // включая заявки по источникам, для которых правило есть — частичный
-  // прогон, тихо обошедший защиту для одного источника, обманывает не
-  // меньше, чем полное отсутствие защиты. Ни одна строка не должна
-  // помечаться failed: сейчас в Queue нет пути failed → approved, так что
-  // это сделало бы заявку неотправляемой без ручного вмешательства в БД —
-  // а именно "никогда не терять заявку" здесь требование задачи.
-  it('источник в adapters без правила в config.throttle — apply не вызывается ни для кого, ошибка видна вызывающему', async () => {
+  // Защита теперь скопирована на конкретный источник: заявки по hrge (без
+  // правила) не должны уйти вообще — ни одного вызова apply, строки
+  // остаются approved. Но это больше не должно останавливать hh (с
+  // правилом) — один опечатавшийся конфиг для нового адаптера не должен
+  // валить отправку для уже работающих источников. Пропуск обязан быть
+  // громким: unthrottledSources называет источник, а не проглатывает
+  // проблему молча.
+  it('источник в adapters без правила в config.throttle — apply не вызывается только для него, остальные источники отправляют штатно', async () => {
     seed(q, 2, 'hh');
     seed(q, 2, 'hrge');
 
@@ -155,13 +154,55 @@ describe('Sender троттлинг: fail-closed без правила', () => {
     // CONFIG.throttle only has an 'hh' entry — 'hrge' is the missing one.
     const s = new Sender(q, adapters, CONFIG, { sleep: async () => {} });
 
-    await expect(s.run()).rejects.toThrow(/hrge/);
+    const rep = await s.run();
 
-    expect(hhApplyCalls).toBe(0);
+    expect(rep.unthrottledSources).toEqual(['hrge']);
+    expect(hhApplyCalls).toBe(2);
     expect(hrgeApplyCalls).toBe(0);
-    expect(q.listByStatus('approved')).toHaveLength(4);
+    expect(rep.sent).toBe(2);
+    expect(q.listByStatus('sent')).toHaveLength(2);
+    // The 2 hrge rows are the only ones still approved — hh's rows both sent.
+    const stillApproved = q.listByStatus('approved');
+    expect(stillApproved).toHaveLength(2);
+    expect(stillApproved.every((r) => r.source === 'hrge')).toBe(true);
     expect(q.listByStatus('failed')).toHaveLength(0);
-    expect(q.listByStatus('sent')).toHaveLength(0);
+  });
+
+  // Прогон #1 пропускает hrge из-за отсутствующего правила — строки должны
+  // остаться отправляемыми, а не застрять. Как только конфиг чинят
+  // (добавляют запись throttle.hrge), следующий run() обязан отправить их
+  // без какого-либо ручного вмешательства в БД.
+  it('пропущенные из-за отсутствия правила строки отправляются повторным прогоном после починки конфига', async () => {
+    seed(q, 2, 'hrge');
+
+    let hrgeApplyCalls = 0;
+    const hrgeAdapter: Adapter = {
+      name: 'hrge',
+      async search() { return []; },
+      async apply() { hrgeApplyCalls++; return { status: 'sent' }; },
+    };
+    const adapters = new Map<string, Adapter>([['hrge', hrgeAdapter]]);
+
+    const s1 = new Sender(q, adapters, CONFIG, { sleep: async () => {} });
+    const rep1 = await s1.run();
+    expect(rep1.unthrottledSources).toEqual(['hrge']);
+    expect(hrgeApplyCalls).toBe(0);
+    expect(q.listByStatus('approved')).toHaveLength(2);
+
+    const fixedConfig = {
+      ...CONFIG,
+      throttle: {
+        ...CONFIG.throttle,
+        hrge: { maxPerHour: 2, maxPerDay: 10, minDelayMs: 0, maxDelayMs: 0 },
+      },
+    };
+    const s2 = new Sender(q, adapters, fixedConfig, { sleep: async () => {} });
+    const rep2 = await s2.run();
+    expect(rep2.unthrottledSources).toEqual([]);
+    expect(hrgeApplyCalls).toBe(2);
+    expect(rep2.sent).toBe(2);
+    expect(q.listByStatus('sent')).toHaveLength(2);
+    expect(q.listByStatus('approved')).toHaveLength(0);
   });
 });
 
