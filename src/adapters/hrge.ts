@@ -40,12 +40,47 @@ export function parseSearchResponse(json: unknown): SearchItem[] {
   return out;
 }
 
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+  nbsp: ' ',
+};
+
+/**
+ * Декодирует HTML entity-ссылки одним проходом: `String.replace` со своим
+ * колбэком читает только исходную строку и никогда не перечитывает то, что
+ * сам же подставил, — в отличие от последовательных `.replace().replace()`,
+ * где результат одной замены мог повторно попасть под более раннее правило
+ * (классический баг двойного декода: `&amp;lt;` через `&amp;`→`&`, затем
+ * `&lt;`→`<` схлопывается в `<` вместо правильного буквального `&lt;`).
+ */
+function decodeEntities(input: string): string {
+  return input.replace(/&(#\d+|#x[0-9a-f]+|[a-z]+);/gi, (match, body: string) => {
+    if (body.startsWith('#')) {
+      const isHex = body[1] === 'x' || body[1] === 'X';
+      const code = Number.parseInt(isHex ? body.slice(2) : body.slice(1), isHex ? 16 : 10);
+      return Number.isNaN(code) ? match : String.fromCodePoint(code);
+    }
+    return NAMED_ENTITIES[body.toLowerCase()] ?? match;
+  });
+}
+
 /**
  * Путь до текста описания — `data.announcement.description`, снят живым
  * перехватом (docs/hrge-api.md, "Description — requires a second call").
  * Поле приходит как HTML со строкой числовых ссылок на символы
  * (`&#4328;...`), а не как чистый текст — раздеваем теги и декодируем
  * ссылки, иначе скорер считает по разметке вместо слов.
+ *
+ * Порядок «сначала теги, потом entity-ссылки» выбран намеренно: настоящие
+ * теги в сыром HTML уже буквальные (`<div>`), а `&lt;`/`&gt;` — это текст,
+ * который сейчас не похож на тег и тег-стриппером не тронется; декодируем
+ * их уже после стриппинга, так что при обратном порядке декодированные
+ * `&lt;.../&gt;` могли бы притвориться тегами и стриппер съел бы настоящий
+ * текст вакансии между ними.
  */
 export function parseDetailResponse(json: unknown): string {
   const ann = (json as { data?: { announcement?: Record<string, unknown> } })
@@ -53,15 +88,7 @@ export function parseDetailResponse(json: unknown): string {
   if (ann === undefined || ann === null) return '';
   const raw = ann['description'];
   if (typeof raw !== 'string') return '';
-  return raw
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&#(\d+);/g, (_m, code: string) => String.fromCodePoint(Number(code)))
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
+  return decodeEntities(raw.replace(/<[^>]+>/g, ' '))
     .replace(/\s+/g, ' ')
     .trim();
 }

@@ -427,6 +427,15 @@ reliable predictor of the wire name.
 
 ## Fixtures
 
+**PII note:** `tests/fixtures/hrge-detail-response.json` was captured from a
+real, live hr.ge listing. Its `contactEmail`, `contactPhoneNumber`,
+`contactMobilePhoneNumber`, and `contactName` fields have been replaced with
+obvious placeholders (`redacted@example.com`, `+995000000000`, `REDACTED`) —
+the keys and their types are kept intact so the fixture stays structurally
+faithful, but the values are not real. The live hr.ge API returns real
+contact data in these fields; code and tests should not assume the
+placeholder values carry any meaning beyond "a string was here."
+
 - `tests/fixtures/hrge-search-request.json` / `hrge-search-response.json` —
   the original empty-search capture (search button clicked with nothing typed
   in). Useful as the "no filters" baseline, but does not exercise the keyword

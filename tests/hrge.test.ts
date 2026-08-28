@@ -38,14 +38,30 @@ describe('parseSearchResponse', () => {
 });
 
 describe('parseDetailResponse', () => {
-  it('достаёт текст описания из настоящего ответа детали', () => {
+  it('достаёт текст описания из настоящего ответа детали и реально декодирует его', () => {
     const text = parseDetailResponse(detailFixture);
     expect(text.length).toBeGreaterThan(50);
+    // Голая длина не отличает декодированный текст от неразобранного entity-супа
+    // (он даже длиннее) — эти проверки ловят удаление шага декодирования.
+    expect(text).not.toMatch(/&#\d+;/);
+    expect(text).not.toMatch(/<[^>]+>/);
+    // Кусок реального декодированного грузинского текста из фикстуры —
+    // пиновка самого преобразования, а не только отсутствия артефактов.
+    expect(text).toContain('სამშენებლო კომპანიას');
   });
 
   it('на мусорном входе возвращает пустую строку', () => {
     expect(parseDetailResponse(null)).toBe('');
     expect(parseDetailResponse({})).toBe('');
+  });
+
+  it('декодирует entity-ссылки одним проходом — без двойного декода и без утечки из-под тег-стриппера', () => {
+    const html = '<div>&amp;lt; &lt;script&gt; &nbsp;text &#65;</div>';
+    const text = parseDetailResponse({ data: { announcement: { description: html } } });
+    // &amp;lt; -> буквальное "&lt;" (не "<" — это был бы двойной декод);
+    // &lt;/&gt; декодируются в буквальные "<"/">" уже после стриппинга тегов;
+    // &nbsp; -> пробел; &#65; -> "A" через десятичную числовую ссылку.
+    expect(text).toBe('&lt; <script> text A');
   });
 });
 
@@ -93,6 +109,28 @@ describe('HrGeAdapter.search', () => {
     const vs = await a.search({ query: 'analyst', maxResults: 1 });
     expect(vs).toHaveLength(1);
     expect(vs[0]!.description).toBe('');
+  });
+
+  it('падение детали ПЕРВОГО элемента не абортит цикл — второй элемент дочитывается нормально', async () => {
+    // maxResults: 1 в тесте выше не может отличить "вернул 1 результат с пустым
+    // описанием" от "упал бы и на втором элементе тоже" — здесь их два, и
+    // проваливается именно первый по порядку запрос.
+    const a = new HrGeAdapter({
+      fetchImpl: async (url) => {
+        const u = String(url);
+        if (u.includes('announcement-search')) {
+          return new Response(JSON.stringify(searchFixture), { status: 200 });
+        }
+        if (u.includes('/announcement/488233')) {
+          return new Response('nope', { status: 500 });
+        }
+        return new Response(JSON.stringify(detailFixture), { status: 200 });
+      },
+    });
+    const vs = await a.search({ query: 'analyst', maxResults: 2 });
+    expect(vs).toHaveLength(2);
+    expect(vs[0]!.description).toBe('');
+    expect(vs[1]!.description.length).toBeGreaterThan(50);
   });
 
   it('на ошибке поиска возвращает пустой массив', async () => {
