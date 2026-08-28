@@ -679,9 +679,15 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `Vacancy`, `vacancyKey` (Task 1)
-- Produces: класс `Queue` с методами `constructor(dbPath: string)`, `insertPending(v, score, matched, letter, letterMode): boolean`, `has(v): boolean`, `listByStatus(status): QueueRow[]`, `approve(id, letter?)`, `skip(id)`, `markSent(id)`, `markFailed(id, reason)`, `recoverStuck(): number`, `countSentSince(source, sinceMs): number`, `close()`. Тип `QueueRow`, тип `Status = 'pending'|'approved'|'skipped'|'sent'|'failed'`
+- Produces: класс `Queue` с методами `constructor(dbPath: string)`, `insertPending(v, score, matched, letter, letterMode): boolean`, `has(v): boolean`, `listByStatus(status): QueueRow[]`, `approve(id, letter?)`, `skip(id)`, `markSent(id)`, `markFailed(id, reason)`, `countStuckApproved(): number`, `countSentSince(source, sinceMs): number`, `close()`. Тип `QueueRow`, тип `Status = 'pending'|'approved'|'skipped'|'sent'|'failed'`
 
 Это сердце надёжности. Уникальный индекс на `(source, source_id)` — единственная гарантия, что отклик не уйдёт дважды.
+
+**Реализовано сверх исходного текста задачи (по итогам ревью, коммит `fe27dd7`) — учитывать в задачах 11–13:**
+
+- **Переходы статусов защищены guard'ами.** `approve` и `skip` срабатывают только из `pending`; `markSent` и `markFailed` — только из `approved`. Незаконный переход **бросает** ошибку с id и фактическим статусом. Без guard'а `approve()` на уже отправленной строке возвращал её в `approved`, отправщик брал её из `listByStatus('approved')` и подавал вакансию **второй раз** — уникальный индекс от этого не спасает, он защищает от дублей строк, а не от повторной отправки одной строки.
+- **`postedAt` оживляется при чтении.** `JSON.parse` отдаёт строку, а тип обещает `Date`; `toQueueRow` восстанавливает `Date`, иначе первый же `.getTime()` падал бы без предупреждения компилятора.
+- **`recoverStuck` переименован в `countStuckApproved`** — метод ничего не чинит, только считает, и чинить действительно нечего: после обрыва между `approve` и `markSent` строка уже в том состоянии, которое ждёт следующий прогон.
 
 - [ ] **Step 1: Написать падающий тест**
 
@@ -751,20 +757,20 @@ describe('Queue переходы статусов', () => {
 });
 
 describe('Queue восстановление после обрыва', () => {
-  it('approved без sent_at остаются в работе и считаются recoverStuck', () => {
+  it('approved без sent_at остаются в работе и считаются countStuckApproved', () => {
     q.insertPending(mkVacancy('4'), 50, [], 'l', 'hybrid');
     const row = q.listByStatus('pending')[0]!;
     q.approve(row.id);
-    expect(q.recoverStuck()).toBe(1);
+    expect(q.countStuckApproved()).toBe(1);
     expect(q.listByStatus('approved')).toHaveLength(1);
   });
 
-  it('отправленные recoverStuck не трогает', () => {
+  it('отправленные countStuckApproved не трогает', () => {
     q.insertPending(mkVacancy('5'), 50, [], 'l', 'hybrid');
     const row = q.listByStatus('pending')[0]!;
     q.approve(row.id);
     q.markSent(row.id);
-    expect(q.recoverStuck()).toBe(0);
+    expect(q.countStuckApproved()).toBe(0);
     expect(q.listByStatus('sent')).toHaveLength(1);
   });
 });
@@ -911,7 +917,7 @@ export class Queue {
    * уникальный индекс не даст вставить вакансию второй раз, а сама отправка
    * идёт по конкретной строке.
    */
-  recoverStuck(): number {
+  countStuckApproved(): number {
     const row = this.db.prepare(
       "SELECT COUNT(*) AS n FROM applications WHERE status='approved' AND sent_at IS NULL",
     ).get() as unknown as { n: number };
@@ -2700,7 +2706,7 @@ switch (cmd) {
   }
 
   case 'panel': {
-    const stuck = queue.recoverStuck();
+    const stuck = queue.countStuckApproved();
     if (stuck > 0) console.log(`${stuck} записей ждут отправки с прошлого прогона`);
     await startPanel(queue, 4321);
     console.log('Панель: http://127.0.0.1:4321');
