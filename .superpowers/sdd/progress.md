@@ -101,3 +101,68 @@ Task 7: complete (commits 4ea812a..HEAD, review clean after one fix round
   Minor OPEN (final review triage):
   - capture-hrge.ts can no longer regenerate the unfiltered baseline fixture;
     it always types a keyword now.
+Task 8: complete (commits 337ccd9..17300c1, review clean after one fix round)
+  Plan was REWRITTEN by controller first: the old task text was built on the
+  bundle-derived filter model that Task 7 proved wrong.
+  Three substantive discoveries baked in:
+  - Search response carries NO description, and the scorer reads
+    title + description -- every hr.ge vacancy would have scored ~0 and been
+    dropped at minScore. Adapter now fetches announcement/{id} per result.
+    Description path: data.announcement.description, HTML with numeric
+    character references.
+  - apply() is deliberately NOT implemented: capturing its contract means
+    sending a real application from the user's account to a real employer.
+    Returns an honest `failed` with the vacancy URL. USER DECISION PENDING.
+  - Fix round: entity-decode test that actually fails without decoding
+    (mutation-verified); single-pass decoder killing the &amp;lt; double-decode
+    bug; multi-item resilience test (first item's detail fetch fails, second
+    succeeds); and REAL THIRD-PARTY PII redacted from the committed detail
+    fixture (contactEmail/phones/name from a live listing) -- this repo is
+    private but the user has published previously-private repos before.
+  ITERATION HYPOTHESIS HOLDING: src/adapters/types.ts unchanged since c193a9a.
+  Minor OPEN (final review triage):
+  - decoder's hex-entity branch and `apos` named entity are untested additions.
+
+CONTROLLER REORDER: Tasks 9 and 10 (hh.ru) need the user's own manual login
+  and cannot proceed without them. Tasks 11 and 12 depend only on Queue and
+  the Adapter interface, so they run first. Task 13 needs everything.
+Task 11: complete (commits 17300c1..ba23b68, THREE rounds; round-3 review done
+  by the controller directly after two session-limit interruptions)
+  Round 1 (c5ab8d3): implementer proactively strengthened two vacuous tests
+    (sleep-ordering, auth_required halt) and added a persisted-counter test.
+    Also fixed a real strict-mode narrowing bug in the plan's own code.
+  Round 2 (f80ab74): review found throttling FAILED OPEN -- a source in
+    `adapters` with no config.throttle entry sent with no cap and no delay.
+    Fixed, but by aborting the whole run.
+  Round 3 (ba23b68): review judged the abort over-scoped -- one typo in a new
+    adapter's config would stop sending for every correctly-configured source,
+    turning a config mistake into a total outage of an unattended tool.
+    Rescoped to a per-source skip: rows stay `approved`, other sources keep
+    sending, and `SendReport.unthrottledSources` keeps the gap loud.
+    Mutation-proved: restoring the Infinity-cap fallback fails two tests.
+  Controller verification of round 3, by reading the code not the tests:
+    no queue transition on a halting result; cap-reached rows stay approved;
+    no captcha retry path; no path where a rule-less source reaches apply().
+    unthrottledSources is Set-deduped, sorted, and set on all three exits.
+  IMPORTANT OPEN (for final review) -- found by controller, missed by review:
+  - sender.ts marks a row `failed` when no adapter is registered for its
+    source. `failed` is a dead end (queue has no transition out of it), so a
+    missing adapter destroys the application permanently. This is the same
+    class of bug as the throttle fail-open just fixed, and it is inconsistent
+    with how the missing-throttle-rule case is now handled. Untested.
+  Recommendation carried forward from the implementer: config.ts (or the CLI
+    wiring in Task 13, which knows the adapter list) should validate that every
+    wired adapter has a throttle rule, so the gap is caught at startup.
+Task 12: complete (commits ba23b68..9fc41a7, review by controller directly)
+  Implementer self-caught a real defect in the PLAN's own bulk-approve code:
+  "Одобрить всё" re-fetched /api/pending and approved using the STORED letter,
+  silently discarding any unsaved textarea edit -- violating the task's own
+  "the textarea is authoritative" constraint. Fixed to read live DOM.
+  Extended beyond the brief per controller instruction: approved-but-unsent
+  rows are listed and cancellable, since Queue.skip now accepts them and the
+  sender's long pauses leave a real window to change one's mind.
+  Illegal transitions surface as 409 with the guard's message, never an
+  unhandled 500. Genuine server faults still return 500.
+  Controller verification: binds 127.0.0.1 (not 0.0.0.0); tests prove the
+  edited letter persists, that a duplicate approve does NOT overwrite the
+  letter, and that a request to the machine's external IPv4 is refused.
