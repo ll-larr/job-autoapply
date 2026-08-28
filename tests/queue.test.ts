@@ -60,22 +60,101 @@ describe('Queue переходы статусов', () => {
   });
 });
 
+describe('Queue защита переходов статусов', () => {
+  it('approve на уже sent строке не возвращает её в approved (защита от двойной отправки)', () => {
+    q.insertPending(mkVacancy('20'), 50, [], 'l', 'hybrid');
+    const row = q.listByStatus('pending')[0]!;
+    q.approve(row.id);
+    q.markSent(row.id);
+    expect(() => q.approve(row.id)).toThrow();
+    expect(q.listByStatus('approved')).toHaveLength(0);
+    expect(q.listByStatus('sent')).toHaveLength(1);
+  });
+
+  it('markSent на pending строке не пропускает согласование', () => {
+    q.insertPending(mkVacancy('21'), 50, [], 'l', 'hybrid');
+    const row = q.listByStatus('pending')[0]!;
+    expect(() => q.markSent(row.id)).toThrow();
+    expect(q.listByStatus('sent')).toHaveLength(0);
+    expect(q.listByStatus('pending')).toHaveLength(1);
+  });
+
+  it('skip на уже approved строке отклоняется', () => {
+    q.insertPending(mkVacancy('22'), 50, [], 'l', 'hybrid');
+    const row = q.listByStatus('pending')[0]!;
+    q.approve(row.id);
+    expect(() => q.skip(row.id)).toThrow();
+    expect(q.listByStatus('skipped')).toHaveLength(0);
+  });
+
+  it('markFailed на pending строке отклоняется', () => {
+    q.insertPending(mkVacancy('23'), 50, [], 'l', 'hybrid');
+    const row = q.listByStatus('pending')[0]!;
+    expect(() => q.markFailed(row.id, 'причина')).toThrow();
+    expect(q.listByStatus('failed')).toHaveLength(0);
+  });
+
+  it('ошибка при нелегальном переходе называет id и текущий статус', () => {
+    q.insertPending(mkVacancy('27'), 50, [], 'l', 'hybrid');
+    const row = q.listByStatus('pending')[0]!;
+    q.approve(row.id);
+    q.markSent(row.id);
+    expect(() => q.approve(row.id)).toThrow(new RegExp(`${row.id}`));
+    expect(() => q.approve(row.id)).toThrow(/sent/);
+  });
+
+  it('легальные переходы pending→approved→sent по-прежнему работают', () => {
+    q.insertPending(mkVacancy('24'), 50, [], 'l', 'hybrid');
+    const row = q.listByStatus('pending')[0]!;
+    expect(() => q.approve(row.id)).not.toThrow();
+    expect(() => q.markSent(row.id)).not.toThrow();
+    expect(q.listByStatus('sent')).toHaveLength(1);
+  });
+
+  it('легальный переход pending→skipped по-прежнему работает', () => {
+    q.insertPending(mkVacancy('25'), 50, [], 'l', 'hybrid');
+    const row = q.listByStatus('pending')[0]!;
+    expect(() => q.skip(row.id)).not.toThrow();
+    expect(q.listByStatus('skipped')).toHaveLength(1);
+  });
+
+  it('легальный переход approved→failed по-прежнему работает', () => {
+    q.insertPending(mkVacancy('26'), 50, [], 'l', 'hybrid');
+    const row = q.listByStatus('pending')[0]!;
+    q.approve(row.id);
+    expect(() => q.markFailed(row.id, 'причина')).not.toThrow();
+    expect(q.listByStatus('failed')).toHaveLength(1);
+  });
+});
+
 describe('Queue восстановление после обрыва', () => {
-  it('approved без sent_at остаются в работе и считаются recoverStuck', () => {
+  it('approved без sent_at остаются в работе и считаются countStuckApproved', () => {
     q.insertPending(mkVacancy('4'), 50, [], 'l', 'hybrid');
     const row = q.listByStatus('pending')[0]!;
     q.approve(row.id);
-    expect(q.recoverStuck()).toBe(1);
+    expect(q.countStuckApproved()).toBe(1);
     expect(q.listByStatus('approved')).toHaveLength(1);
   });
 
-  it('отправленные recoverStuck не трогает', () => {
+  it('отправленные countStuckApproved не трогает', () => {
     q.insertPending(mkVacancy('5'), 50, [], 'l', 'hybrid');
     const row = q.listByStatus('pending')[0]!;
     q.approve(row.id);
     q.markSent(row.id);
-    expect(q.recoverStuck()).toBe(0);
+    expect(q.countStuckApproved()).toBe(0);
     expect(q.listByStatus('sent')).toHaveLength(1);
+  });
+});
+
+describe('Queue честность типов после JSON round-trip', () => {
+  it('vacancy.postedAt в прочитанной строке — настоящий Date, а не строка, и указывает на тот же момент', () => {
+    const postedAtIso = '2026-08-20T00:00:00.000Z';
+    const v = mkVacancy('28');
+    expect(v.postedAt.toISOString()).toBe(postedAtIso);
+    q.insertPending(v, 50, [], 'l', 'hybrid');
+    const row = q.listByStatus('pending')[0]!;
+    expect(row.vacancy.postedAt).toBeInstanceOf(Date);
+    expect(row.vacancy.postedAt.getTime()).toBe(new Date(postedAtIso).getTime());
   });
 });
 
