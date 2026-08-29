@@ -22,6 +22,12 @@ export interface GenerateLetterOptions {
    * на другую. Для жёстко заданной модели повтор помогает от временных 429.
    */
   attemptsPerModel?: number;
+  /**
+   * Потолок на одну попытку, мс. По умолчанию 90 000. Бесплатные модели умеют
+   * вставать намертво или тянуть минутами: живой прогон 2026-08-30 отдал письмо
+   * через 371 секунду. Без потолка один такой запрос стопорит весь конвейер.
+   */
+  timeoutMs?: number;
   /** Для тестов — подмена сетевого fetch, как в src/adapters/hrge.ts. */
   fetchImpl?: typeof fetch;
 }
@@ -173,7 +179,23 @@ export function isUsableLetter(text: string, input: LetterInput): boolean {
 
   const squash = (s: string): string =>
     s.replace(PLACEHOLDER, ' ').replace(/\{\{[^}]*\}\}/g, ' ').replace(/\s+/g, ' ').trim();
-  return squash(trimmed) !== squash(input.template);
+  if (squash(trimmed) === squash(input.template)) return false;
+
+  // Постоянные куски скелета обязаны дойти дословно. Скелет — утверждённый
+  // человеком голос, модели поручено только заполнить врезки. Живой прогон
+  // 2026-08-30 показал, что слабая модель вместо этого переписывает скелет и
+  // портит его: "интервьюирую" превратилось в "intervieuирую", "защищаю" в
+  // "защищай". Такое письмо выглядит заполненным и гейт выше проходит, но
+  // отправлять его нельзя.
+  const out = squash(trimmed);
+  for (const chunk of input.template.split(/\{\{[^}]*\}\}/)) {
+    const fixed = squash(chunk);
+    // Короткие огрызки между плейсхолдерами не проверяем: на них ложные
+    // срабатывания от разницы в пунктуации.
+    if (fixed.length < 40) continue;
+    if (!out.includes(fixed)) return false;
+  }
+  return true;
 }
 
 export async function generateLetter(
@@ -193,10 +215,15 @@ export async function generateLetter(
   // модель. Без повторов цепочка из одной записи отбраковала бы ответ с
   // вырезанными плейсхолдерами и сразу вернула пустое письмо.
   const attempts = options.attemptsPerModel ?? 3;
+  const timeoutMs = options.timeoutMs ?? 90_000;
 
   for (const model of options.models) {
     for (let attempt = 0; attempt < attempts; attempt++) {
     try {
+      // Таймаут обязателен. Бесплатные модели умеют вставать намертво: живой
+      // прогон 2026-08-30 провисел больше пяти минут без единого байта ответа.
+      // Без ограничения один такой запрос застопорил бы весь конвейер, а не
+      // только одно письмо, и человек не увидел бы очередь вообще.
       const res = await fetchImpl(OPENROUTER_URL, {
         method: 'POST',
         headers: {
@@ -204,6 +231,7 @@ export async function generateLetter(
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ model, messages: prompt.messages }),
+        signal: AbortSignal.timeout(timeoutMs),
       });
       if (!res.ok) continue;
 
