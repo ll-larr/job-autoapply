@@ -161,14 +161,55 @@ describe('generateLetter', () => {
       );
     }) as unknown as typeof fetch;
 
+    // attemptsPerModel: 1 — здесь проверяется именно переход между записями,
+    // а не повторы внутри одной. Повторы проверяются отдельным тестом ниже.
     const r = await generateLetter(
       input,
-      { models: ['model-a:free', 'model-b:free'], fetchImpl },
+      { models: ['model-a:free', 'model-b:free'], attemptsPerModel: 1, fetchImpl },
     );
 
     expect(calledModels).toEqual(['model-a:free', 'model-b:free']);
     expect(r.letter).toBe('ПИСЬМО ОТ ВТОРОЙ МОДЕЛИ');
     expect(r.mode).toBe('hybrid');
+  });
+
+  it('повторяет одну и ту же запись, прежде чем идти дальше', async () => {
+    // Нужно из-за openrouter/free: это метамодель, и повторный вызов может
+    // уйти на другую живую модель под капотом. Без повторов цепочка из одной
+    // записи сдавалась бы после первой же неудачи.
+    process.env['OPENROUTER_API_KEY'] = 'test-key';
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      if (calls < 3) return new Response('rate limited', { status: 429 });
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: 'ПИСЬМО С ТРЕТЬЕЙ ПОПЫТКИ' } }] }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+
+    const r = await generateLetter(input, { models: ['openrouter/free'], fetchImpl });
+
+    expect(calls).toBe(3);
+    expect(r.letter).toBe('ПИСЬМО С ТРЕТЬЕЙ ПОПЫТКИ');
+  });
+
+  it('сдаётся после исчерпания попыток и возвращает пустое письмо', async () => {
+    process.env['OPENROUTER_API_KEY'] = 'test-key';
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      return new Response('rate limited', { status: 429 });
+    }) as unknown as typeof fetch;
+
+    const r = await generateLetter(
+      input,
+      { models: ['openrouter/free'], attemptsPerModel: 2, fetchImpl },
+    );
+
+    expect(calls).toBe(2);
+    expect(r.letter).toBe('');
+    expect(r.mode).toBe('none');
   });
 
   it('когда все модели из списка отвечают ошибкой, возвращает пустое письмо и режим none', async () => {

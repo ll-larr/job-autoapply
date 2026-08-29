@@ -15,6 +15,13 @@ export interface LetterInput {
 export interface GenerateLetterOptions {
   /** Модели OpenRouter, в порядке попытки. Первая, что ответит успешно, и используется. */
   models: string[];
+  /**
+   * Сколько раз пробовать одну и ту же запись, прежде чем перейти к следующей.
+   * По умолчанию 3. Имеет смысл, потому что `openrouter/free` — метамодель:
+   * она сама выбирает живую бесплатную модель, и повторный вызов может уйти
+   * на другую. Для жёстко заданной модели повтор помогает от временных 429.
+   */
+  attemptsPerModel?: number;
   /** Для тестов — подмена сетевого fetch, как в src/adapters/hrge.ts. */
   fetchImpl?: typeof fetch;
 }
@@ -179,7 +186,16 @@ export async function generateLetter(
   const fetchImpl = options.fetchImpl ?? fetch;
   const prompt = buildPrompt(input);
 
+  // Одну и ту же запись пробуем несколько раз, а не единожды. Это нужно из-за
+  // `openrouter/free`: это метамодель, которая сама выбирает живую бесплатную
+  // модель под капотом, и на каждый вызов может достаться разная. Поэтому
+  // повторный запрос к той же записи — не бессмысленное повторение, а другая
+  // модель. Без повторов цепочка из одной записи отбраковала бы ответ с
+  // вырезанными плейсхолдерами и сразу вернула пустое письмо.
+  const attempts = options.attemptsPerModel ?? 3;
+
   for (const model of options.models) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
     try {
       const res = await fetchImpl(OPENROUTER_URL, {
         method: 'POST',
@@ -202,8 +218,9 @@ export async function generateLetter(
       if (!isUsableLetter(text, input)) continue;
       return { letter: text, mode: input.mode };
     } catch {
-      // Эта модель недоступна — пробуем следующую в списке.
+      // Эта попытка не удалась — пробуем ещё раз, потом следующую запись.
       continue;
+    }
     }
   }
 

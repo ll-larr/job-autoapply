@@ -2,8 +2,6 @@
   "minScore": 40,
   "letterFullThreshold": 75,
   "letterModels": [
-    "google/gemma-4-31b-it:free",
-    "z-ai/glm-5.2:free",
     "openrouter/free"
   ],
   "throttle": {

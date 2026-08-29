@@ -26,10 +26,10 @@ const [title = '', company = '', geo = ''] = raw;
 const description = raw.slice(3).join('\n').trim();
 
 const config = loadConfig();
-// Резюме берём из data/resume.txt. Раньше здесь стоял путь к .md на рабочем
-// столе, но 2026-08-29 пользователь пересобрал резюме, .md исчез, и остались
-// только DOCX и PDF. Текст вытащен из DOCX — он актуальнее генератора.
-const resume = readFileSync('data/resume.txt', 'utf8');
+// Резюме лежит в корне проекта: пользователь положил актуальный .md туда
+// 2026-08-30, чтобы у конвейера был один постоянный источник вместо
+// вытаскивания текста из DOCX на рабочем столе.
+const resume = readFileSync('CV кандидат Бизнес-аналитик.md', 'utf8');
 
 const vacancy = normalizeVacancy({
   source: 'hh',
