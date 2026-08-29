@@ -1,15 +1,14 @@
 Hello,
 
-I'm applying for the {{TITLE}} role at {{COMPANY}}.
-
 {{HOOK}}
 
-Relevant background: requirements gathering and BRD/FSD authoring, BPMN
-process modelling, SQL and data analysis, REST/Kafka integrations, and
-hands-on work with LLM-based product pipelines.
+I work as a business analyst, mostly on the seam between requirements and
+delivery. I write BRD and FSD, model processes in BPMN, pull my own data in
+SQL, and spec integrations over REST and Kafka. Recently that has been mostly
+LLM product work.
 
 {{FIT}}
 
-Happy to discuss further. CV attached.
+If this looks like a fit, I can talk this week.
 
 Artem Lukyanenko
