@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { buildPrompt, pickTemplate, pickMode, generateLetter } from '../src/core/letter.js';
+import { buildPrompt, pickTemplate, pickMode, generateLetter, isUsableLetter } from '../src/core/letter.js';
+import type { LetterInput } from '../src/core/letter.js';
 import { normalizeVacancy } from '../src/core/vacancy.js';
 
 function mk(over: Partial<Parameters<typeof normalizeVacancy>[0]> = {}) {
@@ -233,5 +234,63 @@ describe('generateLetter', () => {
     expect(r.letter).toBe('');
     expect(r.mode).toBe('none');
     expect(touched).toBe(false);
+  });
+});
+
+describe('isUsableLetter', () => {
+  const SKELETON = [
+    'Здравствуйте!',
+    '',
+    '{{HOOK}}',
+    '',
+    'Я аналитик.',
+    '',
+    '{{FIT}}',
+    '',
+    'Артём',
+  ].join('\n');
+
+  const base = (over: Partial<LetterInput> = {}): LetterInput => ({
+    vacancy: mk(),
+    matched: [],
+    mode: 'hybrid',
+    resume: RESUME,
+    template: SKELETON,
+    ...over,
+  });
+
+  it('отбраковывает скелет, из которого плейсхолдеры просто вырезали', () => {
+    // Ровно то, что вернула живая модель 2026-08-29: письмо синтаксически
+    // чистое, но про конкретную вакансию в нём нет ни слова.
+    const stripped = ['Здравствуйте!', '', 'Я аналитик.', '', 'Артём'].join('\n');
+    expect(isUsableLetter(stripped, base())).toBe(false);
+  });
+
+  it('отбраковывает текст с незаполненным плейсхолдером', () => {
+    expect(isUsableLetter(SKELETON, base())).toBe(false);
+  });
+
+  it('отбраковывает пустой ответ', () => {
+    expect(isUsableLetter('   ', base())).toBe(false);
+  });
+
+  it('принимает письмо, где врезки заполнены', () => {
+    const filled = [
+      'Здравствуйте!',
+      '',
+      'Вас зацепила автоматизация закупок.',
+      '',
+      'Я аналитик.',
+      '',
+      'Вёл AS-IS в похожем проекте.',
+      '',
+      'Артём',
+    ].join('\n');
+    expect(isUsableLetter(filled, base())).toBe(true);
+  });
+
+  it('в режиме full скелет не с чем сравнивать, проверяются только плейсхолдеры', () => {
+    expect(isUsableLetter('Любой связный текст письма.', base({ mode: 'full' }))).toBe(true);
+    expect(isUsableLetter('Текст с {{FIT}} внутри.', base({ mode: 'full' }))).toBe(false);
   });
 });
