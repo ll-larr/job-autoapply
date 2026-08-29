@@ -10,6 +10,7 @@ import type { Adapter, ApplyResult } from '../src/adapters/types.js';
 const CONFIG = {
   minScore: 40,
   letterFullThreshold: 75,
+  letterModels: ['model-a:free'],
   throttle: { hh: { maxPerHour: 2, maxPerDay: 10, minDelayMs: 0, maxDelayMs: 0 } },
 };
 

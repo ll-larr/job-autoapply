@@ -1,6 +1,11 @@
 {
   "minScore": 40,
   "letterFullThreshold": 75,
+  "letterModels": [
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "google/gemma-4-31b-it:free",
+    "minimax/minimax-m3:free"
+  ],
   "throttle": {
     "hh": { "maxPerHour": 10, "maxPerDay": 40, "minDelayMs": 20000, "maxDelayMs": 90000 },
     "hrge": { "maxPerHour": 15, "maxPerDay": 50, "minDelayMs": 10000, "maxDelayMs": 45000 }

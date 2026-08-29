@@ -1,4 +1,3 @@
-import type Anthropic from '@anthropic-ai/sdk';
 import type { Vacancy } from './vacancy.js';
 import type { LetterMode } from './queue.js';
 
@@ -13,9 +12,18 @@ export interface LetterInput {
   template: string;
 }
 
+export interface GenerateLetterOptions {
+  /** Модели OpenRouter, в порядке попытки. Первая, что ответит успешно, и используется. */
+  models: string[];
+  /** Для тестов — подмена сетевого fetch, как в src/adapters/hrge.ts. */
+  fetchImpl?: typeof fetch;
+}
+
 export interface PromptParts {
-  system: Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }>;
-  messages: Array<{ role: 'user'; content: string }>;
+  messages: [
+    system: { role: 'system'; content: string },
+    user: { role: 'user'; content: string },
+  ];
 }
 
 export function pickMode(score: number, threshold: number): LetterMode {
@@ -29,26 +37,46 @@ export function pickTemplate(v: Vacancy, matched: string[]): TemplateName {
   return 'fullstack-analyst';
 }
 
+const WRITING_RULES = `Правила письма:
+- Никаких длинных тире в тексте письма. Только запятые и точки.
+- Не начинай с упоминания того, что это отклик на вакансию, или с названия вакансии и компании: адресат это и так знает.
+- Никаких списков через двоеточие вроде "Из релевантного:" или "Мой профиль:". Пиши связной прозой.
+- Не заканчивай письмо штампами вроде "Готов обсудить детали" или "Резюме прикреплено". Заканчивай конкретной просьбой или вопросом.
+- Под полным запретом слова и обороты: "в современном мире", "динамичный", "synergy", "команда профессионалов", "амбициозный", "не только... но и", "хочу отметить", "стоит подчеркнуть".
+- Будь конкретен: вместо прилагательного бери цифру, название инструмента или конкретный проект из резюме. Не выдумывай факты, которых нет в резюме.
+- Варьируй длину предложений, не делай их все одной формы.
+- Не больше одного восклицательного знака на всё письмо, и только в приветствии.`;
+
 const INSTRUCTION_HYBRID = `Ты помогаешь кандидату откликаться на вакансии бизнес-аналитика.
 Тебе дан скелет письма с плейсхолдерами {{HOOK}} и {{FIT}}.
 Замени {{TITLE}} и {{COMPANY}} на данные вакансии.
 Вместо {{HOOK}} напиши одно-два предложения о том, что конкретно в этой компании
 или продукте делает вакансию интересной. Опирайся только на текст вакансии.
 Вместо {{FIT}} напиши одно-два предложения, связывающих опыт из резюме
-с конкретными требованиями вакансии.
-Не выдумывай фактов, которых нет в резюме. Верни только готовое письмо, без пояснений.`;
+с конкретными требованиями вакансии. В {{FIT}} обязательно должна быть хотя бы одна
+конкретная опора из резюме: названный проект, инструмент или цифра, привязанная
+к тому, что вакансия реально просит.
+Не выдумывай фактов, которых нет в резюме. Верни только готовое письмо, без пояснений.
+
+${WRITING_RULES}`;
 
 const INSTRUCTION_FULL = `Ты помогаешь кандидату откликаться на вакансии бизнес-аналитика.
 Напиши сопроводительное письмо с нуля под конкретную вакансию.
 Держи объём в 4–6 абзацев, деловой тон без канцелярита и без превосходных степеней.
 Опирайся только на факты из резюме — ничего не выдумывай.
 Начни с обращения, закончи подписью «кандидат».
-Верни только письмо, без пояснений.`;
+Верни только письмо, без пояснений.
+
+${WRITING_RULES}`;
 
 /**
- * Порядок блоков определяет попадание в кэш. Стабильное (инструкция + резюме)
- * идёт первым и помечается cache_control. Волатильное (текст вакансии)
- * идёт в messages, после последнего брейкпоинта.
+ * Порядок сообщений: стабильное (инструкция + резюме, в hybrid-режиме — ещё
+ * и скелет) идёт первым как system-сообщение, волатильное (текст вакансии) —
+ * вторым, как user-сообщение. Это просто гигиена расположения: стабильный
+ * префикс первым не мешает и кое-где помогает — некоторые провайдеры кешируют
+ * запросы на своей стороне без каких-либо явных маркеров от нас. Формального
+ * контроля над этим у нас нет: OpenRouter не поддерживает Anthropic-специфичный
+ * `cache_control`, поэтому мы его не отправляем и не обещаем экономию на кеше.
  */
 export function buildPrompt(input: LetterInput): PromptParts {
   const instruction = input.mode === 'full' ? INSTRUCTION_FULL : INSTRUCTION_HYBRID;
@@ -68,42 +96,65 @@ export function buildPrompt(input: LetterInput): PromptParts {
   ].filter((s) => s !== '').join('\n');
 
   return {
-    system: [{ type: 'text', text: stable, cache_control: { type: 'ephemeral' } }],
-    messages: [{ role: 'user', content: volatile }],
+    messages: [
+      { role: 'system', content: stable },
+      { role: 'user', content: volatile },
+    ],
   };
 }
 
+const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+
+/** Достаёт текст ответа из тела OpenRouter chat-completions, не веря его форме. */
+function extractText(body: unknown): string | undefined {
+  const choices = (body as { choices?: unknown })?.choices;
+  if (!Array.isArray(choices) || choices.length === 0) return undefined;
+  const first = choices[0] as { message?: { content?: unknown } } | undefined;
+  const content = first?.message?.content;
+  return typeof content === 'string' && content !== '' ? content : undefined;
+}
+
+const EMPTY_RESULT = { letter: '', mode: 'none' as const };
+
+/**
+ * Пробует модели из `options.models` по порядку через OpenRouter. Любой сбой —
+ * нет ключа, сетевая ошибка, HTTP-ошибка, ответ без текста — переходит
+ * к следующей модели, а не бросает. Если ни одна модель не ответила,
+ * возвращается пустое письмо с mode 'none': запись всё равно попадёт
+ * в очередь, человек увидит её пустой и напишет письмо руками. Потеря
+ * вакансии из-за сбоя генерации — ровно то, что этот контракт не даёт
+ * случиться.
+ */
 export async function generateLetter(
   input: LetterInput,
-  client: Anthropic,
+  options: GenerateLetterOptions,
 ): Promise<{ letter: string; mode: LetterMode }> {
-  const prompt = buildPrompt(input);
-  try {
-    // The installed @anthropic-ai/sdk (0.70.1) types `thinking` as
-    // `ThinkingConfigEnabled | ThinkingConfigDisabled`; `enabled` carries a
-    // mandatory `budget_tokens`. There is no `'adaptive'` variant in this
-    // SDK version's types — it's a newer API mode the types haven't caught
-    // up to yet — and `budget_tokens` is exactly the field this model
-    // rejects with HTTP 400. No value of the current union expresses what
-    // we need to send, so this one field needs a cast; every other field
-    // below (system blocks with cache_control, messages, model) is checked
-    // by the compiler against `MessageCreateParamsNonStreaming` with no
-    // cast at all.
-    const res = await client.messages.create({
-      model: 'claude-opus-5',
-      max_tokens: 2000,
-      thinking: { type: 'adaptive' } as unknown as Anthropic.Messages.ThinkingConfigParam,
-      system: prompt.system,
-      messages: prompt.messages,
-    });
+  const apiKey = process.env['OPENROUTER_API_KEY'];
+  if (!apiKey) return EMPTY_RESULT;
 
-    const block = res.content.find(
-      (b): b is Anthropic.Messages.TextBlock => b.type === 'text',
-    );
-    return { letter: block?.text ?? '', mode: input.mode };
-  } catch {
-    // Письмо не сгенерировалось — запись всё равно попадёт в очередь,
-    // человек увидит её пустой и напишет письмо руками.
-    return { letter: '', mode: 'none' };
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const prompt = buildPrompt(input);
+
+  for (const model of options.models) {
+    try {
+      const res = await fetchImpl(OPENROUTER_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ model, messages: prompt.messages }),
+      });
+      if (!res.ok) continue;
+
+      const text = extractText(await res.json());
+      if (text === undefined) continue;
+      return { letter: text, mode: input.mode };
+    } catch {
+      // Эта модель недоступна — пробуем следующую в списке.
+      continue;
+    }
   }
+
+  return EMPTY_RESULT;
 }
