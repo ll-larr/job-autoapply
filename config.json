@@ -2,12 +2,22 @@
   "minScore": 40,
   "letterFullThreshold": 75,
   "letterModels": [
+    "google/gemma-4-31b-it:free",
     "z-ai/glm-5.2:free",
-    "deepseek/deepseek-v4-flash-latest",
-    "google/gemini-2.5-flash-lite"
+    "openrouter/free"
   ],
   "throttle": {
-    "hh": { "maxPerHour": 10, "maxPerDay": 40, "minDelayMs": 20000, "maxDelayMs": 90000 },
-    "hrge": { "maxPerHour": 15, "maxPerDay": 50, "minDelayMs": 10000, "maxDelayMs": 45000 }
+    "hh": {
+      "maxPerHour": 10,
+      "maxPerDay": 40,
+      "minDelayMs": 20000,
+      "maxDelayMs": 90000
+    },
+    "hrge": {
+      "maxPerHour": 15,
+      "maxPerDay": 50,
+      "minDelayMs": 10000,
+      "maxDelayMs": 45000
+    }
   }
 }
