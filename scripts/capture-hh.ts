@@ -28,8 +28,12 @@ function notLoggedInAndBail(context: string): never {
 const ctx = await openProfile(false);
 const page = await ctx.newPage();
 
-await page.goto(SEARCH_URL);
-await page.waitForLoadState('networkidle');
+// waitUntil:'load' + networkidle на hh.ru не наступают: страница держит
+// фоновые запросы (реклама, опросы, аналитика) неопределённо долго. Ждём
+// domcontentloaded, а затем — то, что нам действительно нужно: карточки выдачи.
+await page.goto(SEARCH_URL, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+await page.locator('a[data-qa="serp-item__title"]').first()
+  .waitFor({ state: 'attached', timeout: 30_000 });
 
 if (!(await isLoggedIn(page))) {
   await ctx.close();
@@ -44,8 +48,15 @@ const firstLink = await page.locator('a[data-qa="serp-item__title"]').first().ge
 
 let vacancyWritten = false;
 if (firstLink) {
-  await page.goto(firstLink);
-  await page.waitForLoadState('networkidle');
+  await page.goto(firstLink, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  // Описание вакансии — то, ради чего снимается эта фикстура. Ждём именно его.
+  await page.locator('[data-qa="vacancy-description"]')
+    .waitFor({ state: 'attached', timeout: 30_000 })
+    .catch(() => {
+      console.error('ПРЕДУПРЕЖДЕНИЕ: [data-qa="vacancy-description"] не появился за 30с —');
+      console.error('разметка hh.ru могла измениться. Фикстура всё равно будет записана,');
+      console.error('но проверь её глазами перед тем, как выводить из неё селекторы.');
+    });
 
   if (!(await isLoggedIn(page))) {
     console.error(`(${OUT}/hh-search.html уже записан этим прогоном — сессия слетела уже`);
