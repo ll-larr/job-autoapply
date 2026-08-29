@@ -65,6 +65,34 @@ describe('buildPrompt — порядок сообщений для OpenRouter', 
     });
     expect(JSON.stringify(p)).not.toContain('cache_control');
   });
+
+  it('инструкция запрещает упоминать диплом и университет, в обоих режимах', () => {
+    const hybrid = buildPrompt({ vacancy: mk(), matched: [], mode: 'hybrid', resume: RESUME, template: 'x' });
+    const full = buildPrompt({ vacancy: mk(), matched: [], mode: 'full', resume: RESUME, template: 'x' });
+    expect(hybrid.messages[0].content).toMatch(/диплом/i);
+    expect(hybrid.messages[0].content).toMatch(/университет/i);
+    expect(full.messages[0].content).toMatch(/диплом/i);
+    expect(full.messages[0].content).toMatch(/университет/i);
+  });
+
+  it('инструкция запрещает преувеличивать SQL и авторство API-контрактов, в обоих режимах', () => {
+    const hybrid = buildPrompt({ vacancy: mk(), matched: [], mode: 'hybrid', resume: RESUME, template: 'x' });
+    const full = buildPrompt({ vacancy: mk(), matched: [], mode: 'full', resume: RESUME, template: 'x' });
+    for (const p of [hybrid, full]) {
+      expect(p.messages[0].content).toMatch(/Postman/);
+      expect(p.messages[0].content).toMatch(/контракт/i);
+      expect(p.messages[0].content).toMatch(/сложные запросы с нуля/i);
+    }
+  });
+
+  it('инструкция требует прямо назвать junior+/middle для стажировок, в обоих режимах', () => {
+    const hybrid = buildPrompt({ vacancy: mk(), matched: [], mode: 'hybrid', resume: RESUME, template: 'x' });
+    const full = buildPrompt({ vacancy: mk(), matched: [], mode: 'full', resume: RESUME, template: 'x' });
+    for (const p of [hybrid, full]) {
+      expect(p.messages[0].content).toMatch(/стажировка/i);
+      expect(p.messages[0].content).toMatch(/junior\+\/middle/);
+    }
+  });
 });
 
 describe('generateLetter', () => {
