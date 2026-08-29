@@ -2,9 +2,9 @@
   "minScore": 40,
   "letterFullThreshold": 75,
   "letterModels": [
-    "nvidia/nemotron-3-ultra-550b-a55b:free",
-    "google/gemma-4-31b-it:free",
-    "minimax/minimax-m3:free"
+    "z-ai/glm-5.2:free",
+    "deepseek/deepseek-v4-flash-latest",
+    "google/gemini-2.5-flash-lite"
   ],
   "throttle": {
     "hh": { "maxPerHour": 10, "maxPerDay": 40, "minDelayMs": 20000, "maxDelayMs": 90000 },
