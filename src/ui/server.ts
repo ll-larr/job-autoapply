@@ -2,6 +2,9 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Queue } from '../core/queue.js';
+import type { Config } from '../core/config.js';
+import type { Adapter } from '../adapters/types.js';
+import { Sender, clearStop, type SendReport } from '../core/sender.js';
 
 /** Сколько времени отменённая вакансия остаётся во вкладке «Отменённые». */
 const SKIPPED_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -19,9 +22,34 @@ function json(res: ServerResponse, body: unknown, status = 200): void {
   res.end(JSON.stringify(body));
 }
 
+/**
+ * Состояние отправки для панели.
+ *
+ * Отправка идёт минутами: у каждой площадки свой троттлинг со случайными
+ * паузами, и семь заявок легко растягиваются на четверть часа. Держать на
+ * это время открытым HTTP-запрос нельзя — браузер оборвёт его по таймауту,
+ * и человек решит, что всё сломалось, хотя отправка продолжается. Поэтому
+ * запуск отвечает сразу, а панель опрашивает состояние.
+ */
+interface SendState {
+  running: boolean;
+  startedAt: number | null;
+  report: SendReport | null;
+  error: string | null;
+}
+
+export interface PanelDeps {
+  /** Нужны только для отправки. Без них кнопка «Отправить всё» недоступна. */
+  adapters?: Adapter[];
+  config?: Config;
+}
+
 export async function startPanel(
-  queue: Queue, port: number,
-): Promise<{ close(): Promise<void> }> {
+  queue: Queue, port: number, deps: PanelDeps = {},
+): Promise<{ port: number; close(): Promise<void> }> {
+  const send: SendState = { running: false, startedAt: null, report: null, error: null };
+  const canSend = deps.adapters !== undefined && deps.config !== undefined;
+
   const server = createServer(async (req, res) => {
     try {
       if (req.method === 'GET' && req.url === '/api/pending') {
@@ -44,6 +72,51 @@ export async function startPanel(
         // а не как архив всего отклонённого. Сами строки не удаляются —
         // иначе дедуп забыл бы вакансию и поиск притащил бы её снова.
         return json(res, queue.listRecentSkipped(SKIPPED_WINDOW_MS));
+      }
+
+      if (req.method === 'GET' && req.url === '/api/send/status') {
+        return json(res, {
+          running: send.running,
+          canSend,
+          report: send.report,
+          error: send.error,
+          approved: queue.listByStatus('approved').length,
+        });
+      }
+
+      if (req.method === 'POST' && req.url === '/api/send/start') {
+        if (!canSend) {
+          return json(res, { error: 'Панель запущена без адаптеров — отправка недоступна.' }, 409);
+        }
+        // Вторая отправка поверх идущей означала бы две попытки подать одну и
+        // ту же заявку одновременно. Отказываем явно, а не молча.
+        if (send.running) {
+          return json(res, { error: 'Отправка уже идёт.' }, 409);
+        }
+
+        send.running = true;
+        send.startedAt = Date.now();
+        send.report = null;
+        send.error = null;
+
+        // Намеренно не ждём: ответ уходит сразу, панель опрашивает статус.
+        void (async () => {
+          try {
+            clearStop();
+            const sender = new Sender(
+              queue,
+              new Map((deps.adapters ?? []).map((a) => [a.name, a])),
+              deps.config!,
+            );
+            send.report = await sender.run();
+          } catch (e) {
+            send.error = e instanceof Error ? e.message : String(e);
+          } finally {
+            send.running = false;
+          }
+        })();
+
+        return json(res, { started: true }, 202);
       }
 
       if (req.method === 'POST' && req.url === '/api/skipped/clear') {
@@ -93,9 +166,15 @@ export async function startPanel(
 
   // Слушаем только на loopback: панель раскрывает поиск вакансий и черновики
   // писем пользователя, она не должна быть видна из сети.
+  // Порт 0 просит систему выдать свободный. Возвращаем фактический, чтобы
+  // вызывающий не гадал: в тестах это снимает гонку за фиксированный порт
+  // между перезапусками панели.
   await new Promise<void>((r) => server.listen(port, '127.0.0.1', r));
+  const address = server.address();
+  const actualPort = typeof address === 'object' && address !== null ? address.port : port;
 
   return {
+    port: actualPort,
     close: () => new Promise<void>((r) => server.close(() => r())),
   };
 }

@@ -4,14 +4,37 @@
   <meta charset="utf-8">
   <title>Job Autoapply — очередь</title>
   <style>
-    body { font: 15px/1.5 system-ui, sans-serif; margin: 0; background: #f6f6f7; }
-    header { padding: 12px 20px; background: #fff; border-bottom: 1px solid #ddd;
-             position: sticky; top: 0; display: flex; gap: 12px; align-items: center; }
-    h2.section { margin: 20px 20px 0; font-size: 14px; color: #444;
-                 text-transform: uppercase; letter-spacing: 0.02em; }
+    body { font: 15px/1.5 system-ui, sans-serif; margin: 0; background: #f6f6f7; color: #1b1b1d; }
+
+    header { background: #fff; border-bottom: 1px solid #ddd; position: sticky; top: 0; z-index: 5; }
+    .bar { padding: 12px 20px 0; display: flex; gap: 12px; align-items: baseline; }
+    .bar strong { font-size: 16px; }
+
+    nav { display: flex; gap: 2px; padding: 10px 20px 0; }
+    .tab {
+      appearance: none; border: 1px solid transparent; border-bottom: none;
+      background: transparent; font: inherit; cursor: pointer;
+      padding: 8px 16px; border-radius: 6px 6px 0 0; color: #555;
+      position: relative; top: 1px;
+    }
+    .tab:hover { background: #f0f0f2; }
+    .tab[aria-selected="true"] {
+      background: #f6f6f7; border-color: #ddd; color: #1b1b1d; font-weight: 600;
+    }
+    .tab .n {
+      display: inline-block; margin-left: 7px; padding: 0 7px;
+      background: #e6e6ea; border-radius: 9px; font-size: 12px; font-weight: 500; color: #444;
+    }
+    .tab[aria-selected="true"] .n { background: #dcdce2; }
+    .tab:focus-visible { outline: 2px solid #3b6ea5; outline-offset: 2px; }
+
+    .actions { padding: 12px 20px 0; display: flex; gap: 8px; align-items: center; }
+    .hint { font-size: 13px; color: #666; }
+
     .card { display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
             background: #fff; margin: 16px 20px; padding: 16px;
             border: 1px solid #ddd; border-radius: 8px; }
+    .card.slim { grid-template-columns: 1fr auto; align-items: center; }
     .meta { font-size: 13px; color: #666; }
     .score { font-weight: 700; }
     .desc { max-height: 260px; overflow-y: auto; white-space: pre-wrap;
@@ -19,40 +42,90 @@
     textarea { width: 100%; min-height: 260px; font: 13px/1.5 ui-monospace, monospace; }
     button { padding: 6px 14px; cursor: pointer; }
     .empty { padding: 40px 20px; color: #666; }
+    [hidden] { display: none !important; }
   </style>
 </head>
 <body>
   <header>
-    <strong>Очередь откликов</strong>
-    <span id="count"></span>
-    <button id="approveAll">Одобрить всё со скором ≥ 75</button>
+    <div class="bar"><strong>Очередь откликов</strong></div>
+    <nav role="tablist">
+      <button class="tab" role="tab" id="tab-pending"  aria-selected="true"  aria-controls="pane-pending">В ожидании<span class="n" id="n-pending">0</span></button>
+      <button class="tab" role="tab" id="tab-approved" aria-selected="false" aria-controls="pane-approved">Одобрено<span class="n" id="n-approved">0</span></button>
+      <button class="tab" role="tab" id="tab-skipped"  aria-selected="false" aria-controls="pane-skipped">Отменённые<span class="n" id="n-skipped">0</span></button>
+    </nav>
   </header>
-  <div id="list"></div>
 
-  <h2 class="section">Отменённые <span id="skippedCount"></span>
-    <button id="clearSkipped" title="Убирает записи из этой вкладки. Сами вакансии остаются отклонёнными и в поиске больше не всплывут.">Очистить вкладку</button>
-  </h2>
-  <div id="skippedList"></div>
+  <section id="pane-pending" role="tabpanel" aria-labelledby="tab-pending">
+    <div class="actions">
+      <button id="approveAll">Одобрить всё со скором ≥ 75</button>
+    </div>
+    <div id="list"></div>
+  </section>
 
-  <h2 class="section">Одобрено, ждёт отправки <span id="approvedCount"></span></h2>
-  <div id="approvedList"></div>
+  <section id="pane-approved" role="tabpanel" aria-labelledby="tab-approved" hidden>
+    <div class="actions">
+      <button id="sendAll">Отправить всё</button>
+      <span class="hint" id="sendHint">Отправка необратима: отклик на hh.ru нельзя отозвать.</span>
+    </div>
+    <div id="approvedList"></div>
+  </section>
+
+  <section id="pane-skipped" role="tabpanel" aria-labelledby="tab-skipped" hidden>
+    <div class="actions">
+      <button id="clearSkipped">Очистить вкладку</button>
+      <span class="hint">Записи уходят отсюда сами через сутки. Вакансии остаются отклонёнными и в поиске больше не всплывут.</span>
+    </div>
+    <div id="skippedList"></div>
+  </section>
 
 <script>
-async function load() {
-  const [pendingRows, approvedRows] = await Promise.all([
-    fetchJson('/api/pending'),
-    fetchJson('/api/approved'),
-  ]);
-  renderPending(pendingRows);
-  renderApproved(approvedRows);
+const TABS = ['pending', 'approved', 'skipped'];
+
+function showTab(name) {
+  for (const t of TABS) {
+    const isActive = t === name;
+    document.getElementById('tab-' + t).setAttribute('aria-selected', String(isActive));
+    document.getElementById('pane-' + t).hidden = !isActive;
+  }
+  // Вкладка живёт в адресе, чтобы обновление страницы не выкидывало обратно
+  // на первую: после «Восстановить» или «Очистить вкладку» человек остаётся
+  // там, где работал.
+  history.replaceState(null, '', '#' + name);
+}
+
+for (const t of TABS) {
+  document.getElementById('tab-' + t).onclick = () => showTab(t);
 }
 
 async function fetchJson(url) {
   return (await fetch(url)).json();
 }
 
+async function post(url, body) {
+  return fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+async function load() {
+  const [pendingRows, approvedRows, skippedRows] = await Promise.all([
+    fetchJson('/api/pending'),
+    fetchJson('/api/approved'),
+    fetchJson('/api/skipped'),
+  ]);
+  renderPending(pendingRows);
+  renderApproved(approvedRows);
+  renderSkipped(skippedRows);
+}
+
+function setCount(name, n) {
+  document.getElementById('n-' + name).textContent = n;
+}
+
 function renderPending(rows) {
-  document.getElementById('count').textContent = rows.length + ' в ожидании';
+  setCount('pending', rows.length);
   const list = document.getElementById('list');
   list.innerHTML = '';
 
@@ -77,7 +150,7 @@ function renderPending(rows) {
       <div>
         <textarea></textarea>
         <div style="margin-top:8px; display:flex; gap:8px;">
-          <button data-act="approve">Отправить</button>
+          <button data-act="approve">Принять</button>
           <button data-act="skip">Пропустить</button>
         </div>
       </div>`;
@@ -97,7 +170,11 @@ function renderPending(rows) {
 }
 
 function renderApproved(rows) {
-  document.getElementById('approvedCount').textContent = '(' + rows.length + ')';
+  setCount('approved', rows.length);
+  // Любая перерисовка снимает взвод: если человек успел кликнуть что-то
+  // ещё, второй клик по «Отправить всё» не должен унаследовать готовность
+  // от намерения, о котором он уже забыл.
+  if (!sendPolling) resetSendButton(rows.length);
   const list = document.getElementById('approvedList');
   list.innerHTML = '';
 
@@ -136,44 +213,108 @@ function renderApproved(rows) {
   }
 }
 
-async function loadSkipped() {
-  const rows = await (await fetch('/api/skipped')).json();
-  document.getElementById('skippedCount').textContent = rows.length ? rows.length : '';
+function renderSkipped(rows) {
+  setCount('skipped', rows.length);
   const list = document.getElementById('skippedList');
   list.innerHTML = '';
-  if (!rows.length) return;
+
+  if (rows.length === 0) {
+    list.innerHTML = '<div class="empty">Пусто. Сюда попадает отменённое за последние сутки.</div>';
+    return;
+  }
+
   for (const r of rows) {
     const el = document.createElement('div');
-    el.className = 'card';
+    el.className = 'card slim';
     el.innerHTML = `
       <div>
         <div><a href="${r.vacancy.url}" target="_blank" rel="noopener">${r.vacancy.title}</a></div>
         <div class="meta">${r.vacancy.company} · ${r.vacancy.geo} · ${r.source} · скор ${r.score}</div>
       </div>
-      <div style="display:flex; align-items:flex-start;">
-        <button data-act="unskip">Восстановить</button>
-      </div>`;
+      <div><button data-act="unskip">Восстановить</button></div>`;
+
     el.querySelector('[data-act="unskip"]').onclick = async () => {
       await post('/api/unskip', { id: r.id });
-      load(); loadSkipped();
+      load();
     };
     list.appendChild(el);
   }
 }
 
-document.getElementById('clearSkipped').onclick = async () => {
-  const r = await (await post('/api/skipped/clear', {})).json();
-  if (r.cleared === 0) return;
-  loadSkipped();
+// Отправка в два шага. Первый клик только вооружает кнопку, второй запускает.
+// Причина не в перестраховке: подача на hh.ru необратима, работодатель видит
+// отклик сразу, и в этом проекте промах мышью уже стоил одной заявки. Один
+// клик тут слишком дёшев для действия, которое нельзя отменить.
+let sendArmed = false;
+let sendPolling = null;
+
+const sendBtn = document.getElementById('sendAll');
+const sendHint = document.getElementById('sendHint');
+
+function resetSendButton(approved) {
+  sendArmed = false;
+  sendBtn.disabled = approved === 0;
+  sendBtn.textContent = 'Отправить всё';
+  sendHint.textContent = approved === 0
+    ? 'Нечего отправлять.'
+    : 'Отправка необратима: отклик на hh.ru нельзя отозвать.';
+}
+
+sendBtn.onclick = async () => {
+  const st = await fetchJson('/api/send/status');
+  if (st.running) return;
+
+  if (!sendArmed) {
+    sendArmed = true;
+    sendBtn.textContent = `Точно отправить ${st.approved}? Нажми ещё раз`;
+    sendHint.textContent = 'Второй клик запустит подачу. Любое другое действие отменит.';
+    return;
+  }
+
+  sendArmed = false;
+  const res = await post('/api/send/start', {});
+  if (!res.ok) {
+    const err = await res.json();
+    sendHint.textContent = err.error ?? 'Не удалось запустить отправку.';
+    resetSendButton(st.approved);
+    return;
+  }
+  pollSend();
 };
 
-async function post(url, body) {
-  return fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+async function pollSend() {
+  if (sendPolling) return;
+  sendPolling = setInterval(async () => {
+    const st = await fetchJson('/api/send/status');
+    if (st.running) {
+      sendBtn.disabled = true;
+      sendBtn.textContent = 'Отправка идёт...';
+      sendHint.textContent = 'Между подачами стоят паузы, это надолго. Окно можно не держать.';
+      return;
+    }
+
+    clearInterval(sendPolling);
+    sendPolling = null;
+
+    if (st.error) {
+      sendHint.textContent = 'Отправка упала: ' + st.error;
+    } else if (st.report) {
+      const r = st.report;
+      const halted = r.halted
+        ? `, ОСТАНОВЛЕНО (${r.halted.reason})`
+        : '';
+      sendHint.textContent = `Отправлено ${r.sent}, не удалось ${r.failed}${halted}.`;
+    }
+    sendBtn.disabled = false;
+    sendBtn.textContent = 'Отправить всё';
+    load();
+  }, 3000);
 }
+
+document.getElementById('clearSkipped').onclick = async () => {
+  await post('/api/skipped/clear', {});
+  load();
+};
 
 document.getElementById('approveAll').onclick = async () => {
   // Читаем текущее значение textarea из живого DOM, а не письмо из
@@ -190,8 +331,15 @@ document.getElementById('approveAll').onclick = async () => {
   load();
 };
 
+showTab(TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'pending');
 load();
-loadSkipped();
+fetchJson('/api/send/status').then((st) => {
+  if (st.running) pollSend();
+  else if (!st.canSend) {
+    sendBtn.disabled = true;
+    sendHint.textContent = 'Панель запущена без адаптеров — отправляй через npm run send.';
+  }
+});
 </script>
 </body>
 </html>

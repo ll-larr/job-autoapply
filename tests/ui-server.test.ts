@@ -6,9 +6,12 @@ import { startPanel } from '../src/ui/server.js';
 import { Queue } from '../src/core/queue.js';
 import { normalizeVacancy } from '../src/core/vacancy.js';
 
-const PORT = 34567;
+// Порт 0 = система выдаёт свободный. Фиксированный порт создавал гонку между
+// перезапусками панели в beforeEach: следующий тест мог не достучаться до
+// ещё не освободившегося сокета и падал с ECONNRESET.
+let PORT = 0;
 let q: Queue;
-let panel: { close(): Promise<void> };
+let panel: { port: number; close(): Promise<void> };
 
 beforeEach(async () => {
   q = new Queue(join(mkdtempSync(join(tmpdir(), 'jaa-ui-')), 'test.db'));
@@ -20,7 +23,8 @@ beforeEach(async () => {
     }),
     80, ['sql'], 'исходное письмо', 'full',
   );
-  panel = await startPanel(q, PORT);
+  panel = await startPanel(q, 0);
+  PORT = panel.port;
 });
 afterEach(async () => { await panel.close(); q.close(); });
 
@@ -123,5 +127,35 @@ describe('панель слушает только loopback', () => {
     await expect(
       fetch(`http://${ip}:${PORT}/api/pending`, { signal: AbortSignal.timeout(1500) }),
     ).rejects.toThrow();
+  });
+});
+
+describe('панель — отправка', () => {
+  it('без адаптеров отправка недоступна и не запускается', async () => {
+    // Панель, поднятая без адаптеров (например, из теста), не должна уметь
+    // подавать заявки: это необратимое действие вовне.
+    const st = await (await fetch(`http://127.0.0.1:${PORT}/api/send/status`)).json() as
+      { canSend: boolean; running: boolean };
+    expect(st.canSend).toBe(false);
+    expect(st.running).toBe(false);
+
+    const res = await fetch(`http://127.0.0.1:${PORT}/api/send/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it('статус сообщает, сколько заявок ждёт отправки', async () => {
+    // Одобряем напрямую через очередь, а не через HTTP: здесь проверяется
+    // именно отчёт статуса, а не эндпоинт одобрения (он покрыт выше).
+    const row = q.listByStatus('pending')[0]!;
+    q.approve(row.id);
+
+    const st = await (await fetch(`http://127.0.0.1:${PORT}/api/send/status`)).json() as
+      { approved: number; running: boolean };
+    expect(st.approved).toBe(1);
+    expect(st.running).toBe(false);
   });
 });

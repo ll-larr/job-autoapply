@@ -383,9 +383,12 @@ async function main(): Promise<void> {
   }
 
   if (cmd === 'panel') {
+    // Конфиг нужен панели ради кнопки «Отправить всё»: отправка идёт через тот
+    // же Sender, что и npm run send, с теми же лимитами и предохранителями.
+    const config = loadConfig();
     const queue = new Queue(DB_PATH);
     const stuck = queue.countStuckApproved();
-    await startPanel(queue, PANEL_PORT);
+    await startPanel(queue, PANEL_PORT, { adapters: buildAdapters(), config });
     for (const line of formatPanelStartup(stuck, PANEL_PORT)) console.log(line);
     // Намеренно НЕ queue.close(): панель держит процесс живым, пока слушает
     // http; закрыть БД здесь значило бы, что первый же запрос к /api/pending
