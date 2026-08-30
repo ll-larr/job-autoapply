@@ -30,7 +30,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Queue, type Status } from './core/queue.js';
-import { loadConfig, type Config } from './core/config.js';
+import { loadConfig, type Config, type SearchQueryConfig } from './core/config.js';
 import { runSearch, type SearchReport } from './pipeline.js';
 import { Sender, requestStop, clearStop, isStopRequested } from './core/sender.js';
 import type { SendReport } from './core/sender.js';
@@ -40,7 +40,11 @@ import { HrGeAdapter } from './adapters/hrge.js';
 import { generateLetter, pickTemplate } from './core/letter.js';
 import type { Adapter } from './adapters/types.js';
 
-const DEFAULT_LIMIT = 10;
+// 500 — потолок, который пользователь выбрал 2026-08-30 сам, разобрав первую
+// живую очередь (см. resolveLimit ниже про то, почему потолок вообще
+// обязателен). --limit остаётся флагом именно для того, чтобы можно было
+// быстро прогнать поиск с меньшим числом при отладке.
+const DEFAULT_LIMIT = 500;
 const DB_PATH = 'data/queue.db';
 // Единственный постоянный источник резюме — файл в корне репозитория,
 // который пользователь положил и поддерживает сам (см. задание к этой
@@ -48,7 +52,6 @@ const DB_PATH = 'data/queue.db';
 // стол, не DOCX, не _generator/.
 const RESUME_PATH = 'CV кандидат Бизнес-аналитик.md';
 const PANEL_PORT = 4321;
-const DEFAULT_QUERY = 'бизнес-аналитик';
 
 const STATUS_ORDER: readonly Status[] = ['pending', 'approved', 'sent', 'failed', 'skipped'];
 
@@ -58,10 +61,24 @@ const STATUS_ORDER: readonly Status[] = ['pending', 'approved', 'sent', 'failed'
 // живого окружения (см. tests/cli.test.ts).
 // ============================================================================
 
-/** Всё после имени команды — это запрос, через пробел. Пусто → дефолт. */
-export function resolveSearchQuery(args: readonly string[]): string {
+/**
+ * Явный аргумент командной строки — это одна формулировка запроса, которая
+ * целиком перекрывает список из config.json#searchQueries (удобно для
+ * быстрой проверки одной фразы без per-query ограничений вроде juniorOnly —
+ * см. задание к этой задаче). Без аргумента — настроенный пользователем
+ * список формулировок как есть, constraints каждой формулировки сохраняются.
+ */
+export function resolveSearchQueries(
+  args: readonly string[],
+  configured: readonly SearchQueryConfig[],
+): SearchQueryConfig[] {
   const q = args.join(' ').trim();
-  return q === '' ? DEFAULT_QUERY : q;
+  return q === '' ? [...configured] : [{ query: q }];
+}
+
+/** Человекочитаемая метка списка запросов для заголовка отчёта — не про логику поиска. */
+export function formatQueryLabel(queries: readonly SearchQueryConfig[]): string {
+  return queries.map((q) => q.query).join(' | ');
 }
 
 export function groupBySource(rows: ReadonlyArray<{ source: string }>): Map<string, number> {
@@ -206,7 +223,8 @@ export interface SearchCommandDeps {
   queue: Queue;
   config: Config;
   adapters: Adapter[];
-  query: string;
+  /** Формулировки запроса. Разные фразы находят разные вакансии. */
+  queries: SearchQueryConfig[];
   /** Потолок на число вакансий за прогон. См. resolveLimit. */
   limit: number;
   resume: string;
@@ -231,7 +249,8 @@ export async function runSearchCommand(
   const report = await runSearch({
     queue: deps.queue,
     config: deps.config,
-    filters: { query: deps.query, maxResults: deps.limit },
+    queries: deps.queries,
+    maxResults: deps.limit,
     adapters: deps.adapters,
     generate: async (v, matched, mode) => {
       const templateName = deps.pickTemplateFn(v, matched);
@@ -349,8 +368,9 @@ async function main(): Promise<void> {
     const queue = new Queue(DB_PATH);
     try {
       const limit = resolveLimit(rest);
-      const query = resolveSearchQuery(
+      const queries = resolveSearchQueries(
         rest.filter((a, i) => a !== '--limit' && rest[i - 1] !== '--limit'),
+        config.searchQueries,
       );
       const resume = readFileSync(RESUME_PATH, 'utf8');
       const hasApiKey = Boolean(process.env['OPENROUTER_API_KEY']);
@@ -359,7 +379,7 @@ async function main(): Promise<void> {
         queue,
         config,
         adapters: buildAdapters(),
-        query,
+        queries,
         limit,
         resume,
         generateLetterFn: generateLetter,
@@ -367,7 +387,7 @@ async function main(): Promise<void> {
         readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
       });
 
-      for (const line of formatSearchReport(query, report, emptyLetters, hasApiKey)) {
+      for (const line of formatSearchReport(formatQueryLabel(queries), report, emptyLetters, hasApiKey)) {
         console.log(line);
       }
     } finally {

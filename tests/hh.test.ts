@@ -71,12 +71,20 @@ function isHhDocumentRequest(route: Route): boolean {
 }
 
 describe('buildSearchUrl', () => {
-  it('строит URL ровно по контракту text=<query>&area=1 — совпадает с scripts/capture-hh.ts', () => {
-    const url = buildSearchUrl('бизнес-аналитик');
-    expect(url).toBe(
-      'https://hh.ru/search/vacancy?text=%D0%B1%D0%B8%D0%B7%D0%BD%D0%B5%D1%81-'
-      + '%D0%B0%D0%BD%D0%B0%D0%BB%D0%B8%D1%82%D0%B8%D0%BA&area=1',
-    );
+  it('несёт запрос, регион и параметры пагинации', () => {
+    const u = new URL(buildSearchUrl('бизнес-аналитик'));
+    expect(u.origin + u.pathname).toBe('https://hh.ru/search/vacancy');
+    expect(u.searchParams.get('text')).toBe('бизнес-аналитик');
+    expect(u.searchParams.get('area')).toBe('1');
+    // Страницы нумеруются с нуля — так устроены ссылки пагинации в снятой
+    // фикстуре. items_on_page просим максимальный, чтобы при большом --limit
+    // не открывать вдвое больше страниц выдачи, чем нужно.
+    expect(u.searchParams.get('page')).toBe('0');
+    expect(u.searchParams.get('items_on_page')).toBe('100');
+  });
+
+  it('листает страницы по номеру', () => {
+    expect(new URL(buildSearchUrl('q', 3)).searchParams.get('page')).toBe('3');
   });
 });
 
@@ -311,8 +319,14 @@ describe('HhAdapter.search — интеграция через перехват 
     const adapter = new HhAdapter({ context });
     const vacancies = await adapter.search({ query: 'бизнес-аналитик', maxResults: 3 });
 
-    expect(vacancies).toHaveLength(3);
-    expect(detailRequests.length).toBe(3);
+    // maxResults — бюджет на СЫРЫЕ карточки, а не на возвращённые вакансии.
+    // Из трёх взятых карточек часть отсеивается по грейду и опыту ещё до
+    // открытия страницы вакансии, поэтому на выходе их меньше.
+    expect(vacancies.length).toBeLessThanOrEqual(3);
+    // Главное: описание дочитывается ровно для тех, кто прошёл отсев, и ни
+    // для кого больше. Это и есть экономия — при --limit 500 разница между
+    // пятьюстами загрузок и полутора сотнями.
+    expect(detailRequests.length).toBe(vacancies.length);
     for (const v of vacancies) {
       expect(v.source).toBe('hh');
       expect(v.description.length).toBeGreaterThan(50);
@@ -321,7 +335,7 @@ describe('HhAdapter.search — интеграция через перехват 
     await context.close();
   }, 30000);
 
-  it('без maxResults возвращает все 50 карточек с описаниями', async () => {
+  it('без maxResults берёт страницу целиком, но описания дочитывает только прошедшим отсев', async () => {
     const context = await browser.newContext();
     let detailCalls = 0;
     await context.route('**/*', (route) => {
@@ -340,8 +354,12 @@ describe('HhAdapter.search — интеграция через перехват 
     const adapter = new HhAdapter({ context });
     const vacancies = await adapter.search({ query: 'бизнес-аналитик' });
 
-    expect(vacancies).toHaveLength(50);
-    expect(detailCalls).toBe(50);
+    // Из 50 реальных карточек фикстуры отсев по грейду и требуемому опыту
+    // оставляет 14 — остальные требуют больше трёх лет либо это «ведущий»,
+    // «senior», «руководитель». Число сверено с прогоном фильтров по той же
+    // фикстуре.
+    expect(vacancies).toHaveLength(14);
+    expect(detailCalls).toBe(14);
 
     await context.close();
   }, 60000);

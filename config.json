@@ -6,6 +6,13 @@
     "deepseek/deepseek-v4-flash",
     "openrouter/free"
   ],
+  "searchQueries": [
+    { "query": "аналитик бизнес-процессов" },
+    { "query": "аналитик бизнес процессов" },
+    { "query": "бизнес-аналитик" },
+    { "query": "бизнес аналитик" },
+    { "query": "системный аналитик", "constraints": { "juniorOnly": true } }
+  ],
   "throttle": {
     "hh": {
       "maxPerHour": 10,

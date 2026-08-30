@@ -37,10 +37,36 @@ const ACCEPTABLE_EXPERIENCE: ReadonlySet<ExperienceLevel> = new Set([
  * гейт тихо вырезал бы любую вакансию, не заявившую требование к опыту
  * явно, а таких на реальном hh.ru большинство описаний без карточного
  * маркера. См. self-review в задании.
+ *
+ * Второй параметр — переопределяемый набор допустимых бакетов, по умолчанию
+ * общий ACCEPTABLE_EXPERIENCE. Добавлен 2026-08-30 для per-query
+ * ограничения "только junior" (см. JUNIOR_EXPERIENCE ниже и wiring в
+ * src/pipeline.ts) — это тот самый переиспользуемый примитив, а не вторая,
+ * расходящаяся с этой функцией трактовка грейда.
  */
-export function isExperienceAcceptable(level: ExperienceLevel | null): boolean {
+export function isExperienceAcceptable(
+  level: ExperienceLevel | null,
+  acceptable: ReadonlySet<ExperienceLevel> = ACCEPTABLE_EXPERIENCE,
+): boolean {
   if (level === null) return true;
-  return ACCEPTABLE_EXPERIENCE.has(level);
+  return acceptable.has(level);
+}
+
+/**
+ * "Junior only" — используется как необязательное per-query ограничение
+ * (config.json → searchQueries[].constraints.juniorOnly, добавлено
+ * 2026-08-30 по прямому указанию пользователя для запроса "системный
+ * аналитик"). Строже общего ACCEPTABLE_EXPERIENCE: between1And3 ("от 1 до
+ * 3 лет") туда входит, а сюда — нет, это осознанно уже, не расширение
+ * общего гейта. noExperience покрывает и стажировки: на hh.ru стажировка
+ * структурно всегда размечена как noExperience, так что "Internships must
+ * pass this constraint" выполняется автоматически, без отдельной проверки
+ * на слово "стажёр".
+ */
+export const JUNIOR_EXPERIENCE: ReadonlySet<ExperienceLevel> = new Set(['noExperience']);
+
+export function isJuniorExperience(level: ExperienceLevel | null): boolean {
+  return isExperienceAcceptable(level, JUNIOR_EXPERIENCE);
 }
 
 const NO_EXPERIENCE_RE = /без\s+опыта|опыт[а-яё]*\s+не\s+требуется|не\s+требует[а-яё]*\s+опыт/i;

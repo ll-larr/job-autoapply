@@ -3,7 +3,8 @@ import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { resolveLimit,
-  resolveSearchQuery,
+  resolveSearchQueries,
+  formatQueryLabel,
   groupBySource,
   formatSearchReport,
   formatPanelStartup,
@@ -20,19 +21,41 @@ import type { Adapter } from '../src/adapters/types.js';
 import type { SearchReport } from '../src/pipeline.js';
 import type { SendReport } from '../src/core/sender.js';
 
-const CONFIG = { minScore: 40, letterFullThreshold: 75, letterModels: ['m:free'], throttle: {} };
+const CONFIG = { minScore: 40, letterFullThreshold: 75, letterModels: ['m:free'], searchQueries: [], throttle: {} };
 
-describe('resolveSearchQuery', () => {
-  it('без аргументов возвращает дефолтный запрос', () => {
-    expect(resolveSearchQuery([])).toBe('бизнес-аналитик');
+describe('resolveSearchQueries', () => {
+  const CONFIGURED = [
+    { query: 'аналитик бизнес-процессов' },
+    { query: 'бизнес-аналитик' },
+    { query: 'системный аналитик', constraints: { juniorOnly: true } },
+  ];
+
+  it('без аргументов берёт весь список из конфига', () => {
+    // Разные формулировки находят разные вакансии на одной площадке, поэтому
+    // прогон по умолчанию идёт по всем, а не по одной «главной».
+    expect(resolveSearchQueries([], CONFIGURED)).toEqual(CONFIGURED);
   });
 
-  it('склеивает многословный запрос через пробел', () => {
-    expect(resolveSearchQuery(['продуктовый', 'аналитик'])).toBe('продуктовый аналитик');
+  it('явный запрос перекрывает конфиг и ищет только его', () => {
+    expect(resolveSearchQueries(['продуктовый', 'аналитик'], CONFIGURED))
+      .toEqual([{ query: 'продуктовый аналитик' }]);
   });
 
-  it('одиночные пробельные аргументы считаются пустым запросом — дефолт', () => {
-    expect(resolveSearchQuery(['   '])).toBe('бизнес-аналитик');
+  it('пробельный аргумент считается отсутствующим — берётся конфиг', () => {
+    expect(resolveSearchQueries(['   '], CONFIGURED)).toEqual(CONFIGURED);
+  });
+
+  it('не тащит ограничения конфига на введённый руками запрос', () => {
+    // juniorOnly принадлежит «системному аналитику», а не всему поиску.
+    const r = resolveSearchQueries(['бизнес-аналитик'], CONFIGURED);
+    expect(r).toHaveLength(1);
+    expect(r[0]?.constraints).toBeUndefined();
+  });
+});
+
+describe('formatQueryLabel', () => {
+  it('перечисляет формулировки для заголовка отчёта', () => {
+    expect(formatQueryLabel([{ query: 'а' }, { query: 'б' }])).toBe('а | б');
   });
 });
 
@@ -51,7 +74,8 @@ describe('groupBySource', () => {
 describe('formatSearchReport', () => {
   const BASE_REPORT: SearchReport = {
     found: 10, queued: 4, duplicates: 2, belowThreshold: 3, noCoreMatch: 1,
-    rejectedExperience: 0, rejectedGrade: 0, rejected1c: 0, adapterErrors: [],
+    rejectedExperience: 0, rejectedGrade: 0, rejected1c: 0,
+      rejectedJuniorOnly: 0, adapterErrors: [],
   };
 
   it('содержит все пункты отчёта, требуемые заданием', () => {
@@ -242,7 +266,7 @@ describe('runSearchCommand — связка pipeline + генерация пис
 
     const { report, emptyLetters } = await runSearchCommand({
       queue: q, config: CONFIG, adapters: [mkAdapter([PROCESS_LANGUAGE])],
-      query: 'бизнес-аналитик', limit: 10, resume: 'ФЕЙКОВОЕ РЕЗЮМЕ',
+      queries: [{ query: 'бизнес-аналитик' }], limit: 10, resume: 'ФЕЙКОВОЕ РЕЗЮМЕ',
       generateLetterFn: async (input, options) => {
         receivedResume = input.resume;
         receivedTemplate = input.template;
@@ -265,7 +289,7 @@ describe('runSearchCommand — связка pipeline + генерация пис
   it('считает пустые письма (mode "none"), но не прерывает поиск и не роняет queued', async () => {
     const { report, emptyLetters } = await runSearchCommand({
       queue: q, config: CONFIG, adapters: [mkAdapter([PROCESS_LANGUAGE])],
-      query: 'q', limit: 10, resume: 'r',
+      queries: [{ query: 'q' }], limit: 10, resume: 'r',
       generateLetterFn: async () => ({ letter: '', mode: 'none' }),
       pickTemplateFn: () => 'fullstack-analyst',
       readTemplate: () => 't',
@@ -281,7 +305,7 @@ describe('runSearchCommand — связка pipeline + генерация пис
     let calls = 0;
     const { report } = await runSearchCommand({
       queue: q, config: CONFIG, adapters: [mkAdapter(['мусор без релевантных слов'])],
-      query: 'q', limit: 10, resume: 'r',
+      queries: [{ query: 'q' }], limit: 10, resume: 'r',
       generateLetterFn: async () => { calls++; return { letter: 'x', mode: 'hybrid' }; },
       pickTemplateFn: () => 'fullstack-analyst',
       readTemplate: () => 't',
@@ -295,7 +319,7 @@ describe('resolveLimit', () => {
   it('по умолчанию ограничивает прогон, а не берёт всё подряд', () => {
     // Без предела search берёт всё, что прошло гейт, и зовёт модель на каждую.
     // Живой замер 2026-08-30: одно письмо доходило до 371 секунды.
-    expect(resolveLimit(['бизнес-аналитик'])).toBe(10);
+    expect(resolveLimit(['бизнес-аналитик'])).toBe(500);
   });
 
   it('читает --limit', () => {

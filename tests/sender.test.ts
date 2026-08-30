@@ -11,6 +11,9 @@ const CONFIG = {
   minScore: 40,
   letterFullThreshold: 75,
   letterModels: ['model-a:free'],
+  // Отправщик поисковыми запросами не пользуется, но Config требует их для
+  // команды search, поэтому фикстура несёт пустой список.
+  searchQueries: [],
   throttle: { hh: { maxPerHour: 2, maxPerDay: 10, minDelayMs: 0, maxDelayMs: 0 } },
 };
 

@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeVacancy } from '../src/core/vacancy.js';
+import { normalizeVacancy, type ExperienceLevel } from '../src/core/vacancy.js';
 import {
   screenVacancy,
   isExperienceAcceptable,
   parseExperienceFromText,
   isSeniorTitle,
   is1cCentric,
+  isJuniorExperience,
+  JUNIOR_EXPERIENCE,
 } from '../src/core/screening.js';
 
 function v(over: Partial<Parameters<typeof normalizeVacancy>[0]> = {}) {
@@ -39,6 +41,43 @@ describe('isExperienceAcceptable', () => {
 
   it('неизвестное/непроставленное требование пропускает, а не режет', () => {
     expect(isExperienceAcceptable(null)).toBe(true);
+  });
+
+  it('второй параметр переопределяет допустимый набор бакетов', () => {
+    const onlySenior = new Set<ExperienceLevel>(['moreThan6']);
+    expect(isExperienceAcceptable('moreThan6', onlySenior)).toBe(true);
+    expect(isExperienceAcceptable('noExperience', onlySenior)).toBe(false);
+    // null по-прежнему проходит независимо от переданного набора.
+    expect(isExperienceAcceptable(null, onlySenior)).toBe(true);
+  });
+});
+
+// ============================================================================
+// junior-only per-query constraint (config.json → searchQueries[].constraints)
+// ============================================================================
+
+describe('isJuniorExperience / JUNIOR_EXPERIENCE', () => {
+  it('пропускает только noExperience — строже общего ACCEPTABLE_EXPERIENCE', () => {
+    expect(isJuniorExperience('noExperience')).toBe(true);
+  });
+
+  it('отклоняет between1And3, хотя он проходит общий гейт isExperienceAcceptable', () => {
+    expect(isExperienceAcceptable('between1And3')).toBe(true); // общий гейт: проходит
+    expect(isJuniorExperience('between1And3')).toBe(false); // junior-only: не проходит
+  });
+
+  it('отклоняет between3And6 и moreThan6', () => {
+    expect(isJuniorExperience('between3And6')).toBe(false);
+    expect(isJuniorExperience('moreThan6')).toBe(false);
+  });
+
+  it('null (сигнал неизвестен) проходит — та же философия, что и общий гейт', () => {
+    expect(isJuniorExperience(null)).toBe(true);
+  });
+
+  it('стажировки проходят: на hh.ru они структурно размечены как noExperience', () => {
+    expect(isJuniorExperience('noExperience')).toBe(true);
+    expect(JUNIOR_EXPERIENCE.has('noExperience')).toBe(true);
   });
 });
 

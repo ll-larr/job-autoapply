@@ -2,6 +2,7 @@ import type { BrowserContext, Frame, Locator, Page } from 'playwright';
 import { normalizeVacancy, type ExperienceLevel, type Vacancy } from '../core/vacancy.js';
 import { parseExperienceFromText } from '../core/screening.js';
 import type { Adapter, ApplyResult, SearchFilters } from './types.js';
+import { isExperienceAcceptable, isSeniorTitle } from '../core/screening.js';
 import { isLoggedIn, openProfile } from '../browser.js';
 
 /**
@@ -47,8 +48,22 @@ const OPEN_CHAT_BUTTON = '[data-qa="open_chat"]';
  */
 const SUCCESS_MARKER = '[data-qa~="vacancy-response-success-standard-notification"]';
 
-export function buildSearchUrl(query: string): string {
-  const params = new URLSearchParams({ text: query, area: '1' });
+/** Сколько карточек просить на одной странице. hh.ru принимает 100. */
+const ITEMS_PER_PAGE = 100;
+
+/**
+ * `page` считается с нуля — так пронумерованы ссылки пагинации в снятой
+ * фикстуре (`?page=0`, `?page=1`, ...). `items_on_page` там же встречается
+ * со значением 100; берём максимум, чтобы вдвое сократить число загрузок
+ * страниц выдачи при большом --limit.
+ */
+export function buildSearchUrl(query: string, page = 0): string {
+  const params = new URLSearchParams({
+    text: query,
+    area: '1',
+    page: String(page),
+    items_on_page: String(ITEMS_PER_PAGE),
+  });
   return `https://hh.ru/search/vacancy?${params.toString()}`;
 }
 
@@ -347,18 +362,52 @@ export class HhAdapter implements Adapter {
     const context = await this.getContext();
     const page = await context.newPage();
     try {
-      const url = buildSearchUrl(filters.query);
-      // waitUntil:'load'/'networkidle' никогда не наступают на hh.ru —
-      // страница держит фоновые запросы (реклама, опросы, аналитика)
-      // неопределённо долго (см. scripts/capture-hh.ts). Ждём
-      // domcontentloaded, а затем — конкретный элемент, который нужен.
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: this.timeouts.navigationMs });
-      await page.locator(SEARCH_TITLE_LINK).first()
-        .waitFor({ state: 'attached', timeout: this.timeouts.navigationMs })
-        .catch(() => {});
+      // Листаем страницы выдачи, пока не наберём нужное число карточек.
+      // Одна страница отдаёт максимум ITEMS_PER_PAGE, поэтому --limit больше
+      // сотни без пагинации молча упирался бы в потолок первой страницы.
+      const budget = filters.maxResults ?? ITEMS_PER_PAGE;
+      const collected: HhSearchItem[] = [];
+      const seenIds = new Set<string>();
 
-      const items = await parseSearchPage(page);
-      const wanted = filters.maxResults === undefined ? items : items.slice(0, filters.maxResults);
+      for (let pageNo = 0; collected.length < budget; pageNo++) {
+        const url = buildSearchUrl(filters.query, pageNo);
+        // waitUntil:'load'/'networkidle' никогда не наступают на hh.ru —
+        // страница держит фоновые запросы (реклама, опросы, аналитика)
+        // неопределённо долго (см. scripts/capture-hh.ts). Ждём
+        // domcontentloaded, а затем — конкретный элемент, который нужен.
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: this.timeouts.navigationMs });
+        await page.locator(SEARCH_TITLE_LINK).first()
+          .waitFor({ state: 'attached', timeout: this.timeouts.navigationMs })
+          .catch(() => {});
+
+        const pageItems = await parseSearchPage(page);
+        if (pageItems.length === 0) break;
+
+        // Своя дедупликация по ходу листания: за пределом последней страницы
+        // hh.ru отдаёт не пустоту, а повтор предыдущей — без этой проверки
+        // цикл крутился бы до исчерпания бюджета на одних и тех же карточках.
+        let fresh = 0;
+        for (const it of pageItems) {
+          if (seenIds.has(it.sourceId)) continue;
+          seenIds.add(it.sourceId);
+          collected.push(it);
+          fresh++;
+          if (collected.length >= budget) break;
+        }
+        if (fresh === 0) break;
+      }
+
+      // Отсев ДО дочитывания описаний. Грейд виден в заголовке карточки, а
+      // требуемый опыт — в её структурном маркере: обе проверки не требуют
+      // открывать страницу вакансии. При --limit 500 это разница между
+      // пятьюстами загрузок и примерно полутора сотнями, то есть между
+      // часом ожидания и несколькими минутами.
+      //
+      // Фильтр 1С и core-гейт здесь применить нельзя — им нужен текст
+      // описания, которого у карточки нет. Их отрабатывает конвейер.
+      const wanted = collected.filter(
+        (it) => !isSeniorTitle(it.title) && isExperienceAcceptable(it.experience ?? null),
+      );
 
       const out: Vacancy[] = [];
       for (const item of wanted) {
