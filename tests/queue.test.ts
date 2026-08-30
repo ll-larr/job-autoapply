@@ -257,3 +257,76 @@ describe('Queue счётчики для троттлинга', () => {
     expect(q.countSentSince('hrge', Date.now() - 3600_000)).toBe(1);
   });
 });
+
+describe('Queue возврат отменённой строки', () => {
+  it('unskip возвращает skipped обратно в pending', () => {
+    // «Пропустить» в панели — один клик, и без возврата промах мышью стоил бы
+    // вакансии навсегда: панель её не показывает, а повторный поиск не найдёт
+    // из-за дедупа по (source, source_id).
+    q.insertPending(mkVacancy('20'), 69, [], 'письмо', 'hybrid');
+    const row = q.listByStatus('pending')[0]!;
+    q.skip(row.id);
+    expect(q.listByStatus('skipped')).toHaveLength(1);
+
+    q.unskip(row.id);
+    expect(q.listByStatus('pending')).toHaveLength(1);
+    expect(q.listByStatus('skipped')).toHaveLength(0);
+  });
+
+  it('unskip сохраняет письмо, а не обнуляет его', () => {
+    q.insertPending(mkVacancy('21'), 50, [], 'ТЕКСТ ПИСЬМА', 'hybrid');
+    const row = q.listByStatus('pending')[0]!;
+    q.skip(row.id);
+    q.unskip(row.id);
+    expect(q.listByStatus('pending')[0]!.letter).toBe('ТЕКСТ ПИСЬМА');
+  });
+
+  it('unskip НЕ воскрешает отправленную строку — это была бы повторная подача', () => {
+    q.insertPending(mkVacancy('22'), 50, [], 'l', 'hybrid');
+    const row = q.listByStatus('pending')[0]!;
+    q.approve(row.id);
+    q.markSent(row.id);
+    expect(() => q.unskip(row.id)).toThrow();
+    expect(q.listByStatus('sent')).toHaveLength(1);
+  });
+
+  it('unskip на строке, которую не отменяли, бросает', () => {
+    q.insertPending(mkVacancy('23'), 50, [], 'l', 'hybrid');
+    const row = q.listByStatus('pending')[0]!;
+    expect(() => q.unskip(row.id)).toThrow();
+  });
+});
+
+describe('Queue вкладка «Отменённые» — окно 24 часа', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+
+  it('показывает отменённое за последние сутки', () => {
+    q.insertPending(mkVacancy('30'), 50, [], 'l', 'hybrid');
+    const row = q.listByStatus('pending')[0]!;
+    q.skip(row.id);
+    expect(q.listRecentSkipped(DAY)).toHaveLength(1);
+  });
+
+  it('не показывает то, что отменили больше суток назад', () => {
+    q.insertPending(mkVacancy('31'), 50, [], 'l', 'hybrid');
+    const row = q.listByStatus('pending')[0]!;
+    q.skip(row.id);
+    // Смотрим из будущего: спустя двое суток запись во вкладке не нужна.
+    const inTwoDays = Date.now() + 2 * DAY;
+    expect(q.listRecentSkipped(DAY, inTwoDays)).toHaveLength(0);
+  });
+
+  it('строка при этом НЕ удаляется — иначе дедуп забыл бы вакансию', () => {
+    // Это главное свойство: осознанный отказ не должен отменяться сам собой
+    // через сутки, а удаление строки означало бы ровно это.
+    const v = mkVacancy('32');
+    q.insertPending(v, 50, [], 'l', 'hybrid');
+    const row = q.listByStatus('pending')[0]!;
+    q.skip(row.id);
+
+    expect(q.listRecentSkipped(DAY, Date.now() + 2 * DAY)).toHaveLength(0);
+    expect(q.listByStatus('skipped')).toHaveLength(1);
+    expect(q.has(v)).toBe(true);
+    expect(q.insertPending(v, 50, [], 'l', 'hybrid')).toBe(false);
+  });
+});

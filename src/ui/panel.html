@@ -29,6 +29,9 @@
   </header>
   <div id="list"></div>
 
+  <h2 class="section">Отменённые <span id="skippedCount"></span></h2>
+  <div id="skippedList"></div>
+
   <h2 class="section">Одобрено, ждёт отправки <span id="approvedCount"></span></h2>
   <div id="approvedList"></div>
 
@@ -131,6 +134,31 @@ function renderApproved(rows) {
   }
 }
 
+async function loadSkipped() {
+  const rows = await (await fetch('/api/skipped')).json();
+  document.getElementById('skippedCount').textContent = rows.length ? rows.length : '';
+  const list = document.getElementById('skippedList');
+  list.innerHTML = '';
+  if (!rows.length) return;
+  for (const r of rows) {
+    const el = document.createElement('div');
+    el.className = 'card';
+    el.innerHTML = `
+      <div>
+        <div><a href="${r.vacancy.url}" target="_blank" rel="noopener">${r.vacancy.title}</a></div>
+        <div class="meta">${r.vacancy.company} · ${r.vacancy.geo} · ${r.source} · скор ${r.score}</div>
+      </div>
+      <div style="display:flex; align-items:flex-start;">
+        <button data-act="unskip">Вернуть в очередь</button>
+      </div>`;
+    el.querySelector('[data-act="unskip"]').onclick = async () => {
+      await post('/api/unskip', { id: r.id });
+      load(); loadSkipped();
+    };
+    list.appendChild(el);
+  }
+}
+
 async function post(url, body) {
   return fetch(url, {
     method: 'POST',
@@ -155,6 +183,7 @@ document.getElementById('approveAll').onclick = async () => {
 };
 
 load();
+loadSkipped();
 </script>
 </body>
 </html>

@@ -3,6 +3,9 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Queue } from '../core/queue.js';
 
+/** Сколько времени отменённая вакансия остаётся во вкладке «Отменённые». */
+const SKIPPED_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 const PANEL_HTML = resolve('src/ui/panel.html');
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -36,6 +39,27 @@ export async function startPanel(
         }
         return json(res, { ok: true });
       }
+      if (req.method === 'GET' && req.url === '/api/skipped') {
+        // Только за последние сутки: вкладка нужна для отмены промаха,
+        // а не как архив всего отклонённого. Сами строки не удаляются —
+        // иначе дедуп забыл бы вакансию и поиск притащил бы её снова.
+        return json(res, queue.listRecentSkipped(SKIPPED_WINDOW_MS));
+      }
+
+      if (req.method === 'POST' && req.url === '/api/unskip') {
+        // Возврат отменённой строки на рассмотрение. «Пропустить» — один клик
+        // с необратимым эффектом: строка исчезает из панели, а повторный поиск
+        // её не находит из-за дедупа. Без этой кнопки промах мышью стоил бы
+        // вакансии навсегда.
+        const b = await readJson(req);
+        try {
+          queue.unskip(Number(b['id']));
+        } catch (e) {
+          return json(res, { error: e instanceof Error ? e.message : String(e) }, 409);
+        }
+        return json(res, { ok: true });
+      }
+
       if (req.method === 'POST' && req.url === '/api/skip') {
         const b = await readJson(req);
         try {

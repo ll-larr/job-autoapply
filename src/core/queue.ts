@@ -121,6 +121,44 @@ export class Queue {
     this.requireTransitioned(id, ['pending', 'approved'], result.changes);
   }
 
+  /**
+   * Вернуть отменённую строку обратно на рассмотрение.
+   *
+   * Нужно потому, что «Пропустить» в панели — один клик, а последствия у него
+   * необратимые: строка уходит в `skipped`, панель её больше не показывает, а
+   * повторный поиск не находит — дедуп по (source, source_id) считает вакансию
+   * уже обработанной. Промах мышью стоил бы вакансии навсегда.
+   *
+   * Только из `skipped` и только в `pending`. Воскрешать `sent` по-прежнему
+   * нельзя: отправленный отклик не отменить, и возврат такой строки в очередь
+   * означал бы повторную подачу.
+   */
+  /**
+   * Недавно отменённые — для вкладки «Отменённые» в панели.
+   *
+   * Вкладка существует ради одного: «Пропустить» — один клик, и без возврата
+   * промах мышью стоил бы вакансии навсегда. Но держать там всё подряд
+   * бессмысленно, поэтому показываем только свежие.
+   *
+   * Строка при этом НЕ удаляется. Удаление сломало бы дедупликацию: вакансия
+   * снова стала бы «невиданной», и следующий поиск притащил бы её обратно —
+   * то есть осознанный отказ пользователя отменился бы сам собой через сутки.
+   * Поэтому запись живёт вечно, а из вкладки просто уходит.
+   */
+  listRecentSkipped(withinMs: number, now: number = Date.now()): QueueRow[] {
+    const rows = this.db.prepare(
+      "SELECT * FROM applications WHERE status='skipped' AND decided_at >= ? ORDER BY decided_at DESC",
+    ).all(now - withinMs) as unknown as DbRow[];
+    return rows.map(this.toQueueRow);
+  }
+
+  unskip(id: number): void {
+    const result = this.db.prepare(
+      "UPDATE applications SET status='pending', decided_at=NULL WHERE id=? AND status='skipped'",
+    ).run(id);
+    this.requireTransitioned(id, 'skipped', result.changes);
+  }
+
   markSent(id: number): void {
     const result = this.db.prepare(
       "UPDATE applications SET status='sent', sent_at=? WHERE id=? AND status='approved'",
