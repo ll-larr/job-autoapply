@@ -3,7 +3,7 @@
   "letterFullThreshold": 75,
   "letterModels": [
     "google/gemma-4-31b-it:free",
-    "deepseek/deepseek-v4-flash-latest",
+    "deepseek/deepseek-v4-flash",
     "openrouter/free"
   ],
   "throttle": {
