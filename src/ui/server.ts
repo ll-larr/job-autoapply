@@ -46,6 +46,13 @@ export async function startPanel(
         return json(res, queue.listRecentSkipped(SKIPPED_WINDOW_MS));
       }
 
+      if (req.method === 'POST' && req.url === '/api/skipped/clear') {
+        // Чистит вкладку, а не базу. Строки остаются, иначе дедуп забыл бы
+        // отклонённые вакансии и следующий поиск вернул бы их в очередь.
+        const cleared = queue.archiveSkipped();
+        return json(res, { ok: true, cleared });
+      }
+
       if (req.method === 'POST' && req.url === '/api/unskip') {
         // Возврат отменённой строки на рассмотрение. «Пропустить» — один клик
         // с необратимым эффектом: строка исчезает из панели, а повторный поиск

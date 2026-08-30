@@ -330,3 +330,49 @@ describe('Queue вкладка «Отменённые» — окно 24 часа
     expect(q.insertPending(v, 50, [], 'l', 'hybrid')).toBe(false);
   });
 });
+
+describe('Queue очистка вкладки «Отменённые»', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+
+  it('после очистки вкладка пуста', () => {
+    for (const id of ['40', '41']) {
+      q.insertPending(mkVacancy(id), 50, [], 'l', 'hybrid');
+    }
+    for (const row of q.listByStatus('pending')) q.skip(row.id);
+    expect(q.listRecentSkipped(DAY)).toHaveLength(2);
+
+    expect(q.archiveSkipped()).toBe(2);
+    expect(q.listRecentSkipped(DAY)).toHaveLength(0);
+  });
+
+  it('очистка НЕ удаляет строки — иначе поиск вернул бы отклонённое обратно', () => {
+    // Главное свойство кнопки: она чистит вкладку, а не базу. Если бы строки
+    // удалялись, дедуп забыл бы вакансию, и следующий прогон поиска положил
+    // бы её в очередь снова — то есть «очистить» означало бы «вернуть мусор».
+    const v = mkVacancy('42');
+    q.insertPending(v, 50, [], 'l', 'hybrid');
+    q.skip(q.listByStatus('pending')[0]!.id);
+    q.archiveSkipped();
+
+    expect(q.listByStatus('skipped')).toHaveLength(1);
+    expect(q.has(v)).toBe(true);
+    expect(q.insertPending(v, 50, [], 'l', 'hybrid')).toBe(false);
+  });
+
+  it('убранную из вкладки строку всё ещё можно восстановить по id', () => {
+    q.insertPending(mkVacancy('43'), 50, [], 'ПИСЬМО', 'hybrid');
+    const row = q.listByStatus('pending')[0]!;
+    q.skip(row.id);
+    q.archiveSkipped();
+
+    q.unskip(row.id);
+    expect(q.listByStatus('pending')[0]!.letter).toBe('ПИСЬМО');
+  });
+
+  it('повторная очистка ничего не трогает', () => {
+    q.insertPending(mkVacancy('44'), 50, [], 'l', 'hybrid');
+    q.skip(q.listByStatus('pending')[0]!.id);
+    expect(q.archiveSkipped()).toBe(1);
+    expect(q.archiveSkipped()).toBe(0);
+  });
+});

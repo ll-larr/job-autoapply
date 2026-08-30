@@ -52,6 +52,15 @@ export class Queue {
       CREATE INDEX IF NOT EXISTS idx_status ON applications(status);
       CREATE INDEX IF NOT EXISTS idx_sent ON applications(source, sent_at);
     `);
+
+    // Колонка появилась позже первых баз, поэтому добавляем её отдельно и
+    // молча глотаем ошибку «уже существует»: ALTER TABLE ... IF NOT EXISTS в
+    // SQLite нет, а ронять запуск на уже мигрированной базе бессмысленно.
+    try {
+      this.db.exec('ALTER TABLE applications ADD COLUMN skip_archived_at INTEGER');
+    } catch {
+      // колонка уже есть
+    }
   }
 
   insertPending(
@@ -147,14 +156,33 @@ export class Queue {
    */
   listRecentSkipped(withinMs: number, now: number = Date.now()): QueueRow[] {
     const rows = this.db.prepare(
-      "SELECT * FROM applications WHERE status='skipped' AND decided_at >= ? ORDER BY decided_at DESC",
+      "SELECT * FROM applications WHERE status='skipped' AND decided_at >= ?"
+      + ' AND skip_archived_at IS NULL ORDER BY decided_at DESC',
     ).all(now - withinMs) as unknown as DbRow[];
     return rows.map(this.toQueueRow);
   }
 
+  /**
+   * Убрать всё из вкладки «Отменённые» по кнопке.
+   *
+   * Именно убрать из вкладки, а НЕ удалить строки. Удаление стёрло бы вакансии
+   * из дедупликации по (source, source_id), и следующий же поиск притащил бы
+   * всё отклонённое обратно — то есть кнопка «очистить» на деле возвращала бы
+   * мусор в очередь. Поэтому строки остаются, а помечаются как убранные.
+   *
+   * Возвращает, сколько записей убрано.
+   */
+  archiveSkipped(now: number = Date.now()): number {
+    const result = this.db.prepare(
+      "UPDATE applications SET skip_archived_at=? WHERE status='skipped' AND skip_archived_at IS NULL",
+    ).run(now);
+    return Number(result.changes);
+  }
+
   unskip(id: number): void {
     const result = this.db.prepare(
-      "UPDATE applications SET status='pending', decided_at=NULL WHERE id=? AND status='skipped'",
+      "UPDATE applications SET status='pending', decided_at=NULL, skip_archived_at=NULL"
+      + " WHERE id=? AND status='skipped'",
     ).run(id);
     this.requireTransitioned(id, 'skipped', result.changes);
   }

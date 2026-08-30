@@ -29,7 +29,9 @@
   </header>
   <div id="list"></div>
 
-  <h2 class="section">Отменённые <span id="skippedCount"></span></h2>
+  <h2 class="section">Отменённые <span id="skippedCount"></span>
+    <button id="clearSkipped" title="Убирает записи из этой вкладки. Сами вакансии остаются отклонёнными и в поиске больше не всплывут.">Очистить вкладку</button>
+  </h2>
   <div id="skippedList"></div>
 
   <h2 class="section">Одобрено, ждёт отправки <span id="approvedCount"></span></h2>
@@ -149,7 +151,7 @@ async function loadSkipped() {
         <div class="meta">${r.vacancy.company} · ${r.vacancy.geo} · ${r.source} · скор ${r.score}</div>
       </div>
       <div style="display:flex; align-items:flex-start;">
-        <button data-act="unskip">Вернуть в очередь</button>
+        <button data-act="unskip">Восстановить</button>
       </div>`;
     el.querySelector('[data-act="unskip"]').onclick = async () => {
       await post('/api/unskip', { id: r.id });
@@ -158,6 +160,12 @@ async function loadSkipped() {
     list.appendChild(el);
   }
 }
+
+document.getElementById('clearSkipped').onclick = async () => {
+  const r = await (await post('/api/skipped/clear', {})).json();
+  if (r.cleared === 0) return;
+  loadSkipped();
+};
 
 async function post(url, body) {
   return fetch(url, {
