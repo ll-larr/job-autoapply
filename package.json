@@ -8,7 +8,12 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "cli": "tsx src/cli.ts"
+    "cli": "tsx --use-env-proxy src/cli.ts",
+    "search": "tsx --use-env-proxy src/cli.ts search",
+    "panel": "tsx --use-env-proxy src/cli.ts panel",
+    "send": "tsx --use-env-proxy src/cli.ts send",
+    "stop": "tsx --use-env-proxy src/cli.ts stop",
+    "status": "tsx --use-env-proxy src/cli.ts status"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
