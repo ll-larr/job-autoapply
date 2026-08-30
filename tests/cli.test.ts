@@ -50,7 +50,8 @@ describe('groupBySource', () => {
 
 describe('formatSearchReport', () => {
   const BASE_REPORT: SearchReport = {
-    found: 10, queued: 4, duplicates: 2, belowThreshold: 3, noCoreMatch: 1, adapterErrors: [],
+    found: 10, queued: 4, duplicates: 2, belowThreshold: 3, noCoreMatch: 1,
+    rejectedExperience: 0, rejectedGrade: 0, rejected1c: 0, adapterErrors: [],
   };
 
   it('содержит все пункты отчёта, требуемые заданием', () => {
@@ -60,6 +61,16 @@ describe('formatSearchReport', () => {
     expect(lines).toContain('Дубли:                   2');
     expect(lines).toContain('Отсеяно (ниже minScore): 3');
     expect(lines).toContain('Отсеяно (core-гейт):     1');
+  });
+
+  it('показывает три жёстких screening-фильтра поимённо', () => {
+    const report: SearchReport = {
+      ...BASE_REPORT, rejectedExperience: 5, rejectedGrade: 2, rejected1c: 1,
+    };
+    const lines = formatSearchReport('q', report, 0, true).join('\n');
+    expect(lines).toContain('Отсеяно (опыт):          5');
+    expect(lines).toContain('Отсеяно (грейд):         2');
+    expect(lines).toContain('Отсеяно (1С):            1');
   });
 
   it('видно, найден ли OPENROUTER_API_KEY', () => {

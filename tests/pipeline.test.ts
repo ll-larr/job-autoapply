@@ -110,4 +110,96 @@ describe('runSearch', () => {
       expect(q.listByStatus('pending')).toHaveLength(1);
     });
   });
+
+  describe('жёсткие screening-фильтры (опыт/грейд/1С)', () => {
+    function mkAdapterOf(
+      v: Omit<Parameters<typeof normalizeVacancy>[0], 'source'>, name = 'hh',
+    ): Adapter {
+      return {
+        name,
+        async search() { return [normalizeVacancy({ source: name, ...v })]; },
+        async apply() { return { status: 'sent' }; },
+      };
+    }
+
+    it('отклоняет по опыту (структурный маркер) до генерации письма и до скоринга', async () => {
+      let letterCalls = 0;
+      const rep = await runSearch({
+        queue: q, config: CONFIG, filters: { query: 'аналитик' },
+        adapters: [mkAdapterOf({
+          sourceId: '1', title: 'Бизнес-аналитик', company: 'C', url: 'u',
+          description: PROCESS_LANGUAGE, geo: 'Москва', postedAt: '2026-08-20T00:00:00Z',
+          experience: 'moreThan6',
+        })],
+        generate: async () => { letterCalls++; return { letter: 'письмо', mode: 'hybrid' as const }; },
+      });
+      expect(rep.queued).toBe(0);
+      expect(rep.rejectedExperience).toBe(1);
+      expect(rep.rejectedGrade).toBe(0);
+      expect(rep.rejected1c).toBe(0);
+      expect(rep.belowThreshold).toBe(0);
+      expect(rep.noCoreMatch).toBe(0);
+      expect(letterCalls).toBe(0);
+    });
+
+    it('отклоняет по грейду заголовка до генерации письма', async () => {
+      let letterCalls = 0;
+      const rep = await runSearch({
+        queue: q, config: CONFIG, filters: { query: 'аналитик' },
+        adapters: [mkAdapterOf({
+          sourceId: '1', title: 'Ведущий бизнес-аналитик', company: 'C', url: 'u',
+          description: PROCESS_LANGUAGE, geo: 'Москва', postedAt: '2026-08-20T00:00:00Z',
+        })],
+        generate: async () => { letterCalls++; return { letter: 'письмо', mode: 'hybrid' as const }; },
+      });
+      expect(rep.queued).toBe(0);
+      expect(rep.rejectedGrade).toBe(1);
+      expect(letterCalls).toBe(0);
+    });
+
+    it('отклоняет 1С-центричную вакансию до генерации письма', async () => {
+      let letterCalls = 0;
+      const rep = await runSearch({
+        queue: q, config: CONFIG, filters: { query: 'аналитик' },
+        adapters: [mkAdapterOf({
+          sourceId: '1', title: 'Аналитик 1С', company: 'C', url: 'u',
+          description: PROCESS_LANGUAGE, geo: 'Москва', postedAt: '2026-08-20T00:00:00Z',
+        })],
+        generate: async () => { letterCalls++; return { letter: 'письмо', mode: 'hybrid' as const }; },
+      });
+      expect(rep.queued).toBe(0);
+      expect(rep.rejected1c).toBe(1);
+      expect(letterCalls).toBe(0);
+    });
+
+    it('вакансия, где 1С — одна из систем среди прочих, проходит screening и доходит до очереди', async () => {
+      const rep = await runSearch({
+        queue: q, config: CONFIG, filters: { query: 'аналитик' },
+        adapters: [mkAdapterOf({
+          sourceId: '1', title: 'Бизнес-аналитик', company: 'C', url: 'u',
+          description: `${PROCESS_LANGUAGE} Работаем со стеком: SAP, 1С, Oracle.`,
+          geo: 'Москва', postedAt: '2026-08-20T00:00:00Z',
+        })],
+        generate: async () => ({ letter: 'письмо', mode: 'hybrid' as const }),
+      });
+      expect(rep.rejected1c).toBe(0);
+      expect(rep.queued).toBe(1);
+    });
+
+    it('обычная junior/middle вакансия без нарушений доходит до очереди', async () => {
+      const rep = await runSearch({
+        queue: q, config: CONFIG, filters: { query: 'аналитик' },
+        adapters: [mkAdapterOf({
+          sourceId: '1', title: 'Бизнес-аналитик', company: 'C', url: 'u',
+          description: PROCESS_LANGUAGE, geo: 'Москва', postedAt: '2026-08-20T00:00:00Z',
+          experience: 'between1And3',
+        })],
+        generate: async () => ({ letter: 'письмо', mode: 'hybrid' as const }),
+      });
+      expect(rep.rejectedExperience).toBe(0);
+      expect(rep.rejectedGrade).toBe(0);
+      expect(rep.rejected1c).toBe(0);
+      expect(rep.queued).toBe(1);
+    });
+  });
 });

@@ -194,6 +194,24 @@ describe('parseSearchPage — tests/fixtures/hh-search.html (50 настоящи
     await context.close();
   }, 20000);
 
+  it('experience читается из data-qa суффикса карточки (structured-сигнал, не проза)', async () => {
+    const { context, page } = await pageWithContent(searchHtml);
+    const items = await parseSearchPage(page);
+
+    // Снято прямым чтением фикстуры (см. отчёт задачи): ровно 4 известных
+    // бакета встречаются на всех 50 карточках, ни одного null.
+    const counts = { noExperience: 0, between1And3: 0, between3And6: 0, moreThan6: 0, null: 0 };
+    for (const item of items) {
+      if (item.experience === null) counts.null++;
+      else counts[item.experience]++;
+    }
+    expect(counts).toEqual({ noExperience: 1, between1And3: 15, between3And6: 31, moreThan6: 3, null: 0 });
+
+    // Первая карточка (136701903) размечена как "Without experience".
+    expect(items[0]!.experience).toBe('noExperience');
+    await context.close();
+  }, 20000);
+
   it('зарплата почти всегда отсутствует и парсинг на этом не падает', async () => {
     const { context, page } = await pageWithContent(searchHtml);
     const items = await parseSearchPage(page);

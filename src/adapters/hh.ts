@@ -1,5 +1,6 @@
 import type { BrowserContext, Frame, Locator, Page } from 'playwright';
-import { normalizeVacancy, type Vacancy } from '../core/vacancy.js';
+import { normalizeVacancy, type ExperienceLevel, type Vacancy } from '../core/vacancy.js';
+import { parseExperienceFromText } from '../core/screening.js';
 import type { Adapter, ApplyResult, SearchFilters } from './types.js';
 import { isLoggedIn, openProfile } from '../browser.js';
 
@@ -17,6 +18,17 @@ const SEARCH_TITLE_TEXT = '[data-qa="serp-item__title-text"]';
 const SEARCH_EMPLOYER_TEXT = '[data-qa="vacancy-serp__vacancy-employer-text"]';
 const SEARCH_ADDRESS = '[data-qa="vacancy-serp__vacancy-address"]';
 const SEARCH_COMPENSATION = '[data-qa="vacancy-serp__compensation"]';
+/**
+ * Требуемый опыт на карточке выдачи — структурный маркер, суффикс data-qa
+ * вида `vacancy-serp__vacancy-work-experience-between1And3`, а не текст
+ * элемента (текст на снятой фикстуре — английский, "Without experience" —
+ * страница явно рендерилась под англоязычный интерфейс; суффикс атрибута
+ * от языка интерфейса не зависит). Снято прямым чтением
+ * tests/fixtures/hh-search.html: на всех 50 карточках встречается ровно
+ * один из четырёх суффиксов — см. KNOWN_EXPERIENCE_LEVELS.
+ */
+const SEARCH_EXPERIENCE = '[data-qa^="vacancy-serp__vacancy-work-experience-"]';
+const SEARCH_EXPERIENCE_PREFIX = 'vacancy-serp__vacancy-work-experience-';
 const VACANCY_DESCRIPTION = '[data-qa="vacancy-description"]';
 const APPLY_BUTTON = '[data-qa="vacancy-response-link-top"]';
 const NEGOTIATIONS_ITEM = '[data-qa="negotiations-item"]';
@@ -102,6 +114,18 @@ export interface HhSearchItem {
   salaryFrom: number | null;
   salaryTo: number | null;
   currency: string | null;
+  experience: ExperienceLevel | null;
+}
+
+const KNOWN_EXPERIENCE_LEVELS: ReadonlySet<string> = new Set([
+  'noExperience', 'between1And3', 'between3And6', 'moreThan6',
+]);
+
+/** Суффикс data-qa → ExperienceLevel, или null если суффикс не входит в известный словарь hh.ru. */
+function parseExperienceSuffix(dataQa: string | null): ExperienceLevel | null {
+  if (dataQa === null || !dataQa.startsWith(SEARCH_EXPERIENCE_PREFIX)) return null;
+  const suffix = dataQa.slice(SEARCH_EXPERIENCE_PREFIX.length);
+  return KNOWN_EXPERIENCE_LEVELS.has(suffix) ? (suffix as ExperienceLevel) : null;
 }
 
 async function textOf(locator: Locator): Promise<string> {
@@ -140,6 +164,13 @@ export async function parseSearchPage(page: Page): Promise<HhSearchItem[]> {
     }
     const salary = parseSalaryText(salaryRaw);
 
+    const experienceLocator = card.locator(SEARCH_EXPERIENCE);
+    let experience: ExperienceLevel | null = null;
+    if ((await experienceLocator.count()) > 0) {
+      const dataQa = await experienceLocator.first().getAttribute('data-qa').catch(() => null);
+      experience = parseExperienceSuffix(dataQa);
+    }
+
     out.push({
       sourceId: id,
       title,
@@ -148,6 +179,7 @@ export async function parseSearchPage(page: Page): Promise<HhSearchItem[]> {
       url: canonicalVacancyUrl(id),
       salaryFrom: salary.from,
       salaryTo: salary.to,
+      experience,
       currency: salary.currency,
     });
   }
@@ -335,6 +367,16 @@ export class HhAdapter implements Adapter {
         // неё вакансия почти всегда наберёт околонулевой балл и отсеется.
         await page.goto(item.url, { waitUntil: 'domcontentloaded', timeout: this.timeouts.navigationMs });
         const description = await readVacancyDescription(page, this.timeouts.descriptionMs);
+        // Структурный маркер с карточки выдачи — основной источник. Он есть
+        // на всех 50 карточках снятой фикстуры, но если разметка когда-нибудь
+        // изменится и маркер пропадёт, не роняем гейт опыта молча — пробуем
+        // разобрать текст уже прочитанного описания вакансии тем же парсером,
+        // что использует hr.ge (см. core/screening.ts). Отдельный запрос под
+        // прозу [data-qa="vacancy-experience"] не делаем: на снятой фикстуре
+        // она рендерится по-английски ("not required"), а разбирается только
+        // русский текст — доп. чтение того же элемента не дало бы сигнала,
+        // который не даёт уже читаемое description.
+        const experience = item.experience ?? parseExperienceFromText(description);
         out.push(normalizeVacancy({
           source: 'hh',
           sourceId: item.sourceId,
@@ -351,6 +393,7 @@ export class HhAdapter implements Adapter {
           salaryTo: item.salaryTo,
           currency: item.currency,
           isRemote: false,
+          experience,
         }));
       }
       return out;

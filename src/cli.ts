@@ -98,6 +98,9 @@ export function formatSearchReport(
   lines.push(`Дубли:                   ${report.duplicates}`);
   lines.push(`Отсеяно (ниже minScore): ${report.belowThreshold}`);
   lines.push(`Отсеяно (core-гейт):     ${report.noCoreMatch}`);
+  lines.push(`Отсеяно (опыт):          ${report.rejectedExperience}`);
+  lines.push(`Отсеяно (грейд):         ${report.rejectedGrade}`);
+  lines.push(`Отсеяно (1С):            ${report.rejected1c}`);
   lines.push(
     `Письма пустые:           ${emptyLetters}` +
       (report.queued > 0 ? ` из ${report.queued} поставленных в очередь` : '') +
