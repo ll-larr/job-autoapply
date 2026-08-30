@@ -38,10 +38,32 @@ interface SendState {
   error: string | null;
 }
 
+/**
+ * Состояние поиска для панели. Та же схема, что у отправки, и по той же
+ * причине: поиск открывает браузер, листает выдачу, дочитывает описания и
+ * зовёт модель на каждое письмо — это минуты. Держать всё это время открытым
+ * HTTP-запрос нельзя, браузер оборвёт его по таймауту.
+ */
+interface SearchState {
+  running: boolean;
+  startedAt: number | null;
+  result: { report: unknown; emptyLetters: number } | null;
+  error: string | null;
+}
+
 export interface PanelDeps {
   /** Нужны только для отправки. Без них кнопка «Отправить всё» недоступна. */
   adapters?: Adapter[];
   config?: Config;
+  /**
+   * Запуск поиска. Передаётся готовой функцией, а не собирается здесь из
+   * кусков: панель — это http-слой, ей незачем знать про резюме, скелеты
+   * писем и выбор модели. Вся эта проводка уже есть в cli.ts, и дублировать
+   * её означало бы получить две расходящиеся версии одного и того же.
+   *
+   * Без неё кнопка поиска в панели недоступна.
+   */
+  startSearch?: (limit: number) => Promise<{ report: unknown; emptyLetters: number }>;
 }
 
 export async function startPanel(
@@ -49,6 +71,8 @@ export async function startPanel(
 ): Promise<{ port: number; close(): Promise<void> }> {
   const send: SendState = { running: false, startedAt: null, report: null, error: null };
   const canSend = deps.adapters !== undefined && deps.config !== undefined;
+  const search: SearchState = { running: false, startedAt: null, result: null, error: null };
+  const canSearch = deps.startSearch !== undefined;
 
   const server = createServer(async (req, res) => {
     try {
@@ -72,6 +96,48 @@ export async function startPanel(
         // а не как архив всего отклонённого. Сами строки не удаляются —
         // иначе дедуп забыл бы вакансию и поиск притащил бы её снова.
         return json(res, queue.listRecentSkipped(SKIPPED_WINDOW_MS));
+      }
+
+      if (req.method === 'GET' && req.url === '/api/search/status') {
+        return json(res, {
+          running: search.running,
+          canSearch,
+          result: search.result,
+          error: search.error,
+        });
+      }
+
+      if (req.method === 'POST' && req.url === '/api/search/start') {
+        if (!canSearch) {
+          return json(res, { error: 'Панель запущена без поиска — используй npm run search.' }, 409);
+        }
+        if (search.running) {
+          return json(res, { error: 'Поиск уже идёт.' }, 409);
+        }
+
+        const body = await readJson(req);
+        const limit = Number(body['limit']);
+        if (!Number.isInteger(limit) || limit <= 0) {
+          return json(res, { error: 'Число вакансий должно быть целым положительным.' }, 400);
+        }
+
+        search.running = true;
+        search.startedAt = Date.now();
+        search.result = null;
+        search.error = null;
+
+        // Не ждём: ответ уходит сразу, панель опрашивает статус.
+        void (async () => {
+          try {
+            search.result = await deps.startSearch!(limit);
+          } catch (e) {
+            search.error = e instanceof Error ? e.message : String(e);
+          } finally {
+            search.running = false;
+          }
+        })();
+
+        return json(res, { started: true }, 202);
       }
 
       if (req.method === 'GET' && req.url === '/api/send/status') {

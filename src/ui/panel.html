@@ -29,6 +29,15 @@
     .tab:focus-visible { outline: 2px solid #3b6ea5; outline-offset: 2px; }
 
     .actions { padding: 12px 20px 0; display: flex; gap: 8px; align-items: center; }
+
+    .bar { justify-content: space-between; }
+    .search-box { display: flex; gap: 8px; align-items: center; }
+    .search-box label { font-size: 13px; color: #555; }
+    .search-box input {
+      width: 76px; padding: 5px 8px; font: inherit; font-size: 14px;
+      border: 1px solid #ccc; border-radius: 4px;
+    }
+    #searchNote { font-size: 12px; color: #666; padding: 0 20px 0; min-height: 16px; }
     .hint { font-size: 13px; color: #666; }
 
     .card { display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
@@ -47,7 +56,15 @@
 </head>
 <body>
   <header>
-    <div class="bar"><strong>Очередь откликов</strong></div>
+    <div class="bar">
+      <strong>Очередь откликов</strong>
+      <div class="search-box">
+        <label for="searchLimit">Искать вакансий</label>
+        <input type="number" id="searchLimit" value="20" min="1" max="500" step="10">
+        <button id="searchStart">Найти</button>
+      </div>
+    </div>
+    <div id="searchNote"></div>
     <nav role="tablist">
       <button class="tab" role="tab" id="tab-pending"  aria-selected="true"  aria-controls="pane-pending">В ожидании<span class="n" id="n-pending">0</span></button>
       <button class="tab" role="tab" id="tab-approved" aria-selected="false" aria-controls="pane-approved">Одобрено<span class="n" id="n-approved">0</span></button>
@@ -241,6 +258,64 @@ function renderSkipped(rows) {
   }
 }
 
+// Поиск. Подтверждения не требует, в отличие от отправки: он ничего не
+// подаёт, только наполняет очередь. Но идёт минутами — открывает браузер,
+// листает выдачу, дочитывает описания, зовёт модель на каждое письмо, — так
+// что запускается асинхронно, а состояние опрашивается.
+let searchPolling = null;
+
+const searchBtn = document.getElementById('searchStart');
+const searchLimit = document.getElementById('searchLimit');
+const searchNote = document.getElementById('searchNote');
+
+searchBtn.onclick = async () => {
+  const limit = Number(searchLimit.value);
+  if (!Number.isInteger(limit) || limit <= 0) {
+    searchNote.textContent = 'Число вакансий должно быть целым положительным.';
+    return;
+  }
+  const res = await post('/api/search/start', { limit });
+  if (!res.ok) {
+    const err = await res.json();
+    searchNote.textContent = err.error ?? 'Не удалось запустить поиск.';
+    return;
+  }
+  pollSearch();
+};
+
+async function pollSearch() {
+  if (searchPolling) return;
+  searchBtn.disabled = true;
+  searchLimit.disabled = true;
+  searchNote.textContent = 'Поиск идёт. Откроется браузер — это нормально, страницы только читаются.';
+
+  searchPolling = setInterval(async () => {
+    const st = await fetchJson('/api/search/status');
+    if (st.running) return;
+
+    clearInterval(searchPolling);
+    searchPolling = null;
+    searchBtn.disabled = false;
+    searchLimit.disabled = false;
+
+    if (st.error) {
+      searchNote.textContent = 'Поиск упал: ' + st.error;
+    } else if (st.result) {
+      const r = st.result.report;
+      const parts = [`найдено ${r.found}`, `в очередь ${r.queued}`];
+      if (r.duplicates) parts.push(`уже было ${r.duplicates}`);
+      if (r.belowThreshold) parts.push(`ниже порога ${r.belowThreshold}`);
+      if (r.noCoreMatch) parts.push(`не по профилю ${r.noCoreMatch}`);
+      const rejected = (r.rejectedExperience ?? 0) + (r.rejectedGrade ?? 0)
+        + (r.rejected1c ?? 0) + (r.rejectedJuniorOnly ?? 0);
+      if (rejected) parts.push(`отсеяно фильтрами ${rejected}`);
+      if (st.result.emptyLetters) parts.push(`БЕЗ ПИСЬМА ${st.result.emptyLetters}`);
+      searchNote.textContent = parts.join(' · ');
+    }
+    load();
+  }, 3000);
+}
+
 // Отправка в два шага. Первый клик только вооружает кнопку, второй запускает.
 // Причина не в перестраховке: подача на hh.ru необратима, работодатель видит
 // отклик сразу, и в этом проекте промах мышью уже стоил одной заявки. Один
@@ -333,6 +408,15 @@ document.getElementById('approveAll').onclick = async () => {
 
 showTab(TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'pending');
 load();
+fetchJson('/api/search/status').then((st) => {
+  if (st.running) pollSearch();
+  else if (!st.canSearch) {
+    searchBtn.disabled = true;
+    searchLimit.disabled = true;
+    searchNote.textContent = 'Панель запущена без поиска — используй npm run search.';
+  }
+});
+
 fetchJson('/api/send/status').then((st) => {
   if (st.running) pollSend();
   else if (!st.canSend) {

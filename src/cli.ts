@@ -388,7 +388,23 @@ async function main(): Promise<void> {
     const config = loadConfig();
     const queue = new Queue(DB_PATH);
     const stuck = queue.countStuckApproved();
-    await startPanel(queue, PANEL_PORT, { adapters: buildAdapters(), config });
+    await startPanel(queue, PANEL_PORT, {
+      adapters: buildAdapters(),
+      config,
+      // Та же проводка, что у команды search: панель не собирает конвейер
+      // заново, а зовёт ровно то, что вызывает npm run search.
+      startSearch: (limit) => runSearchCommand({
+        queue,
+        config,
+        adapters: buildAdapters(),
+        queries: config.searchQueries,
+        limit,
+        resume: readFileSync(RESUME_PATH, 'utf8'),
+        generateLetterFn: generateLetter,
+        pickTemplateFn: pickTemplate,
+        readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
+      }),
+    });
     for (const line of formatPanelStartup(stuck, PANEL_PORT)) console.log(line);
     // Намеренно НЕ queue.close(): панель держит процесс живым, пока слушает
     // http; закрыть БД здесь значило бы, что первый же запрос к /api/pending

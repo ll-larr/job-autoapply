@@ -159,3 +159,62 @@ describe('панель — отправка', () => {
     expect(st.running).toBe(false);
   });
 });
+
+describe('панель — поиск', () => {
+  it('без проводки поиска кнопка недоступна и запуск отклоняется', async () => {
+    const st = await (await fetch(`http://127.0.0.1:${PORT}/api/search/status`)).json() as
+      { canSearch: boolean; running: boolean };
+    expect(st.canSearch).toBe(false);
+    expect(st.running).toBe(false);
+
+    const res = await fetch(`http://127.0.0.1:${PORT}/api/search/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ limit: 5 }),
+    });
+    expect(res.status).toBe(409);
+  });
+});
+
+describe('панель — поиск с проводкой', () => {
+  let p: { port: number; close(): Promise<void> };
+  let started: number[] = [];
+
+  beforeEach(async () => {
+    started = [];
+    p = await startPanel(q, 0, {
+      startSearch: async (limit) => {
+        started.push(limit);
+        return { report: { found: 3, queued: 2 }, emptyLetters: 0 };
+      },
+    });
+  });
+  afterEach(async () => { await p.close(); });
+
+  it('запускает поиск с переданным числом вакансий', async () => {
+    const res = await fetch(`http://127.0.0.1:${p.port}/api/search/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ limit: 42 }),
+    });
+    expect(res.status).toBe(202);
+
+    // Поиск запускается асинхронно, поэтому даём ему дойти до конца.
+    for (let i = 0; i < 40 && started.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(started).toEqual([42]);
+  });
+
+  it('отклоняет мусорное число, не запуская поиск', async () => {
+    for (const limit of [0, -3, 'много']) {
+      const res = await fetch(`http://127.0.0.1:${p.port}/api/search/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limit }),
+      });
+      expect(res.status).toBe(400);
+    }
+    expect(started).toEqual([]);
+  });
+});
