@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import {
+import { resolveLimit,
   resolveSearchQuery,
   groupBySource,
   formatSearchReport,
@@ -231,7 +231,7 @@ describe('runSearchCommand — связка pipeline + генерация пис
 
     const { report, emptyLetters } = await runSearchCommand({
       queue: q, config: CONFIG, adapters: [mkAdapter([PROCESS_LANGUAGE])],
-      query: 'бизнес-аналитик', resume: 'ФЕЙКОВОЕ РЕЗЮМЕ',
+      query: 'бизнес-аналитик', limit: 10, resume: 'ФЕЙКОВОЕ РЕЗЮМЕ',
       generateLetterFn: async (input, options) => {
         receivedResume = input.resume;
         receivedTemplate = input.template;
@@ -254,7 +254,7 @@ describe('runSearchCommand — связка pipeline + генерация пис
   it('считает пустые письма (mode "none"), но не прерывает поиск и не роняет queued', async () => {
     const { report, emptyLetters } = await runSearchCommand({
       queue: q, config: CONFIG, adapters: [mkAdapter([PROCESS_LANGUAGE])],
-      query: 'q', resume: 'r',
+      query: 'q', limit: 10, resume: 'r',
       generateLetterFn: async () => ({ letter: '', mode: 'none' }),
       pickTemplateFn: () => 'fullstack-analyst',
       readTemplate: () => 't',
@@ -270,12 +270,30 @@ describe('runSearchCommand — связка pipeline + генерация пис
     let calls = 0;
     const { report } = await runSearchCommand({
       queue: q, config: CONFIG, adapters: [mkAdapter(['мусор без релевантных слов'])],
-      query: 'q', resume: 'r',
+      query: 'q', limit: 10, resume: 'r',
       generateLetterFn: async () => { calls++; return { letter: 'x', mode: 'hybrid' }; },
       pickTemplateFn: () => 'fullstack-analyst',
       readTemplate: () => 't',
     });
     expect(report.queued).toBe(0);
     expect(calls).toBe(0);
+  });
+});
+
+describe('resolveLimit', () => {
+  it('по умолчанию ограничивает прогон, а не берёт всё подряд', () => {
+    // Без предела search берёт всё, что прошло гейт, и зовёт модель на каждую.
+    // Живой замер 2026-08-30: одно письмо доходило до 371 секунды.
+    expect(resolveLimit(['бизнес-аналитик'])).toBe(10);
+  });
+
+  it('читает --limit', () => {
+    expect(resolveLimit(['бизнес-аналитик', '--limit', '3'])).toBe(3);
+  });
+
+  it('бросает на мусорном значении, а не молча берёт всё', () => {
+    expect(() => resolveLimit(['--limit', '0'])).toThrow('--limit');
+    expect(() => resolveLimit(['--limit', 'много'])).toThrow('--limit');
+    expect(() => resolveLimit(['--limit'])).toThrow('--limit');
   });
 });

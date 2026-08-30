@@ -40,6 +40,7 @@ import { HrGeAdapter } from './adapters/hrge.js';
 import { generateLetter, pickTemplate } from './core/letter.js';
 import type { Adapter } from './adapters/types.js';
 
+const DEFAULT_LIMIT = 10;
 const DB_PATH = 'data/queue.db';
 // Единственный постоянный источник резюме — файл в корне репозитория,
 // который пользователь положил и поддерживает сам (см. задание к этой
@@ -203,6 +204,8 @@ export interface SearchCommandDeps {
   config: Config;
   adapters: Adapter[];
   query: string;
+  /** Потолок на число вакансий за прогон. См. resolveLimit. */
+  limit: number;
   resume: string;
   generateLetterFn: typeof generateLetter;
   pickTemplateFn: typeof pickTemplate;
@@ -225,7 +228,7 @@ export async function runSearchCommand(
   const report = await runSearch({
     queue: deps.queue,
     config: deps.config,
-    filters: { query: deps.query },
+    filters: { query: deps.query, maxResults: deps.limit },
     adapters: deps.adapters,
     generate: async (v, matched, mode) => {
       const templateName = deps.pickTemplateFn(v, matched);
@@ -274,6 +277,28 @@ function warnIfProxyFlagMissing(): void {
 // функциями выше и обычными тестами core/*, adapters/*, pipeline.ts.
 // ============================================================================
 
+/**
+ * Сколько вакансий обрабатывать за один прогон.
+ *
+ * Предел обязателен, а не удобство. Без него `search` берёт всё, что прошло
+ * гейт (на живой выдаче hh.ru это под три десятка), открывает каждую страницу
+ * ради описания и на каждую зовёт модель. Живой замер 2026-08-30: одно письмо
+ * на бесплатной модели доходило до 371 секунды. Тридцать таких — это часы, за
+ * которые прогон упрётся в лимиты и человек не увидит очередь вовсе.
+ *
+ * Лучше десять готовых писем сейчас, чем тридцать когда-нибудь.
+ */
+export function resolveLimit(args: string[]): number {
+  const i = args.indexOf('--limit');
+  if (i === -1) return DEFAULT_LIMIT;
+  const raw = args[i + 1];
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(`--limit ждёт целое положительное число, получено: ${raw ?? '(ничего)'}`);
+  }
+  return n;
+}
+
 async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
 
@@ -320,7 +345,10 @@ async function main(): Promise<void> {
     const config = loadConfig();
     const queue = new Queue(DB_PATH);
     try {
-      const query = resolveSearchQuery(rest);
+      const limit = resolveLimit(rest);
+      const query = resolveSearchQuery(
+        rest.filter((a, i) => a !== '--limit' && rest[i - 1] !== '--limit'),
+      );
       const resume = readFileSync(RESUME_PATH, 'utf8');
       const hasApiKey = Boolean(process.env['OPENROUTER_API_KEY']);
 
@@ -329,6 +357,7 @@ async function main(): Promise<void> {
         config,
         adapters: buildAdapters(),
         query,
+        limit,
         resume,
         generateLetterFn: generateLetter,
         pickTemplateFn: pickTemplate,
