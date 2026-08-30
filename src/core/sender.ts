@@ -105,10 +105,18 @@ export class Sender {
         continue;
       }
 
-      const inHour = this.queue.countSentSince(row.source, this.now() - HOUR);
-      const inDay = this.queue.countSentSince(row.source, this.now() - DAY);
-      // Лимит достигнут — запись остаётся approved и уйдёт в следующий прогон.
-      if (inHour >= rule.maxPerHour || inDay >= rule.maxPerDay) continue;
+      // Считаем только те окна, для которых лимит вообще задан: незаданный
+      // потолок означает «без ограничения», и лишний запрос к базе на каждой
+      // заявке в этом случае не нужен.
+      if (rule.maxPerHour !== undefined) {
+        const inHour = this.queue.countSentSince(row.source, this.now() - HOUR);
+        // Лимит достигнут — запись остаётся approved и уйдёт в следующий прогон.
+        if (inHour >= rule.maxPerHour) continue;
+      }
+      if (rule.maxPerDay !== undefined) {
+        const inDay = this.queue.countSentSince(row.source, this.now() - DAY);
+        if (inDay >= rule.maxPerDay) continue;
+      }
 
       const result = await adapter.apply(row.vacancy, row.letter);
 

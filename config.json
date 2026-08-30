@@ -7,24 +7,33 @@
     "openrouter/free"
   ],
   "searchQueries": [
-    { "query": "аналитик бизнес-процессов" },
-    { "query": "аналитик бизнес процессов" },
-    { "query": "бизнес-аналитик" },
-    { "query": "бизнес аналитик" },
-    { "query": "системный аналитик", "constraints": { "juniorOnly": true } }
+    {
+      "query": "аналитик бизнес-процессов"
+    },
+    {
+      "query": "аналитик бизнес процессов"
+    },
+    {
+      "query": "бизнес-аналитик"
+    },
+    {
+      "query": "бизнес аналитик"
+    },
+    {
+      "query": "системный аналитик",
+      "constraints": {
+        "juniorOnly": true
+      }
+    }
   ],
   "throttle": {
     "hh": {
-      "maxPerHour": 10,
-      "maxPerDay": 40,
-      "minDelayMs": 20000,
-      "maxDelayMs": 90000
+      "minDelayMs": 3000,
+      "maxDelayMs": 3000
     },
     "hrge": {
-      "maxPerHour": 15,
-      "maxPerDay": 50,
-      "minDelayMs": 10000,
-      "maxDelayMs": 45000
+      "minDelayMs": 3000,
+      "maxDelayMs": 3000
     }
   },
   "maxConsecutiveFailures": 3

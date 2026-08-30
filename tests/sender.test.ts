@@ -342,3 +342,53 @@ describe('Sender предохранитель по череде отказов',
     expect(rep.failed).toBe(4);
   });
 });
+
+describe('Sender лимиты как «без ограничения»', () => {
+  const NO_CAPS = {
+    ...CONFIG,
+    throttle: { hh: { minDelayMs: 0, maxDelayMs: 0 } },
+  };
+
+  it('без maxPerHour и maxPerDay отправляет всю очередь за один прогон', () => {
+    // Владелец аккаунта снял потолки сознательно. Отсутствие ПОЛЯ означает
+    // «без ограничения»; отсутствие всей записи про площадку по-прежнему
+    // означает «не слать вовсе» — это разные вещи, проверяются отдельно.
+    seed(q, 12);
+    const s = new Sender(q, new Map([['hh', mkAdapter([{ status: 'sent' }])]]), NO_CAPS, {
+      sleep: async () => {},
+    });
+    return s.run().then((rep) => {
+      expect(rep.sent).toBe(12);
+      expect(q.listByStatus('approved')).toHaveLength(0);
+    });
+  });
+
+  it('заданный часовой лимит по-прежнему работает', async () => {
+    seed(q, 5);
+    const withHourCap = { ...CONFIG, throttle: { hh: { maxPerHour: 2, minDelayMs: 0, maxDelayMs: 0 } } };
+    const s = new Sender(q, new Map([['hh', mkAdapter([{ status: 'sent' }])]]), withHourCap, {
+      sleep: async () => {},
+    });
+    const rep = await s.run();
+    expect(rep.sent).toBe(2);
+  });
+
+  it('площадка без записи в throttle всё равно не шлёт — это другая проверка', async () => {
+    // Ключевое различие: снятый лимит это решение, а отсутствующая запись —
+    // опечатка в конфиге, и она обязана оставаться fail-closed.
+    seed(q, 3);
+    let calls = 0;
+    const counting: Adapter = {
+      name: 'hh',
+      async search() { return []; },
+      async apply() { calls++; return { status: 'sent' }; },
+    };
+    const s = new Sender(q, new Map([['hh', counting]]), { ...CONFIG, throttle: {} }, {
+      sleep: async () => {},
+    });
+    const rep = await s.run();
+    expect(calls).toBe(0);
+    expect(rep.unthrottledSources).toEqual(['hh']);
+    expect(q.listByStatus('approved')).toHaveLength(3);
+  });
+});
