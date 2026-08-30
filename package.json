@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24.0.0" },
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
@@ -13,7 +15,9 @@
     "panel": "tsx --use-env-proxy src/cli.ts panel",
     "send": "tsx --use-env-proxy src/cli.ts send",
     "stop": "tsx --use-env-proxy src/cli.ts stop",
-    "status": "tsx --use-env-proxy src/cli.ts status"
+    "status": "tsx --use-env-proxy src/cli.ts status",
+    "go": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1",
+    "login": "tsx scripts/login.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
