@@ -37,13 +37,42 @@ import type { SendReport } from './core/sender.js';
 import { startPanel } from './ui/server.js';
 import { HhAdapter } from './adapters/hh.js';
 import { HrGeAdapter } from './adapters/hrge.js';
-import { generateLetter, pickTemplate } from './core/letter.js';
+import { generateLetter, pickTemplate, pickMode } from './core/letter.js';
 import type { Adapter } from './adapters/types.js';
 
 // 500 — потолок, который пользователь выбрал 2026-08-30 сам, разобрав первую
 // живую очередь (см. resolveLimit ниже про то, почему потолок вообще
 // обязателен). --limit остаётся флагом именно для того, чтобы можно было
 // быстро прогнать поиск с меньшим числом при отладке.
+
+/**
+ * Ключ OpenRouter из файла `.env`, если он есть.
+ *
+ * Зачем файл, когда есть переменная окружения. Переменная, выставленная через
+ * `SetEnvironmentVariable(..., "User")`, попадает только в процессы, запущенные
+ * ПОСЛЕ этого. Терминал, открытый раньше, несёт старое окружение и ключа не
+ * видит — а выглядит это как «ключ пропал»: прогон проходит, вакансии
+ * попадают в очередь, но все письма пустые, и причина не названа нигде.
+ * Ровно так и случилось 2026-08-30: семь вакансий с пустыми письмами при
+ * живом ключе, лежавшем в User-области.
+ *
+ * `.env` от состояния оболочки не зависит вообще. Файл в .gitignore, в
+ * репозиторий не попадёт.
+ *
+ * Уже выставленная переменная окружения имеет приоритет: файл только
+ * заполняет пробел, а не переопределяет то, что человек задал явно.
+ */
+function loadDotEnv(): void {
+  if (process.env['OPENROUTER_API_KEY']) return;
+  try {
+    // Путь относительный, как у config.json и templates/: весь CLI
+    // рассчитан на запуск из корня проекта (так его зовут npm-скрипты).
+    process.loadEnvFile('.env');
+  } catch {
+    // Файла нет — это нормально, ключ может приходить из окружения.
+  }
+}
+
 const DEFAULT_LIMIT = 500;
 const DB_PATH = 'data/queue.db';
 // Единственный постоянный источник резюме — файл в корне репозитория,
@@ -322,6 +351,8 @@ export function resolveLimit(args: string[]): number {
 }
 
 async function main(): Promise<void> {
+  // Раньше всего: иначе команды прочитают ключ до того, как он появится.
+  loadDotEnv();
   const [cmd, ...rest] = process.argv.slice(2);
 
   if (cmd === 'stop') {
@@ -359,6 +390,63 @@ async function main(): Promise<void> {
     // Намеренно НЕ queue.close(): панель держит процесс живым, пока слушает
     // http; закрыть БД здесь значило бы, что первый же запрос к /api/pending
     // обратится к уже закрытому sqlite-соединению.
+    return;
+  }
+
+  if (cmd === 'letters') {
+    // Дозаполнение писем у строк, которые уже в очереди, но остались с пустым
+    // письмом: генерация могла не удаться из-за отсутствующего ключа или 429
+    // от бесплатной модели. Повторный search такие строки не чинит — их
+    // отсекает дедупликация по (source, source_id) ещё до генерации.
+    warnIfProxyFlagMissing();
+    const config = loadConfig();
+    const queue = new Queue(DB_PATH);
+    try {
+      if (!process.env['OPENROUTER_API_KEY']) {
+        console.error('OPENROUTER_API_KEY не найден — генерировать нечем.');
+        console.error('Положи ключ в файл .env рядом с package.json:');
+        console.error('  OPENROUTER_API_KEY=sk-or-v1-...');
+        process.exitCode = 1;
+        return;
+      }
+
+      const resume = readFileSync(RESUME_PATH, 'utf8');
+      const empty = queue.listByStatus('pending').filter((r) => r.letter.trim() === '');
+      if (empty.length === 0) {
+        console.log('Пустых писем нет — дозаполнять нечего.');
+        return;
+      }
+
+      console.log(`Пустых писем: ${empty.length}. Генерирую.`);
+      let filled = 0;
+      for (const row of empty) {
+        const mode = pickMode(row.score, config.letterFullThreshold);
+        const templateName = pickTemplate(row.vacancy, row.matched);
+        const result = await generateLetter(
+          {
+            vacancy: row.vacancy,
+            matched: row.matched,
+            mode,
+            resume,
+            template: readFileSync(`templates/${templateName}.md`, 'utf8'),
+          },
+          { models: config.letterModels },
+        );
+        if (result.letter.trim() === '') {
+          console.log(`  #${row.id} не удалось: ${row.vacancy.title.slice(0, 45)}`);
+          continue;
+        }
+        queue.setLetter(row.id, result.letter, result.mode);
+        filled++;
+        console.log(`  #${row.id} готово (${result.letter.length} симв.): ${row.vacancy.title.slice(0, 45)}`);
+      }
+      console.log(`\nЗаполнено ${filled} из ${empty.length}.`);
+      if (filled < empty.length) {
+        console.log('Оставшиеся можно повторить этой же командой — свободные модели часто отдают 429.');
+      }
+    } finally {
+      queue.close();
+    }
     return;
   }
 

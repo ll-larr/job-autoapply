@@ -17,7 +17,8 @@
     "stop": "tsx --use-env-proxy src/cli.ts stop",
     "status": "tsx --use-env-proxy src/cli.ts status",
     "go": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1",
-    "login": "tsx scripts/login.ts"
+    "login": "tsx scripts/login.ts",
+    "letters": "tsx --use-env-proxy src/cli.ts letters"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

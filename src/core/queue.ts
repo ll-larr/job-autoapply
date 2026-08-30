@@ -94,6 +94,26 @@ export class Queue {
     this.requireTransitioned(id, 'pending', result.changes);
   }
 
+  /**
+   * Дописать письмо в строку, которая ещё ждёт решения человека.
+   *
+   * Нужно, потому что дедупликация по (source, source_id) не даст повторным
+   * поиском перегенерировать письмо: вакансия уже в очереди, и следующий
+   * прогон её просто пропустит. Если генерация в тот раз не удалась (не было
+   * ключа, модель отдала 429), строка навсегда осталась бы с пустым письмом,
+   * и единственным выходом было бы удалить базу и потерять уже принятые
+   * решения. Отсюда отдельная операция дозаполнения.
+   *
+   * Только из `pending`: письмо в одобренной строке трогать нельзя — человек
+   * одобрил конкретный текст, и подменять его под ним недопустимо.
+   */
+  setLetter(id: number, letter: string, letterMode: LetterMode): void {
+    const result = this.db.prepare(
+      "UPDATE applications SET letter=?, letter_mode=? WHERE id=? AND status='pending'",
+    ).run(letter, letterMode, id);
+    this.requireTransitioned(id, 'pending', result.changes);
+  }
+
   skip(id: number): void {
     const result = this.db.prepare(
       "UPDATE applications SET status='skipped', decided_at=? WHERE id=? AND status IN ('pending','approved')",

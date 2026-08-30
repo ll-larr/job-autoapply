@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { buildPrompt, pickTemplate, pickMode, generateLetter, isUsableLetter } from '../src/core/letter.js';
+import { findForbiddenClaim, buildPrompt, pickTemplate, pickMode, generateLetter, isUsableLetter } from '../src/core/letter.js';
 import type { LetterInput } from '../src/core/letter.js';
 import { normalizeVacancy } from '../src/core/vacancy.js';
 
@@ -381,5 +381,34 @@ describe('isUsableLetter', () => {
   it('в режиме full скелет не с чем сравнивать, проверяются только плейсхолдеры', () => {
     expect(isUsableLetter('Любой связный текст письма.', base({ mode: 'full' }))).toBe(true);
     expect(isUsableLetter('Текст с {{FIT}} внутри.', base({ mode: 'full' }))).toBe(false);
+  });
+});
+
+describe('findForbiddenClaim', () => {
+  it('ловит выдуманную глубину SQL', () => {
+    // Настоящий текст, который модель вернула 2026-08-30. В резюме нет ни
+    // JOIN, ни оконных функций; пользователь сказал, что сложные запросы
+    // с нуля не пишет.
+    const real = 'создавал отчётные запросы с JOIN, оконными функциями и агрегатами';
+    expect(findForbiddenClaim(real)).not.toBeNull();
+  });
+
+  it('ловит приписанное проектирование контрактов API', () => {
+    expect(findForbiddenClaim('проектировал контракты API для смежных команд')).not.toBeNull();
+  });
+
+  it('не запрещает сам навык, только заявленную глубину', () => {
+    // "SQL" и "API" сами по себе законны: он их читает и правит.
+    expect(findForbiddenClaim('читаю и правлю SQL, работаю с API через Postman')).toBeNull();
+  });
+
+  it('письмо с выдумкой считается негодным и уходит на повтор', () => {
+    const skeleton = ['Здравствуйте!', '', '{{HOOK}}', '', 'Я аналитик.', '', '{{FIT}}', '', 'Артём'].join('\n');
+    const lying = skeleton
+      .replace('{{HOOK}}', 'Задачи близки к моим.')
+      .replace('{{FIT}}', 'Писал запросы с оконными функциями.');
+    expect(isUsableLetter(lying, {
+      vacancy: mk(), matched: [], mode: 'hybrid', resume: RESUME, template: skeleton,
+    })).toBe(false);
   });
 });
