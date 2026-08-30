@@ -218,3 +218,214 @@ describe('панель — поиск с проводкой', () => {
     expect(started).toEqual([]);
   });
 });
+
+// ============================================================================
+// Задача task-review-fixes, находка 2: поиск и отправка держат один и тот же
+// браузерный профиль (browser-profile/) — обе команды нужен один и тот же
+// Chromium с одной и той же залогиненной сессией. Раньше /api/search/start
+// проверял только search.running, а /api/send/start — только send.running,
+// так что запуск одного поверх идущего другого падал на первой же странице/
+// заявке, и предохранитель maxConsecutiveFailures в sender.ts останавливал
+// очередь так, будто площадка сломалась.
+// ============================================================================
+describe('панель — поиск и отправка не идут одновременно', () => {
+  const CONFIG = {
+    minScore: 40, letterFullThreshold: 75, letterModels: ['m:free'],
+    searchQueries: [{ query: 'бизнес-аналитик' }],
+    throttle: { hh: { minDelayMs: 0, maxDelayMs: 0 } },
+  };
+
+  it('старт отправки во время идущего поиска отклоняется явным 409, называющим поиск', async () => {
+    let resolveSearch: (() => void) | undefined;
+    const p2 = await startPanel(q, 0, {
+      adapters: [{
+        name: 'hh',
+        async search() { return []; },
+        async apply() { return { status: 'sent' as const }; },
+      }],
+      config: CONFIG,
+      startSearch: async () => {
+        await new Promise<void>((r) => { resolveSearch = r; });
+        return { report: { found: 0, queued: 0 }, emptyLetters: 0 };
+      },
+    });
+    try {
+      const start = await fetch(`http://127.0.0.1:${p2.port}/api/search/start`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: 5 }),
+      });
+      expect(start.status).toBe(202);
+      for (let i = 0; i < 40; i++) {
+        const st = await (await fetch(`http://127.0.0.1:${p2.port}/api/search/status`)).json() as { running: boolean };
+        if (st.running) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+
+      const res = await fetch(`http://127.0.0.1:${p2.port}/api/send/start`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      expect(res.status).toBe(409);
+      const body = await res.json() as { error: string };
+      expect(body.error).toMatch(/поиск/i);
+
+      resolveSearch?.();
+    } finally {
+      await p2.close();
+    }
+  });
+
+  it('старт поиска во время идущей отправки отклоняется явным 409, называющим отправку', async () => {
+    const row = q.listByStatus('pending')[0]!;
+    q.approve(row.id);
+
+    let resolveApply: (() => void) | undefined;
+    const p2 = await startPanel(q, 0, {
+      adapters: [{
+        name: 'hh',
+        async search() { return []; },
+        async apply() {
+          await new Promise<void>((r) => { resolveApply = r; });
+          return { status: 'sent' as const };
+        },
+      }],
+      config: CONFIG,
+      startSearch: async () => ({ report: { found: 0, queued: 0 }, emptyLetters: 0 }),
+    });
+    try {
+      const start = await fetch(`http://127.0.0.1:${p2.port}/api/send/start`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      expect(start.status).toBe(202);
+      for (let i = 0; i < 40; i++) {
+        const st = await (await fetch(`http://127.0.0.1:${p2.port}/api/send/status`)).json() as { running: boolean };
+        if (st.running) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+
+      const res = await fetch(`http://127.0.0.1:${p2.port}/api/search/start`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: 5 }),
+      });
+      expect(res.status).toBe(409);
+      const body = await res.json() as { error: string };
+      expect(body.error).toMatch(/отправк/i);
+
+      resolveApply?.();
+    } finally {
+      await p2.close();
+    }
+  });
+});
+
+// ============================================================================
+// Задача task-review-fixes, находка 9: startedAt писался в SendState/
+// SearchState и никогда не читался ни одной ручкой статуса. Операция идёт
+// минутами — "сколько уже прошло" не декоративная мелочь. Решение: отдавать
+// его через /api/*/status (панель показывает прошедшее время).
+// ============================================================================
+describe('панель — startedAt в статусе поиска/отправки (finding 9)', () => {
+  it('startedAt отсутствует (null) до первого запуска и появляется числом, пока поиск идёт', async () => {
+    let resolveSearch: (() => void) | undefined;
+    const p2 = await startPanel(q, 0, {
+      startSearch: async () => {
+        await new Promise<void>((r) => { resolveSearch = r; });
+        return { report: { found: 0, queued: 0 }, emptyLetters: 0 };
+      },
+    });
+    try {
+      const before = await (await fetch(`http://127.0.0.1:${p2.port}/api/search/status`)).json() as { startedAt: number | null };
+      expect(before.startedAt).toBeNull();
+
+      const t0 = Date.now();
+      await fetch(`http://127.0.0.1:${p2.port}/api/search/start`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: 5 }),
+      });
+      const during = await (await fetch(`http://127.0.0.1:${p2.port}/api/search/status`)).json() as
+        { running: boolean; startedAt: number | null };
+      expect(during.running).toBe(true);
+      expect(typeof during.startedAt).toBe('number');
+      expect(during.startedAt as number).toBeGreaterThanOrEqual(t0);
+
+      resolveSearch?.();
+    } finally {
+      await p2.close();
+    }
+  });
+
+  it('startedAt появляется в статусе отправки, пока она идёт', async () => {
+    const row = q.listByStatus('pending')[0]!;
+    q.approve(row.id);
+
+    let resolveApply: (() => void) | undefined;
+    const p2 = await startPanel(q, 0, {
+      adapters: [{
+        name: 'hh',
+        async search() { return []; },
+        async apply() {
+          await new Promise<void>((r) => { resolveApply = r; });
+          return { status: 'sent' as const };
+        },
+      }],
+      config: {
+        minScore: 40, letterFullThreshold: 75, letterModels: ['m:free'],
+        searchQueries: [{ query: 'q' }], throttle: { hh: { minDelayMs: 0, maxDelayMs: 0 } },
+      },
+    });
+    try {
+      const t0 = Date.now();
+      await fetch(`http://127.0.0.1:${p2.port}/api/send/start`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      const during = await (await fetch(`http://127.0.0.1:${p2.port}/api/send/status`)).json() as
+        { running: boolean; startedAt: number | null };
+      expect(during.running).toBe(true);
+      expect(typeof during.startedAt).toBe('number');
+      expect(during.startedAt as number).toBeGreaterThanOrEqual(t0);
+
+      resolveApply?.();
+    } finally {
+      await p2.close();
+    }
+  });
+});
+
+// ============================================================================
+// Задача task-review-fixes, находка 1: панель теперь собирает адаптеры один
+// раз и переиспользует их для поиска и отправки (см. cli.ts). Дополнение —
+// panel.close() отпускает браузерные контексты адаптеров, у кого они есть,
+// а не оставляет их висеть после остановки панели.
+// ============================================================================
+describe('панель — close() освобождает адаптеры (finding 1)', () => {
+  it('вызывает close() у адаптера, если он его предоставляет', async () => {
+    let closed = 0;
+    const adapter = {
+      name: 'hh',
+      async search() { return []; },
+      async apply() { return { status: 'sent' as const }; },
+      async close() { closed++; },
+    };
+    const p2 = await startPanel(q, 0, {
+      adapters: [adapter],
+      config: {
+        minScore: 40, letterFullThreshold: 75, letterModels: ['m:free'],
+        searchQueries: [{ query: 'q' }], throttle: {},
+      },
+    });
+    await p2.close();
+    expect(closed).toBe(1);
+  });
+
+  it('адаптер без close() не мешает панели закрыться', async () => {
+    const adapter = {
+      name: 'hrge',
+      async search() { return []; },
+      async apply() { return { status: 'sent' as const }; },
+    };
+    const p2 = await startPanel(q, 0, {
+      adapters: [adapter],
+      config: {
+        minScore: 40, letterFullThreshold: 75, letterModels: ['m:free'],
+        searchQueries: [{ query: 'q' }], throttle: {},
+      },
+    });
+    await expect(p2.close()).resolves.toBeUndefined();
+  });
+});

@@ -103,8 +103,51 @@ export function loadConfig(path = 'config.json'): Config {
   }
   for (const [site, rule] of Object.entries(parsed.throttle ?? {})) {
     if (!rule) continue;
+    // minDelayMs/maxDelayMs объявлены обязательными (не optional) в
+    // ThrottleRule, но JSON.parse ничего не проверяет во время выполнения —
+    // {"hh": {}} проходило бы мимо этого блока незамеченным. rule.minDelayMs
+    // > rule.maxDelayMs при обоих undefined даёт `undefined > undefined`,
+    // то есть false — запись с пустым объектом раньше молча считалась
+    // валидной. В sender.ts это оборачивается NaN-задержкой: setTimeout(NaN)
+    // срабатывает немедленно, и заявки на площадку уходят без пауз — ровно
+    // то, что "Fail closed" в sender.ts существует, чтобы предотвратить.
+    // Отсутствующая ЗАПИСЬ про площадку — это "не отправлять вовсе" (см.
+    // sender.ts), а отсутствующее ПОЛЕ внутри существующей записи должно
+    // быть настоящей ошибкой конфига, а не тихим "без паузы".
+    if (
+      typeof rule.minDelayMs !== 'number'
+      || !Number.isFinite(rule.minDelayMs)
+      || rule.minDelayMs < 0
+    ) {
+      throw new Error(`loadConfig: ${site}: minDelayMs обязателен и должен быть конечным числом >= 0`);
+    }
+    if (
+      typeof rule.maxDelayMs !== 'number'
+      || !Number.isFinite(rule.maxDelayMs)
+      || rule.maxDelayMs < 0
+    ) {
+      throw new Error(`loadConfig: ${site}: maxDelayMs обязателен и должен быть конечным числом >= 0`);
+    }
     if (rule.minDelayMs > rule.maxDelayMs) {
       throw new Error(`loadConfig: ${site}: minDelayMs больше maxDelayMs`);
+    }
+    // maxPerHour/maxPerDay остаются НЕобязательными — отсутствие поля
+    // сознательно означает «без ограничения» (см. комментарий у ThrottleRule
+    // в этом же файле) и должно остаться возможным. Но если поле задано, оно
+    // обязано быть настоящим положительным пределом: 0 или отрицательное
+    // число означало бы «никогда не отправлять» под видом лимита, а NaN/
+    // Infinity — тихую поломку сравнения в sender.ts (countSentSince >= cap).
+    if (
+      rule.maxPerHour !== undefined
+      && (typeof rule.maxPerHour !== 'number' || !Number.isFinite(rule.maxPerHour) || rule.maxPerHour <= 0)
+    ) {
+      throw new Error(`loadConfig: ${site}: maxPerHour должен быть конечным положительным числом`);
+    }
+    if (
+      rule.maxPerDay !== undefined
+      && (typeof rule.maxPerDay !== 'number' || !Number.isFinite(rule.maxPerDay) || rule.maxPerDay <= 0)
+    ) {
+      throw new Error(`loadConfig: ${site}: maxPerDay должен быть конечным положительным числом`);
     }
   }
   return parsed;

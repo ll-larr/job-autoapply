@@ -388,15 +388,24 @@ async function main(): Promise<void> {
     const config = loadConfig();
     const queue = new Queue(DB_PATH);
     const stuck = queue.countStuckApproved();
+    // Собираются РОВНО ОДИН РАЗ и переиспользуются для каждого поиска и для
+    // отправки. HhAdapter кеширует BrowserContext на persistent-профиле
+    // browser-profile/ (см. src/browser.ts) — второй HhAdapter поверх того
+    // же каталога профиля падает на launchPersistentContext, потому что
+    // первый ещё держит его открытым. Раньше startSearch собирал buildAdapters()
+    // заново на каждый клик «Найти», и второй поиск подряд в одной и той же
+    // панели гарантированно падал; теперь один и тот же адаптер просто
+    // переиспользует уже открытый браузер (см. HhAdapter.getContext).
+    const adapters = buildAdapters();
     await startPanel(queue, PANEL_PORT, {
-      adapters: buildAdapters(),
+      adapters,
       config,
       // Та же проводка, что у команды search: панель не собирает конвейер
       // заново, а зовёт ровно то, что вызывает npm run search.
       startSearch: (limit) => runSearchCommand({
         queue,
         config,
-        adapters: buildAdapters(),
+        adapters,
         queries: config.searchQueries,
         limit,
         resume: readFileSync(RESUME_PATH, 'utf8'),

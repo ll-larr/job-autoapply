@@ -104,12 +104,23 @@ export async function startPanel(
           canSearch,
           result: search.result,
           error: search.error,
+          startedAt: search.startedAt,
         });
       }
 
       if (req.method === 'POST' && req.url === '/api/search/start') {
         if (!canSearch) {
           return json(res, { error: 'Панель запущена без поиска — используй npm run search.' }, 409);
+        }
+        // Поиск и отправка держат один и тот же браузерный профиль
+        // (browser-profile/, см. src/browser.ts) — обеим командам нужен один
+        // и тот же Chromium с одной и той же залогиненной сессией. Запуск
+        // отправки поверх идущего поиска (или наоборот) раньше падал на
+        // первой же заявке/странице, и предохранитель maxConsecutiveFailures
+        // в sender.ts останавливал очередь так, будто площадка сломалась —
+        // хотя сломалась не площадка, а одновременный доступ к профилю.
+        if (send.running) {
+          return json(res, { error: 'Отправка уже идёт — дождись её завершения, прежде чем запускать поиск.' }, 409);
         }
         if (search.running) {
           return json(res, { error: 'Поиск уже идёт.' }, 409);
@@ -147,12 +158,19 @@ export async function startPanel(
           report: send.report,
           error: send.error,
           approved: queue.listByStatus('approved').length,
+          startedAt: send.startedAt,
         });
       }
 
       if (req.method === 'POST' && req.url === '/api/send/start') {
         if (!canSend) {
           return json(res, { error: 'Панель запущена без адаптеров — отправка недоступна.' }, 409);
+        }
+        // Тот же общий браузерный профиль, что и у поиска (см. комментарий в
+        // /api/search/start) — отправка поверх идущего поиска падает на
+        // первой же заявке, а не только вторая отправка поверх идущей.
+        if (search.running) {
+          return json(res, { error: 'Поиск уже идёт — дождись его завершения, прежде чем запускать отправку.' }, 409);
         }
         // Вторая отправка поверх идущей означала бы две попытки подать одну и
         // ту же заявку одновременно. Отказываем явно, а не молча.
@@ -241,6 +259,17 @@ export async function startPanel(
 
   return {
     port: actualPort,
-    close: () => new Promise<void>((r) => server.close(() => r())),
+    close: async () => {
+      await new Promise<void>((r) => server.close(() => r()));
+      // Отпускаем браузерные контексты адаптеров, у кого они есть (сейчас —
+      // только HhAdapter.close(), см. src/adapters/hh.ts). Не часть Adapter
+      // (types.ts осознанно остаётся с двумя методами) — вызывается по
+      // утиной типизации, необязательно: адаптер без close() просто
+      // пропускается, HrGeAdapter не держит ничего, что нужно закрывать.
+      for (const a of deps.adapters ?? []) {
+        const maybeClose = (a as { close?: () => Promise<void> }).close;
+        if (typeof maybeClose === 'function') await maybeClose.call(a).catch(() => {});
+      }
+    },
   };
 }

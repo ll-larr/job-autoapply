@@ -139,6 +139,50 @@ describe('HrGeAdapter.search', () => {
     });
     expect(await a.search({ query: 'analyst' })).toEqual([]);
   });
+
+  // Регрессия (задача task-review-fixes, находка 11): hr.ge не несёт
+  // структурного маркера опыта нигде в API — ни в поиске, ни в детали.
+  // isJuniorExperience(null)/isExperienceAcceptable(null) намеренно пропускают
+  // "неизвестно" (core/screening.ts), так что constraints.juniorOnly на
+  // запросе "системный аналитик" не отсеивал НИ ОДНОЙ грузинской вакансии —
+  // не потому что все они junior, а потому что experience всегда оставался
+  // null и гейту было не на чем сработать. Отчёт поиска показывал это как
+  // "ничего не отфильтровано", а не как "ограничение неприменимо".
+  it('заполняет experience разбором текста описания — тем же фолбэком, что использует hh.ru', async () => {
+    const detailWithExperience = {
+      data: {
+        announcement: {
+          description: 'Опыт работы не менее 5 лет в аналогичной должности требуется.',
+        },
+      },
+    };
+    const a = new HrGeAdapter({
+      fetchImpl: async (url) => {
+        if (String(url).includes('announcement-search')) {
+          return new Response(JSON.stringify(searchFixture), { status: 200 });
+        }
+        return new Response(JSON.stringify(detailWithExperience), { status: 200 });
+      },
+    });
+    const vs = await a.search({ query: 'analyst', maxResults: 1 });
+    expect(vs).toHaveLength(1);
+    // "не менее 5 лет" -> years=[5] -> yearsToLevel(5) = 'between3And6'.
+    expect(vs[0]!.experience).toBe('between3And6');
+  });
+
+  it('без упоминания стажа в описании experience остаётся null (не выдумывает сигнал)', async () => {
+    const a = new HrGeAdapter({
+      fetchImpl: async (url) => {
+        if (String(url).includes('announcement-search')) {
+          return new Response(JSON.stringify(searchFixture), { status: 200 });
+        }
+        return new Response(JSON.stringify(detailFixture), { status: 200 });
+      },
+    });
+    const vs = await a.search({ query: 'analyst', maxResults: 1 });
+    expect(vs).toHaveLength(1);
+    expect(vs[0]!.experience).toBeNull();
+  });
 });
 
 describe('HrGeAdapter.apply', () => {

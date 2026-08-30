@@ -339,23 +339,77 @@ export interface HhAdapterOptions {
   /** Для тестов — свой BrowserContext вместо реального залогиненного профиля. */
   context?: BrowserContext;
   timeouts?: Partial<Timeouts>;
+  /**
+   * Как открыть контекст заново — при первом обращении и каждый раз, когда
+   * предыдущий закрылся сам. По умолчанию — настоящий залогиненный профиль
+   * (openProfile). Тесты подменяют её на одноразовый offline-контекст, чтобы
+   * не трогать реальный browser-profile/ пользователя.
+   */
+  openContext?: () => Promise<BrowserContext>;
+}
+
+/**
+ * Статистика последнего search(): сколько карточек реально прочитано (до
+ * бюджета maxResults) и сколько из них отсеяно ДО открытия страницы вакансии.
+ * НЕ часть контракта Adapter (types.ts осознанно остаётся с двумя методами,
+ * см. отчёт задачи) — pipeline.ts читает это поле по утиной типизации, как
+ * необязательный бонус-сигнал, а не через интерфейс.
+ */
+export interface HhSearchStats {
+  /** Сырые карточки, прочитанные со страниц выдачи — то, что реально стоило времени/бюджета. */
+  read: number;
+  /** Из read: отсеяно по опыту (вне допустимого диапазона) до открытия страницы вакансии. */
+  rejectedExperience: number;
+  /** Из read: отсеяно по грейду заголовка до открытия страницы вакансии. */
+  rejectedGrade: number;
+  /** Из read: пропущено, потому что id уже встречался в этом прогоне под другой формулировкой (см. SearchFilters.seenThisRun). */
+  duplicatesSkipped: number;
 }
 
 export class HhAdapter implements Adapter {
   readonly name = 'hh';
   private context: BrowserContext | undefined;
+  private contextClosed = false;
   private readonly timeouts: Timeouts;
+  private readonly openContextFn: () => Promise<BrowserContext>;
+  /** См. HhSearchStats. undefined до первого успешного search(). */
+  lastSearchStats: HhSearchStats | undefined;
 
   constructor(opts: HhAdapterOptions = {}) {
-    this.context = opts.context;
     this.timeouts = { ...DEFAULT_TIMEOUTS, ...opts.timeouts };
+    this.openContextFn = opts.openContext ?? (() => openProfile(false));
+    if (opts.context) this.setContext(opts.context);
+  }
+
+  private setContext(context: BrowserContext): void {
+    this.context = context;
+    this.contextClosed = false;
+    // Пользователь, закрывший окно Chromium руками, — обычное дело, а не
+    // ошибка (см. отчёт задачи). BrowserContext эмитит 'close' и когда его
+    // закрыли явно, и когда браузер персистентного профиля закрыли извне —
+    // оба случая должны привести к переоткрытию на следующем getContext(),
+    // а не к падению с "Target page, context or browser has been closed".
+    context.once('close', () => { this.contextClosed = true; });
   }
 
   private async getContext(): Promise<BrowserContext> {
-    if (!this.context) {
-      this.context = await openProfile(false);
+    if (!this.context || this.contextClosed) {
+      this.setContext(await this.openContextFn());
     }
-    return this.context;
+    return this.context!;
+  }
+
+  /**
+   * Отпускает браузер, если он был открыт. Безопасно звать повторно и
+   * безопасно звать без единого предыдущего search()/apply() — не бросает
+   * ни в том, ни в другом случае.
+   */
+  async close(): Promise<void> {
+    if (this.context && !this.contextClosed) {
+      await this.context.close().catch(() => {});
+    }
+    this.context = undefined;
+    this.contextClosed = false;
   }
 
   async search(filters: SearchFilters): Promise<Vacancy[]> {
@@ -405,9 +459,30 @@ export class HhAdapter implements Adapter {
       //
       // Фильтр 1С и core-гейт здесь применить нельзя — им нужен текст
       // описания, которого у карточки нет. Их отрабатывает конвейер.
-      const wanted = collected.filter(
-        (it) => !isSeniorTitle(it.title) && isExperienceAcceptable(it.experience ?? null),
-      );
+      //
+      // Порядок проверок (опыт → грейд) совпадает с core/screening.ts —
+      // одна и та же причина должна называться одинаково независимо от
+      // того, отсеяла её карточка здесь или screenVacancy в pipeline после
+      // дочитки описания.
+      //
+      // Считаем rejectedExperience/rejectedGrade явно (не одним filter()),
+      // потому что pipeline.ts складывает эти числа в SearchReport —
+      // без этого поля "отсеяно фильтрами" в панели показывало бы 0 для
+      // hh.ru: карточки, отсеянные здесь, никогда не доходят до screenVacancy.
+      // seenThisRun (см. SearchFilters) — третья причина пропуска, отдельная
+      // от двух выше: карточка сама по себе годная, но её уже читали под
+      // другой формулировкой этого же прогона, и открывать страницу вакансии
+      // повторно ради заведомого дубля незачем.
+      let rejectedExperience = 0;
+      let rejectedGrade = 0;
+      let duplicatesSkipped = 0;
+      const wanted: HhSearchItem[] = [];
+      for (const it of collected) {
+        if (!isExperienceAcceptable(it.experience ?? null)) { rejectedExperience++; continue; }
+        if (isSeniorTitle(it.title)) { rejectedGrade++; continue; }
+        if (filters.seenThisRun?.has(`${this.name}:${it.sourceId}`)) { duplicatesSkipped++; continue; }
+        wanted.push(it);
+      }
 
       const out: Vacancy[] = [];
       for (const item of wanted) {
@@ -445,6 +520,7 @@ export class HhAdapter implements Adapter {
           experience,
         }));
       }
+      this.lastSearchStats = { read: collected.length, rejectedExperience, rejectedGrade, duplicatesSkipped };
       return out;
     } finally {
       await page.close();

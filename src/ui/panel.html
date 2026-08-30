@@ -258,6 +258,15 @@ function renderSkipped(rows) {
   }
 }
 
+// startedAt (см. /api/search/status и /api/send/status) иначе писался бы и
+// никогда не читался: и поиск, и отправка идут минутами, и "сколько уже
+// прошло" — не декоративная мелочь для операции такой длины.
+function formatElapsed(startedAt, now) {
+  if (typeof startedAt !== 'number') return '';
+  const seconds = Math.max(0, Math.round((now - startedAt) / 1000));
+  return ` (${seconds} c)`;
+}
+
 // Поиск. Подтверждения не требует, в отличие от отправки: он ничего не
 // подаёт, только наполняет очередь. Но идёт минутами — открывает браузер,
 // листает выдачу, дочитывает описания, зовёт модель на каждое письмо, — так
@@ -291,7 +300,11 @@ async function pollSearch() {
 
   searchPolling = setInterval(async () => {
     const st = await fetchJson('/api/search/status');
-    if (st.running) return;
+    if (st.running) {
+      searchNote.textContent = 'Поиск идёт' + formatElapsed(st.startedAt, Date.now())
+        + '. Откроется браузер — это нормально, страницы только читаются.';
+      return;
+    }
 
     clearInterval(searchPolling);
     searchPolling = null;
@@ -325,6 +338,20 @@ let sendPolling = null;
 
 const sendBtn = document.getElementById('sendAll');
 const sendHint = document.getElementById('sendHint');
+
+// unthrottledSources документирован в src/core/sender.ts как "The caller is
+// responsible for surfacing this — a skip that nobody looks at is as bad as
+// no protection at all." Раньше эта строка собиралась только из sent/failed/
+// halted, и площадка без записи в config.throttle отправляла молча ноль
+// заявок, а панель писала "Отправлено 0, не удалось 0" — неотличимо от
+// пустой очереди.
+function buildSendResultText(r) {
+  const halted = r.halted ? `, ОСТАНОВЛЕНО (${r.halted.reason})` : '';
+  const unthrottled = (r.unthrottledSources && r.unthrottledSources.length)
+    ? `, ПРОПУЩЕНО БЕЗ ОТПРАВКИ (нет записи в config.throttle): ${r.unthrottledSources.join(', ')}`
+    : '';
+  return `Отправлено ${r.sent}, не удалось ${r.failed}${halted}${unthrottled}.`;
+}
 
 function resetSendButton(approved) {
   sendArmed = false;
@@ -364,7 +391,8 @@ async function pollSend() {
     if (st.running) {
       sendBtn.disabled = true;
       sendBtn.textContent = 'Отправка идёт...';
-      sendHint.textContent = 'Между подачами стоят паузы, это надолго. Окно можно не держать.';
+      sendHint.textContent = 'Идёт' + formatElapsed(st.startedAt, Date.now())
+        + '. Между подачами стоят паузы, это надолго. Окно можно не держать.';
       return;
     }
 
@@ -374,11 +402,7 @@ async function pollSend() {
     if (st.error) {
       sendHint.textContent = 'Отправка упала: ' + st.error;
     } else if (st.report) {
-      const r = st.report;
-      const halted = r.halted
-        ? `, ОСТАНОВЛЕНО (${r.halted.reason})`
-        : '';
-      sendHint.textContent = `Отправлено ${r.sent}, не удалось ${r.failed}${halted}.`;
+      sendHint.textContent = buildSendResultText(st.report);
     }
     sendBtn.disabled = false;
     sendBtn.textContent = 'Отправить всё';

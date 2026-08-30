@@ -6,6 +6,28 @@ import { screenVacancy, isJuniorExperience } from './core/screening.js';
 import { pickMode } from './core/letter.js';
 import { vacancyKey, type Vacancy } from './core/vacancy.js';
 
+/**
+ * Необязательная статистика, которую адаптер МОЖЕТ выставить на себе после
+ * search() — что он реально прочитал и что отсеял ДО того, как вернуть
+ * вакансии. НЕ часть контракта Adapter (types.ts осознанно остаётся с двумя
+ * методами search/apply, см. отчёт задачи) — читается по утиной типизации,
+ * необязательно. Сейчас это выставляет только HhAdapter (src/adapters/hh.ts,
+ * HhSearchStats): он отсеивает по опыту и грейду ДО открытия страницы
+ * вакансии, так что возвращённый массив — лишь часть реально прочитанного.
+ * Адаптер, который ничего не отсеивает сам (hr.ge), это поле не выставляет —
+ * pipeline в этом случае считает по длине возвращённого массива, как раньше.
+ */
+interface AdapterSearchStats {
+  read: number;
+  rejectedExperience: number;
+  rejectedGrade: number;
+  duplicatesSkipped?: number;
+}
+
+interface AdapterWithSearchStats {
+  lastSearchStats?: AdapterSearchStats;
+}
+
 export interface SearchReport {
   found: number;
   queued: number;
@@ -58,16 +80,14 @@ export interface RunSearchOptions {
    * Общий потолок на ВЕСЬ прогон (все запросы и адаптеры вместе), а не на
    * каждый запрос по отдельности — иначе пять формулировок означали бы
    * впятеро больше открытий страниц вакансий, чем пользователь попросил
-   * флагом --limit. Бюджет считается по количеству СЫРЫХ вакансий, реально
-   * прочитанных адаптерами (report.found), а не по числу уникальных после
-   * дедупа — это то, что действительно стоит денег/времени (страница
-   * вакансии открывается и читается ради описания ДО того, как pipeline
-   * узнаёт, что вакансия уже встречалась под другой формулировкой; убрать
-   * этот момент нельзя, не меняя SearchFilters, а это вне рамок задачи —
-   * см. отчёт задачи). Каждый следующий вызов adapter.search() получает
+   * флагом --limit. Бюджет считается по количеству СЫРЫХ карточек, реально
+   * прочитанных адаптерами (report.found — через AdapterSearchStats.read,
+   * когда адаптер его выставляет, иначе по длине возвращённого массива), а
+   * не по числу уникальных после дедупа — это то, что действительно стоит
+   * денег/времени. Каждый следующий вызов adapter.search() получает
    * оставшийся бюджет как maxResults, так что суммарно все вызовы за
-   * прогон не могут прочитать больше maxResults вакансий. undefined —
-   * без потолка (как раньше).
+   * прогон не могут прочитать больше maxResults карточек. undefined — без
+   * потолка (как раньше).
    */
   maxResults?: number;
   adapters: Adapter[];
@@ -103,6 +123,14 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
   // именно этот разрыв — вакансия проверяется и обрабатывается (screening,
   // scoring, письмо) не больше одного раза за прогон, независимо от того,
   // сколько формулировок её нашли.
+  //
+  // Передаётся адаптеру через SearchFilters.seenThisRun (см. adapters/types.ts)
+  // ДО следующего вызова search() — по мере обработки очередной формулировки
+  // сюда добавляются ключи всех обработанных вакансий, так что второй и
+  // последующий вызовы adapter.search() в этом же прогоне видят уже
+  // накопленное. Адаптер, который умеет читать это поле (hh.ru), пропускает
+  // открытие страницы вакансии для уже виденных id вместо того, чтобы
+  // прочитать и тут же выбросить дубль — см. HhAdapter.search.
   const seenThisRun = new Set<string>();
 
   const tasks: Array<{ qc: SearchQueryConfig; adapter: Adapter }> = [];
@@ -120,7 +148,7 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
 
     let vacancies: Vacancy[];
     try {
-      vacancies = await adapter.search({ query: qc.query, maxResults: remaining });
+      vacancies = await adapter.search({ query: qc.query, maxResults: remaining, seenThisRun });
     } catch (e) {
       // Частичный результат — валидный результат. Остальные площадки/запросы работают.
       report.adapterErrors.push({
@@ -130,7 +158,20 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
       continue;
     }
 
-    report.found += vacancies.length;
+    // Бюджет и отчёт о фильтрах должны отражать РЕАЛЬНО прочитанное адаптером,
+    // а не длину того, что он вернул после собственного предфильтра (см.
+    // AdapterSearchStats выше) — иначе --limit не ограничивает настоящую
+    // работу, а rejectedExperience/rejectedGrade показывают почти ноль для
+    // источников, которые отсеивают дёшево ещё до дочитки описания.
+    const stats = (adapter as unknown as AdapterWithSearchStats).lastSearchStats;
+    if (stats) {
+      report.found += stats.read;
+      report.rejectedExperience += stats.rejectedExperience;
+      report.rejectedGrade += stats.rejectedGrade;
+      report.duplicates += stats.duplicatesSkipped ?? 0;
+    } else {
+      report.found += vacancies.length;
+    }
 
     for (const v of vacancies) {
       const key = vacancyKey(v);

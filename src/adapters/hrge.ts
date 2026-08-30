@@ -1,4 +1,5 @@
 import { normalizeVacancy, type Vacancy } from '../core/vacancy.js';
+import { parseExperienceFromText } from '../core/screening.js';
 import type { Adapter, ApplyResult, SearchFilters } from './types.js';
 
 const BASE = 'https://api.p.hr.ge/public-portal/tenant/1/api/v3';
@@ -128,16 +129,28 @@ export class HrGeAdapter implements Adapter {
 
     const out: Vacancy[] = [];
     for (const item of wanted) {
+      const description = await this.fetchDescription(item.sourceId);
       out.push(normalizeVacancy({
         source: 'hrge',
         sourceId: item.sourceId,
         title: item.title,
         company: item.company,
         url: item.url,
-        description: await this.fetchDescription(item.sourceId),
+        description,
         geo: item.geo,
         postedAt: item.publishDate,
         isRemote: filters.remoteOnly ?? false,
+        // hr.ge не несёт структурного маркера опыта нигде в ответах API
+        // (ни в поиске, ни в детали) — в отличие от hh.ru, где он есть на
+        // карточке выдачи. Без этого поля juniorOnly/screenVacancy's опыт-гейт
+        // не имел ровно ничего, на чём сработать: isJuniorExperience(null) и
+        // isExperienceAcceptable(null) намеренно пропускают "неизвестно" (см.
+        // core/screening.ts), так что ограничение просто никогда не отсеивало
+        // ни одной грузинской вакансии — не потому что все они подходят, а
+        // потому что гейту нечего было проверять. Тот же фолбэк-парсер текста,
+        // что использует hh.ru, когда её собственный структурный маркер
+        // отсутствует.
+        experience: parseExperienceFromText(description),
       }));
     }
     return out;

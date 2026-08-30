@@ -6,7 +6,7 @@ import { runSearch } from '../src/pipeline.js';
 import { Queue } from '../src/core/queue.js';
 import { normalizeVacancy } from '../src/core/vacancy.js';
 import type { Vacancy } from '../src/core/vacancy.js';
-import type { Adapter } from '../src/adapters/types.js';
+import type { Adapter, SearchFilters } from '../src/adapters/types.js';
 
 const CONFIG = {
   minScore: 40, letterFullThreshold: 75, letterModels: ['m:free'],
@@ -370,6 +370,168 @@ describe('runSearch', () => {
         expect(rep.duplicates).toBe(1); // второе появление под 'системный аналитик'
         expect(rep.queued).toBe(1);
       });
+    });
+  });
+
+  // ==========================================================================
+  // AdapterSearchStats (утиная типизация lastSearchStats) — задача
+  // task-review-fixes, находки 4 и 7. src/adapters/hh.ts отсеивает часть
+  // карточек по опыту/грейду ДО открытия страницы вакансии, поэтому
+  // возвращённый vacancies.length — лишь часть реально прочитанного.
+  // Раньше report.found считался по vacancies.length: --limit не ограничивал
+  // настоящую работу (адаптер честно уважал remaining как СВОЙ бюджет
+  // карточек, но pipeline не уменьшал remaining на то, что было реально
+  // прочитано — только на то, что вернулось), а rejectedExperience/
+  // rejectedGrade оставались 0 для hh.ru, потому что отсеянные карточки
+  // никогда не доходили до screenVacancy в этом же файле.
+  // ==========================================================================
+  describe('AdapterSearchStats — бюджет и отчёт считаются по реально прочитанному адаптером', () => {
+    type Stats = { read: number; rejectedExperience: number; rejectedGrade: number; duplicatesSkipped?: number };
+
+    /**
+     * Симулирует hh.ru: "читает" `stats.read` карточек, но возвращает только
+     * пригоршню полноценных Vacancy — ровно так же, как реальный HhAdapter,
+     * отсеивающий по опыту/грейду до открытия страницы вакансии.
+     */
+    function mkPrescreeningAdapter(
+      stats: Stats,
+      returned: readonly Vacancy[],
+      name = 'hh',
+    ): Adapter & { lastSearchStats?: Stats; calls: Array<{ maxResults: number | undefined }> } {
+      const calls: Array<{ maxResults: number | undefined }> = [];
+      const adapter = {
+        name,
+        calls,
+        lastSearchStats: undefined as Stats | undefined,
+        async search(filters: SearchFilters) {
+          calls.push({ maxResults: filters.maxResults });
+          adapter.lastSearchStats = stats;
+          return [...returned];
+        },
+        async apply() { return { status: 'sent' as const }; },
+      };
+      return adapter;
+    }
+
+    it('report.found считает read адаптера, а не длину возвращённого массива', async () => {
+      const returned = [normalizeVacancy({
+        source: 'hh', sourceId: '1', title: 'БА', company: 'C', url: 'u',
+        description: PROCESS_LANGUAGE, geo: 'Москва', postedAt: '2026-08-20T00:00:00Z',
+      })];
+      const adapter = mkPrescreeningAdapter(
+        { read: 50, rejectedExperience: 30, rejectedGrade: 6, duplicatesSkipped: 0 },
+        returned,
+      );
+      const rep = await runSearch({
+        queue: q, config: CONFIG, queries: [{ query: 'аналитик' }],
+        adapters: [adapter],
+        generate: async () => ({ letter: 'письмо', mode: 'hybrid' as const }),
+      });
+      expect(rep.found).toBe(50); // не 1 (returned.length)
+    });
+
+    it('складывает предфильтр адаптера в rejectedExperience/rejectedGrade суммарного отчёта', async () => {
+      const adapter = mkPrescreeningAdapter(
+        { read: 50, rejectedExperience: 30, rejectedGrade: 6, duplicatesSkipped: 0 },
+        [],
+      );
+      const rep = await runSearch({
+        queue: q, config: CONFIG, queries: [{ query: 'аналитик' }],
+        adapters: [adapter],
+        generate: async () => ({ letter: 'письмо', mode: 'hybrid' as const }),
+      });
+      expect(rep.rejectedExperience).toBe(30);
+      expect(rep.rejectedGrade).toBe(6);
+    });
+
+    it('--limit реально ограничивает СЫРЫЕ карточки: вторая формулировка получает остаток от read, а не от returned.length', async () => {
+      const adapter = mkPrescreeningAdapter(
+        { read: 500, rejectedExperience: 495, rejectedGrade: 0, duplicatesSkipped: 0 },
+        [],
+      );
+      await runSearch({
+        queue: q, config: CONFIG,
+        queries: [{ query: 'q1' }, { query: 'q2' }],
+        maxResults: 500,
+        adapters: [adapter],
+        generate: async () => ({ letter: 'письмо', mode: 'hybrid' as const }),
+      });
+      // Первый вызов уже "прочитал" 500 сырых карточек (весь бюджет), хотя
+      // вернул только 5 годных вакансий — второй вызов обязан получить
+      // remaining=0 и не открывать вообще ни одной страницы, а не 495
+      // (500 - 5 вернувшихся).
+      expect(adapter.calls).toEqual([{ maxResults: 500 }]); // q2 не звался вовсе
+    });
+
+    it('без lastSearchStats (адаптер вроде hr.ge, ничего не отсеивает сам) — поведение как раньше, по vacancies.length', async () => {
+      const rep = await runSearch({
+        queue: q, config: CONFIG, queries: [{ query: 'аналитик' }],
+        adapters: [mkAdapter([PROCESS_LANGUAGE, PROCESS_LANGUAGE])],
+        generate: async () => ({ letter: 'письмо', mode: 'hybrid' as const }),
+      });
+      expect(rep.found).toBe(2);
+      expect(rep.rejectedExperience).toBe(0);
+      expect(rep.rejectedGrade).toBe(0);
+    });
+
+    it('duplicatesSkipped адаптера добавляется в report.duplicates', async () => {
+      const adapter = mkPrescreeningAdapter(
+        { read: 10, rejectedExperience: 0, rejectedGrade: 0, duplicatesSkipped: 4 },
+        [],
+      );
+      const rep = await runSearch({
+        queue: q, config: CONFIG, queries: [{ query: 'аналитик' }],
+        adapters: [adapter],
+        generate: async () => ({ letter: 'письмо', mode: 'hybrid' as const }),
+      });
+      expect(rep.duplicates).toBe(4);
+    });
+  });
+
+  // ==========================================================================
+  // seenThisRun передаётся адаптеру (задача task-review-fixes, находка 5) —
+  // адаптер, который умеет читать SearchFilters.seenThisRun, может сам
+  // пропустить дочитку уже виденной в этом прогоне вакансии, вместо того
+  // чтобы читать её и тут же выбрасывать как дубль.
+  // ==========================================================================
+  describe('SearchFilters.seenThisRun — накопленный набор передаётся в каждый следующий search()', () => {
+    function mkSeenCapturingAdapter(
+      byQuery: Record<string, Vacancy[]>,
+      name = 'hh',
+    ): Adapter & { seenPerCall: string[][] } {
+      // Снимок массивом в момент вызова, а не сама ссылка на Set: pipeline
+      // передаёт один и тот же изменяемый Set во все вызовы этого прогона и
+      // продолжает дописывать в него после возврата search() — сохранение
+      // ссылки показало бы во ВСЕХ записях его финальное состояние.
+      const seenPerCall: string[][] = [];
+      return {
+        name,
+        seenPerCall,
+        async search(filters) {
+          seenPerCall.push([...(filters.seenThisRun ?? [])]);
+          return byQuery[filters.query] ?? [];
+        },
+        async apply() { return { status: 'sent' as const }; },
+      };
+    }
+
+    it('первый вызов видит пустой seenThisRun, второй — уже содержащий ключ вакансии из первого', async () => {
+      const vacancyA = normalizeVacancy({
+        source: 'hh', sourceId: '1', title: 'Бизнес-аналитик', company: 'C', url: 'u',
+        description: PROCESS_LANGUAGE, geo: 'Москва', postedAt: '2026-08-20T00:00:00Z',
+      });
+      const adapter = mkSeenCapturingAdapter({ q1: [vacancyA], q2: [] });
+
+      await runSearch({
+        queue: q, config: CONFIG,
+        queries: [{ query: 'q1' }, { query: 'q2' }],
+        adapters: [adapter],
+        generate: async () => ({ letter: 'письмо', mode: 'hybrid' as const }),
+      });
+
+      expect(adapter.seenPerCall).toHaveLength(2);
+      expect(adapter.seenPerCall[0]).toEqual([]);
+      expect(adapter.seenPerCall[1]).toEqual(['hh:1']);
     });
   });
 });

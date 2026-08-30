@@ -363,6 +363,152 @@ describe('HhAdapter.search — интеграция через перехват 
 
     await context.close();
   }, 60000);
+
+  // Задача task-review-fixes, находки 4 и 7: report.found/rejectedExperience/
+  // rejectedGrade в pipeline.ts должны отражать то, что адаптер реально
+  // прочитал и отсеял ДО открытия страницы вакансии — иначе --limit не
+  // ограничивает настоящую работу, а панель показывает "отсеяно фильтрами 0"
+  // для hh.ru, хотя фильтры молча отбросили десятки карточек.
+  it('lastSearchStats.read считает все 50 сырых карточек, а отсев по опыту/грейду в сумме объясняет разницу с вернувшимися', async () => {
+    const context = await browser.newContext();
+    await context.route('**/*', (route) => {
+      if (!isHhDocumentRequest(route)) return route.abort();
+      const url = route.request().url();
+      if (url.includes('/search/vacancy')) {
+        return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: searchHtml });
+      }
+      if (url.includes('/vacancy/')) {
+        return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: vacancyHtml });
+      }
+      return route.abort();
+    });
+
+    const adapter = new HhAdapter({ context });
+    const vacancies = await adapter.search({ query: 'бизнес-аналитик' });
+
+    expect(adapter.lastSearchStats).toBeDefined();
+    const stats = adapter.lastSearchStats!;
+    expect(stats.read).toBe(50); // все 50 карточек фикстуры, независимо от того, сколько вернулось
+    expect(stats.duplicatesSkipped).toBe(0); // seenThisRun не передан
+    // Учёт исчерпывающий: каждая из 50 сырых карточек попала ровно в одну
+    // категорию — отсеяна по опыту, отсеяна по грейду, либо вернулась.
+    expect(stats.rejectedExperience + stats.rejectedGrade + vacancies.length).toBe(50);
+    expect(vacancies).toHaveLength(14); // сверено с тестом выше
+
+    await context.close();
+  }, 60000);
+
+  it('seenThisRun пропускает уже виденную карточку до открытия её страницы', async () => {
+    const context = await browser.newContext();
+    const detailRequests: string[] = [];
+    await context.route('**/*', (route) => {
+      if (!isHhDocumentRequest(route)) return route.abort();
+      const url = route.request().url();
+      if (url.includes('/search/vacancy')) {
+        return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: searchHtml });
+      }
+      if (url.includes('/vacancy/')) {
+        detailRequests.push(url);
+        return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: vacancyHtml });
+      }
+      return route.abort();
+    });
+
+    const adapter = new HhAdapter({ context });
+    // 136701903 — первая карточка фикстуры (см. тест parseSearchPage выше),
+    // одна из 14, которые проходят отсев по опыту/грейду и обычно получают
+    // свою страницу открытой.
+    const already = new Set(['hh:136701903']);
+    const vacancies = await adapter.search({ query: 'бизнес-аналитик', seenThisRun: already });
+
+    expect(vacancies).toHaveLength(13); // 14 - 1 пропущенная как уже виденная
+    expect(vacancies.some((v) => v.sourceId === '136701903')).toBe(false);
+    expect(detailRequests.some((u) => u.includes('/vacancy/136701903'))).toBe(false);
+    expect(adapter.lastSearchStats?.duplicatesSkipped).toBe(1);
+
+    await context.close();
+  }, 60000);
+});
+
+describe('HhAdapter — жизненный цикл BrowserContext (задача task-review-fixes, находка 1)', () => {
+  it('close() отпускает контекст — следующий getContext() открывает НОВЫЙ через openContext, а не переиспользует закрытый', async () => {
+    const context = await browser.newContext();
+    await context.route('**/*', (route) => route.abort());
+    let reopens = 0;
+    const adapter = new HhAdapter({
+      context,
+      // navigationMs короткий: страница-заглушка ниже никогда не несёт
+      // SEARCH_TITLE_LINK, а без короткого таймаута search() честно ждала
+      // бы полную минуту (DEFAULT_TIMEOUTS.navigationMs) на пустом waitFor.
+      timeouts: { navigationMs: 500 },
+      openContext: async () => {
+        reopens++;
+        const c = await browser.newContext();
+        await c.route('**/*', (route) => (
+          route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: '<html><body></body></html>' })
+        ));
+        return c;
+      },
+    });
+
+    await adapter.close();
+    await adapter.search({ query: 'q' }); // должно пройти без сети и без "Target page/context/browser has been closed"
+
+    expect(reopens).toBe(1);
+    await expect(adapter.close()).resolves.toBeUndefined(); // повторный close() не бросает
+  }, 15000);
+
+  it('close() без единого предыдущего search()/apply() тоже не бросает', async () => {
+    const neverOpened = new HhAdapter({ openContext: async () => browser.newContext() });
+    await expect(neverOpened.close()).resolves.toBeUndefined();
+  });
+
+  it('getContext переоткрывает браузер, если контекст закрылся сам, пока адаптер бездействовал', async () => {
+    // Именно этот сценарий (пользователь закрыл окно Chromium руками между
+    // поисками) раньше ронял вторую панельную операцию с "Target page,
+    // context or browser has been closed" — см. отчёт задачи.
+    const first = await browser.newContext();
+    let reopens = 0;
+    const adapter = new HhAdapter({
+      context: first,
+      timeouts: { navigationMs: 500 },
+      openContext: async () => {
+        reopens++;
+        const c = await browser.newContext();
+        await c.route('**/*', (route) => (
+          route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: '<html><body></body></html>' })
+        ));
+        return c;
+      },
+    });
+
+    await first.close(); // пользователь закрыл окно браузера руками
+
+    const vacancies = await adapter.search({ query: 'q' });
+
+    expect(reopens).toBe(1);
+    expect(vacancies).toEqual([]); // пустая страница выдачи — parseSearchPage не нашёл карточек
+  }, 15000);
+
+  it('не переоткрывает контекст между вызовами, пока он ещё жив — второй поиск подряд переиспользует тот же браузер', async () => {
+    let opens = 0;
+    const adapter = new HhAdapter({
+      timeouts: { navigationMs: 500 },
+      openContext: async () => {
+        opens++;
+        const c = await browser.newContext();
+        await c.route('**/*', (route) => (
+          route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: '<html><body></body></html>' })
+        ));
+        return c;
+      },
+    });
+
+    await adapter.search({ query: 'первый поиск' });
+    await adapter.search({ query: 'второй поиск' }); // раньше это был бы второй HhAdapter с новым launchPersistentContext
+
+    expect(opens).toBe(1);
+  }, 15000);
 });
 
 describe('HhAdapter.apply — сквозной сценарий (без сети, без реальной подачи)', () => {
