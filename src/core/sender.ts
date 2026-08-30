@@ -23,7 +23,7 @@ export function isStopRequested(): boolean {
 export interface SendReport {
   sent: number;
   failed: number;
-  halted: null | { source: string; reason: 'captcha' | 'auth_required' | 'killed' };
+  halted: null | { source: string; reason: 'captcha' | 'auth_required' | 'killed' | 'too_many_failures' };
   /**
    * Sources that had rows due to send but no `config.throttle` entry, so
    * their rows were skipped (left `approved`, never sent unthrottled).
@@ -65,6 +65,8 @@ export class Sender {
   async run(): Promise<SendReport> {
     const report: SendReport = { sent: 0, failed: 0, halted: null, unthrottledSources: [] };
     const rows = this.queue.listByStatus('approved');
+    const consecutiveFailures = new Map<string, number>();
+    const maxConsecutiveFailures = this.config.maxConsecutiveFailures ?? 3;
     const unthrottledSources = new Set<string>();
 
     for (const row of rows) {
@@ -126,6 +128,9 @@ export class Sender {
       if (result.status === 'sent' || result.status === 'already_applied') {
         this.queue.markSent(row.id);
         report.sent++;
+        // Успех сбрасывает счётчик: предохранитель ловит именно череду отказов
+        // подряд, а не их общее число за прогон.
+        consecutiveFailures.set(row.source, 0);
       } else if (result.status === 'failed') {
         // The two halting tags returned above; the only tag left in the
         // union at this point is 'failed', proven by exhaustive tag
@@ -134,6 +139,22 @@ export class Sender {
         // new tag.
         this.queue.markFailed(row.id, result.reason);
         report.failed++;
+
+        // Предохранитель. Подряд идущие отказы по одной площадке означают, что
+        // сломалось что-то общее, а не конкретная вакансия: слетела вёрстка,
+        // сайт начал показывать капчу, которую адаптер не умеет распознать,
+        // или аккаунт ограничили. Продолжать в таком состоянии значит долбить
+        // площадку впустую и рисковать аккаунтом ради заведомо пустых подач.
+        //
+        // Это защита именно на тот случай, когда распознавание капчи НЕ
+        // сработало: у адаптера hh.ru её детектор пока заглушка, и без этого
+        // предохранителя капча выглядела бы как череда обычных failed.
+        consecutiveFailures.set(row.source, (consecutiveFailures.get(row.source) ?? 0) + 1);
+        if ((consecutiveFailures.get(row.source) ?? 0) >= maxConsecutiveFailures) {
+          report.halted = { source: row.source, reason: 'too_many_failures' };
+          report.unthrottledSources = [...unthrottledSources].sort();
+          return report;
+        }
       }
 
       const span = rule.maxDelayMs - rule.minDelayMs;

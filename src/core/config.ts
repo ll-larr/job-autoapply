@@ -17,6 +17,13 @@ export interface Config {
    */
   letterModels: string[];
   throttle: Record<string, ThrottleRule | undefined>;
+  /**
+   * Сколько отказов подряд по одной площадке считать поломкой и останавливать
+   * отправку. По умолчанию 3. Это предохранитель на случай, когда адаптер не
+   * распознал капчу или сменившуюся вёрстку: без него такая ситуация выглядит
+   * как череда обычных failed, и очередь продолжает долбить площадку.
+   */
+  maxConsecutiveFailures?: number;
 }
 
 export function loadConfig(path = 'config.json'): Config {

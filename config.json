@@ -2,6 +2,8 @@
   "minScore": 40,
   "letterFullThreshold": 75,
   "letterModels": [
+    "google/gemma-4-31b-it:free",
+    "deepseek/deepseek-v4-flash-latest",
     "openrouter/free"
   ],
   "throttle": {
@@ -17,5 +19,6 @@
       "minDelayMs": 10000,
       "maxDelayMs": 45000
     }
-  }
+  },
+  "maxConsecutiveFailures": 3
 }

@@ -284,3 +284,58 @@ describe('Sender kill switch', () => {
     expect(q.listByStatus('approved')).toHaveLength(2);
   });
 });
+
+describe('Sender предохранитель по череде отказов', () => {
+  it('останавливается после N отказов подряд, не выгребая всю очередь', async () => {
+    // Защита на случай, когда адаптер НЕ распознал капчу: тогда она выглядит
+    // как обычные failed, и без предохранителя очередь продолжала бы долбить
+    // площадку. У hh.ru детектор капчи пока заглушка, так что это не гипотеза.
+    seed(q, 6);
+    let applyCalls = 0;
+    const alwaysFails: Adapter = {
+      name: 'hh',
+      async search() { return []; },
+      async apply() { applyCalls++; return { status: 'failed', reason: 'что-то сломалось' }; },
+    };
+    const s = new Sender(
+      q,
+      new Map([['hh', alwaysFails]]),
+      { ...CONFIG, maxConsecutiveFailures: 3 },
+      { sleep: async () => {} },
+    );
+    const rep = await s.run();
+
+    expect(applyCalls).toBe(3);
+    expect(rep.halted).toEqual({ source: 'hh', reason: 'too_many_failures' });
+    expect(rep.failed).toBe(3);
+    // Остальные не тронуты и уйдут следующим прогоном, когда причину починят.
+    expect(q.listByStatus('approved')).toHaveLength(3);
+  });
+
+  it('успех между отказами сбрасывает счётчик', async () => {
+    seed(q, 5);
+    let n = 0;
+    const flaky: Adapter = {
+      name: 'hh',
+      async search() { return []; },
+      async apply() {
+        n++;
+        // отказ, отказ, успех, отказ, отказ — подряд трёх не набирается
+        if (n === 3) return { status: 'sent' };
+        return { status: 'failed', reason: 'сбой' };
+      },
+    };
+    const s = new Sender(
+      q,
+      new Map([['hh', flaky]]),
+      { ...CONFIG, maxConsecutiveFailures: 3 },
+      { sleep: async () => {} },
+    );
+    const rep = await s.run();
+
+    expect(rep.halted).toBeNull();
+    expect(n).toBe(5);
+    expect(rep.sent).toBe(1);
+    expect(rep.failed).toBe(4);
+  });
+});
