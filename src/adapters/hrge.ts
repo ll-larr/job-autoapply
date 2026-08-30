@@ -110,7 +110,10 @@ export class HrGeAdapter implements Adapter {
       WithoutWorkExperience: false,
       AnyExperience: false,
       OnlySelectedSalary: false,
-      Start: 0,
+      // Смещение по выдаче — API умеет его штатно (docs/hrge-api.md: Start и
+      // Limit, поля пагинации). Конвейер ходит сюда порциями и просит
+      // следующий срез, пока не наберёт нужное число подходящих вакансий.
+      Start: filters.skip ?? 0,
       Limit: DEFAULT_LIMIT,
       IsWorkFromHome: filters.remoteOnly ?? false,
     };

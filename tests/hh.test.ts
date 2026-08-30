@@ -335,6 +335,64 @@ describe('HhAdapter.search — интеграция через перехват 
     await context.close();
   }, 30000);
 
+  it('skip сдвигает окно чтения — соседние порции не пересекаются', async () => {
+    // Порционное чтение под цель-по-доставленным (см. pipeline.runSearch):
+    // каждая следующая порция обязана давать НОВЫЕ карточки. Если бы skip
+    // игнорировался, обе порции вернули бы одно и то же, дедуп прогона
+    // выбросил бы вторую целиком, и очередь перестала бы расти.
+    const context = await browser.newContext();
+    await context.route('**/*', (route) => {
+      if (!isHhDocumentRequest(route)) return route.abort();
+      const url = route.request().url();
+      if (url.includes('/search/vacancy')) {
+        return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: searchHtml });
+      }
+      if (url.includes('/vacancy/')) {
+        return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: vacancyHtml });
+      }
+      return route.abort();
+    });
+
+    const adapter = new HhAdapter({ context });
+
+    const first = await adapter.search({ query: 'бизнес-аналитик', maxResults: 5 });
+    expect(adapter.lastSearchStats?.read).toBe(5);
+    const firstIds = new Set(first.map((v) => v.sourceId));
+
+    const second = await adapter.search({ query: 'бизнес-аналитик', maxResults: 5, skip: 5 });
+    // Прочитано ровно окно этой порции, а не всё с начала: иначе конвейер
+    // списал бы с потолка просмотра одни и те же карточки дважды.
+    expect(adapter.lastSearchStats?.read).toBe(5);
+    for (const v of second) expect(firstIds.has(v.sourceId)).toBe(false);
+    // Фикстура — настоящая выдача: часть карточек отсеивается по грейду и
+    // опыту, так что пустое окно возможно. Непустым обязано быть хотя бы
+    // одно из двух, иначе тест не доказывает ничего про пересечение.
+    expect(first.length + second.length).toBeGreaterThan(0);
+
+    await context.close();
+  }, 30000);
+
+  it('skip за пределом выдачи — читать нечего, и это видно по статистике', async () => {
+    // Признак исчерпания для конвейера: read === 0 закрывает формулировку,
+    // и прогон останавливается с 'exhausted' вместо бесконечного листания.
+    const context = await browser.newContext();
+    await context.route('**/*', (route) => {
+      if (!isHhDocumentRequest(route)) return route.abort();
+      const url = route.request().url();
+      if (url.includes('/search/vacancy')) {
+        return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: searchHtml });
+      }
+      return route.abort();
+    });
+
+    const adapter = new HhAdapter({ context });
+    const out = await adapter.search({ query: 'бизнес-аналитик', maxResults: 5, skip: 500 });
+    expect(out).toHaveLength(0);
+    expect(adapter.lastSearchStats?.read).toBe(0);
+
+    await context.close();
+  }, 30000);
+
   it('без maxResults берёт страницу целиком, но описания дочитывает только прошедшим отсев', async () => {
     const context = await browser.newContext();
     let detailCalls = 0;

@@ -420,10 +420,20 @@ export class HhAdapter implements Adapter {
       // Одна страница отдаёт максимум ITEMS_PER_PAGE, поэтому --limit больше
       // сотни без пагинации молча упирался бы в потолок первой страницы.
       const budget = filters.maxResults ?? ITEMS_PER_PAGE;
+      // Смещение по выдаче (см. SearchFilters.skip): конвейер ходит сюда
+      // порциями и просит следующий срез, пока не наберёт нужное число
+      // подходящих вакансий. Листаем с нулевой страницы даже при ненулевом
+      // skip и отбрасываем начало уже собранного списка, а не прыгаем сразу
+      // на страницу skip/ITEMS_PER_PAGE: дедупликация ниже сдвигает позиции,
+      // и вычисленный номер страницы разошёлся бы с реальным смещением. Цена
+      // — одна-две лишние навигации по СТРАНИЦАМ ВЫДАЧИ за порцию; дорогое
+      // здесь другое, открытие страницы каждой вакансии, и оно как раз
+      // делается только для нового среза.
+      const skip = filters.skip ?? 0;
       const collected: HhSearchItem[] = [];
       const seenIds = new Set<string>();
 
-      for (let pageNo = 0; collected.length < budget; pageNo++) {
+      for (let pageNo = 0; collected.length < skip + budget; pageNo++) {
         const url = buildSearchUrl(filters.query, pageNo);
         // waitUntil:'load'/'networkidle' никогда не наступают на hh.ru —
         // страница держит фоновые запросы (реклама, опросы, аналитика)
@@ -446,7 +456,7 @@ export class HhAdapter implements Adapter {
           seenIds.add(it.sourceId);
           collected.push(it);
           fresh++;
-          if (collected.length >= budget) break;
+          if (collected.length >= skip + budget) break;
         }
         if (fresh === 0) break;
       }
@@ -477,7 +487,10 @@ export class HhAdapter implements Adapter {
       let rejectedGrade = 0;
       let duplicatesSkipped = 0;
       const wanted: HhSearchItem[] = [];
-      for (const it of collected) {
+      // Окно этого захода. Всё, что раньше skip, уже прочитано и посчитано
+      // предыдущей порцией — второй раз в статистику не попадает.
+      const window = collected.slice(skip);
+      for (const it of window) {
         if (!isExperienceAcceptable(it.experience ?? null)) { rejectedExperience++; continue; }
         if (isSeniorTitle(it.title)) { rejectedGrade++; continue; }
         if (filters.seenThisRun?.has(`${this.name}:${it.sourceId}`)) { duplicatesSkipped++; continue; }
@@ -520,7 +533,7 @@ export class HhAdapter implements Adapter {
           experience,
         }));
       }
-      this.lastSearchStats = { read: collected.length, rejectedExperience, rejectedGrade, duplicatesSkipped };
+      this.lastSearchStats = { read: window.length, rejectedExperience, rejectedGrade, duplicatesSkipped };
       return out;
     } finally {
       await page.close();

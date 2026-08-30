@@ -535,3 +535,187 @@ describe('runSearch', () => {
     });
   });
 });
+
+/**
+ * Адаптер с постраничной выдачей: у каждой формулировки свой конечный пул
+ * вакансий, а search() честно отдаёт срез [skip, skip+maxResults) и перестаёт
+ * отдавать что-либо, когда пул кончился. Ровно то поведение, на которое
+ * опирается цель-по-доставленным: конвейер ходит порциями, пока не наберёт
+ * заказанное или пока выдача не иссякнет.
+ *
+ * Записывает вызовы — по ним проверяется и продвижение skip, и равномерность
+ * между формулировками.
+ */
+function mkPagedAdapter(
+  pools: Record<string, string[]>,
+  name = 'hh',
+): Adapter & { calls: Array<{ query: string; skip: number; maxResults?: number }> } {
+  const calls: Array<{ query: string; skip: number; maxResults?: number }> = [];
+  return {
+    name,
+    calls,
+    async search(filters: SearchFilters) {
+      const skip = filters.skip ?? 0;
+      calls.push({ query: filters.query, skip, maxResults: filters.maxResults });
+      const chunk = pools[filters.query] ?? [];
+      const slice = filters.maxResults === undefined
+        ? chunk.slice(skip)
+        : chunk.slice(skip, skip + filters.maxResults);
+      return slice.map((d, i) => normalizeVacancy({
+        source: name, sourceId: filters.query + '-' + String(skip + i), title: 'БА', company: 'C',
+        url: 'https://' + name + '/vacancy/' + String(skip + i),
+        description: d, geo: 'Москва', postedAt: '2026-08-20T00:00:00Z',
+      }));
+    },
+    async apply() { return { status: 'sent' }; },
+  };
+}
+
+/** Пул: каждая every-я вакансия проходит фильтры, остальные — мусор ниже minScore. */
+function mkPool(size: number, every: number): string[] {
+  return Array.from({ length: size }, (_, i) =>
+    (i % every === 0 ? PROCESS_LANGUAGE : 'ничего интересного'));
+}
+
+describe('runSearch — заказ считается по ДОСТАВЛЕННЫМ вакансиям (target)', () => {
+  it('набирает ровно заказанное число, сколько бы выдачи для этого ни пришлось прочитать', async () => {
+    // Каждая десятая годная: чтобы доставить 3, надо прочитать больше 20
+    // карточек. Прежняя семантика (число = потолок просмотра) при тех же 3
+    // отдала бы одну вакансию из трёх прочитанных.
+    const a = mkPagedAdapter({ 'аналитик': mkPool(200, 10) });
+    const rep = await runSearch({
+      queue: q, config: CONFIG, queries: [{ query: 'аналитик' }],
+      target: 3, batchSize: 10, adapters: [a],
+      generate: async () => ({ letter: 'письмо', mode: 'hybrid' }),
+    });
+    expect(rep.queued).toBe(3);
+    expect(rep.stoppedBecause).toBe('target');
+    expect(rep.found).toBeGreaterThan(3);
+  });
+
+  it('не перебирает заказ: лишние вакансии из последней порции в очередь не попадают', async () => {
+    // Пул сплошь годный, порция 10, заказано 4 — в первой же порции годных
+    // десять. В очередь обязаны лечь четыре.
+    const a = mkPagedAdapter({ 'аналитик': mkPool(100, 1) });
+    const rep = await runSearch({
+      queue: q, config: CONFIG, queries: [{ query: 'аналитик' }],
+      target: 4, batchSize: 10, adapters: [a],
+      generate: async () => ({ letter: 'письмо', mode: 'hybrid' }),
+    });
+    expect(rep.queued).toBe(4);
+    expect(q.listByStatus('pending')).toHaveLength(4);
+  });
+
+  it('следующая порция продолжает с того места, где кончилась прошлая', async () => {
+    const a = mkPagedAdapter({ 'аналитик': mkPool(200, 10) });
+    await runSearch({
+      queue: q, config: CONFIG, queries: [{ query: 'аналитик' }],
+      target: 3, batchSize: 10, adapters: [a],
+      generate: async () => ({ letter: 'письмо', mode: 'hybrid' }),
+    });
+    const skips = a.calls.map((c) => c.skip);
+    expect(skips.length).toBeGreaterThan(1);
+    expect(skips[0]).toBe(0);
+    // Строго возрастает: ни одна порция не перечитывает уже прочитанное.
+    expect(skips).toEqual([...skips].sort((x, y) => x - y));
+    expect(new Set(skips).size).toBe(skips.length);
+  });
+
+  it('делит заказ поровну между формулировками', async () => {
+    const a = mkPagedAdapter({ 'первый': mkPool(100, 1), 'второй': mkPool(100, 1) });
+    const rep = await runSearch({
+      queue: q, config: CONFIG, queries: [{ query: 'первый' }, { query: 'второй' }],
+      target: 4, batchSize: 1, adapters: [a],
+      generate: async () => ({ letter: 'письмо', mode: 'hybrid' }),
+    });
+    expect(rep.queued).toBe(4);
+    const rows = q.listByStatus('pending');
+    const first = rows.filter((r) => r.vacancy.sourceId.startsWith('первый')).length;
+    expect(first).toBe(2);
+    expect(rows.length - first).toBe(2);
+  });
+
+  it('добирает остальными формулировками долю той, чья выдача кончилась', async () => {
+    // У первой формулировки всего одна годная вакансия — её четверть заказа
+    // некому выбрать, кроме второй формулировки.
+    const a = mkPagedAdapter({ 'скудный': [PROCESS_LANGUAGE], 'богатый': mkPool(100, 1) });
+    const rep = await runSearch({
+      queue: q, config: CONFIG, queries: [{ query: 'скудный' }, { query: 'богатый' }],
+      target: 4, batchSize: 1, adapters: [a],
+      generate: async () => ({ letter: 'письмо', mode: 'hybrid' }),
+    });
+    expect(rep.queued).toBe(4);
+    expect(rep.stoppedBecause).toBe('target');
+    const rows = q.listByStatus('pending');
+    expect(rows.filter((r) => r.vacancy.sourceId.startsWith('скудный'))).toHaveLength(1);
+    expect(rows.filter((r) => r.vacancy.sourceId.startsWith('богатый'))).toHaveLength(3);
+  });
+
+  it('выдача кончилась раньше заказа — отдаёт что есть и называет причину', async () => {
+    const a = mkPagedAdapter({ 'аналитик': [PROCESS_LANGUAGE, 'ничего интересного'] });
+    const rep = await runSearch({
+      queue: q, config: CONFIG, queries: [{ query: 'аналитик' }],
+      target: 10, batchSize: 5, adapters: [a],
+      generate: async () => ({ letter: 'письмо', mode: 'hybrid' }),
+    });
+    expect(rep.queued).toBe(1);
+    expect(rep.stoppedBecause).toBe('exhausted');
+  });
+
+  it('потолок просмотра останавливает прогон, в котором подходящего не попадается', async () => {
+    // Длинный пул сплошного мусора: без потолка цикл листал бы его до конца.
+    // Предохранитель обязан остановить прогон и назваться в отчёте.
+    const a = mkPagedAdapter({
+      'аналитик': Array.from({ length: 5000 }, () => 'ничего интересного'),
+    });
+    const rep = await runSearch({
+      queue: q, config: CONFIG, queries: [{ query: 'аналитик' }],
+      target: 5, maxResults: 40, batchSize: 10, adapters: [a],
+      generate: async () => ({ letter: 'письмо', mode: 'hybrid' }),
+    });
+    expect(rep.queued).toBe(0);
+    expect(rep.found).toBe(40);
+    expect(rep.stoppedBecause).toBe('scan_cap');
+  });
+
+  it('потолок есть и когда его не задали явно — прогон конечен', async () => {
+    const a = mkPagedAdapter({
+      'аналитик': Array.from({ length: 100000 }, () => 'ничего интересного'),
+    });
+    const rep = await runSearch({
+      queue: q, config: CONFIG, queries: [{ query: 'аналитик' }],
+      target: 1, batchSize: 50, adapters: [a],
+      generate: async () => ({ letter: 'письмо', mode: 'hybrid' }),
+    });
+    expect(rep.stoppedBecause).toBe('scan_cap');
+    expect(rep.found).toBeLessThanOrEqual(250);
+  });
+
+  it('упавший адаптер выбывает, а не крутится в цикле', async () => {
+    let calls = 0;
+    const broken: Adapter = {
+      name: 'hh',
+      async search() { calls++; throw new Error('выдача недоступна'); },
+      async apply() { return { status: 'sent' }; },
+    };
+    const rep = await runSearch({
+      queue: q, config: CONFIG, queries: [{ query: 'аналитик' }],
+      target: 5, batchSize: 10, adapters: [broken],
+      generate: async () => ({ letter: 'письмо', mode: 'hybrid' }),
+    });
+    expect(calls).toBe(1);
+    expect(rep.adapterErrors).toHaveLength(1);
+    expect(rep.stoppedBecause).toBe('exhausted');
+  });
+
+  it('без заказа поведение прежнее: каждая пара опрашивается ровно один раз', async () => {
+    const a = mkPagedAdapter({ 'аналитик': mkPool(100, 10) });
+    await runSearch({
+      queue: q, config: CONFIG, queries: [{ query: 'аналитик' }],
+      maxResults: 20, adapters: [a],
+      generate: async () => ({ letter: 'письмо', mode: 'hybrid' }),
+    });
+    expect(a.calls).toHaveLength(1);
+    expect(a.calls[0]!.maxResults).toBe(20);
+  });
+});

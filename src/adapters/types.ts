@@ -23,6 +23,23 @@ export interface SearchFilters {
    * budgeted by maxResults, not a browser page open.
    */
   seenThisRun?: ReadonlySet<string>;
+  /**
+   * How many raw result cards to step over before collecting. Pagination,
+   * expressed as an offset rather than a page number so the caller does not
+   * have to know each site's page size.
+   *
+   * The pipeline searches in batches now — it asks for a slice, filters it,
+   * and comes back for the next slice only if the run still needs more
+   * vacancies (see runSearch: the user asks for N vacancies DELIVERED, not N
+   * cards read, so how deep the listing has to be walked is not knowable in
+   * advance). `skip` is what makes the next call continue instead of
+   * re-reading the same first page.
+   *
+   * An adapter that ignores it stays correct but will hand the pipeline the
+   * same cards on every batch, which the run-level dedupe then discards — so
+   * the run would stall rather than break. Both current adapters honour it.
+   */
+  skip?: number;
 }
 
 export type ApplyResult =

@@ -28,6 +28,27 @@ interface AdapterWithSearchStats {
   lastSearchStats?: AdapterSearchStats;
 }
 
+/**
+ * Сколько сырых карточек адаптер читает за один заход, когда задана цель
+ * (RunSearchOptions.target). Порция меньше цели, чтобы прогон не проскакивал
+ * её далеко: перебор в пределах одной порции — это уже потраченные открытия
+ * страниц вакансий.
+ */
+const DEFAULT_BATCH_SIZE = 25;
+
+/**
+ * Во сколько раз больше карточек прогону разрешено прочитать, чем он должен
+ * доставить, когда потолок явно не задан. Не расчёт, а предохранитель:
+ * реальная доля прохождения фильтров на живой выдаче держалась около
+ * нескольких процентов, так что сорокакратного запаса хватает, чтобы цель
+ * достигалась, и при этом прогон не листает hh.ru бесконечно, если запрос
+ * вдруг не даёт ничего подходящего.
+ */
+const SCAN_PER_DELIVERED = 40;
+
+/** Нижняя граница того же потолка: цель в одну вакансию не должна упираться в 40 карточек. */
+const MIN_SCAN_CAP = 200;
+
 export interface SearchReport {
   found: number;
   queued: number;
@@ -62,6 +83,16 @@ export interface SearchReport {
    */
   rejectedJuniorOnly: number;
   adapterErrors: Array<{ adapter: string; message: string }>;
+  /**
+   * Почему прогон остановился. Нужно панели: «нашли 12 из 20» само по себе
+   * неотличимо от «нашли 12, а больше на площадках и нет», а человеку это
+   * разные новости — в первом случае стоит поднять потолок, во втором нет.
+   *
+   * - `target`     — набрали столько, сколько просили. Норма.
+   * - `exhausted`  — выдача кончилась по всем формулировкам, больше нечего читать.
+   * - `scan_cap`   — упёрлись в потолок просмотра (см. RunSearchOptions.maxResults).
+   */
+  stoppedBecause: 'target' | 'exhausted' | 'scan_cap';
 }
 
 export interface RunSearchOptions {
@@ -77,19 +108,51 @@ export interface RunSearchOptions {
    */
   queries: SearchQueryConfig[];
   /**
-   * Общий потолок на ВЕСЬ прогон (все запросы и адаптеры вместе), а не на
-   * каждый запрос по отдельности — иначе пять формулировок означали бы
-   * впятеро больше открытий страниц вакансий, чем пользователь попросил
-   * флагом --limit. Бюджет считается по количеству СЫРЫХ карточек, реально
-   * прочитанных адаптерами (report.found — через AdapterSearchStats.read,
-   * когда адаптер его выставляет, иначе по длине возвращённого массива), а
-   * не по числу уникальных после дедупа — это то, что действительно стоит
-   * денег/времени. Каждый следующий вызов adapter.search() получает
-   * оставшийся бюджет как maxResults, так что суммарно все вызовы за
-   * прогон не могут прочитать больше maxResults карточек. undefined — без
-   * потолка (как раньше).
+   * Сколько вакансий должно ЛЕЧЬ В ОЧЕРЕДЬ по итогам прогона. Это то число,
+   * которое человек вводит в панели: попросил 20 — получил 20 карточек на
+   * рассмотрение, а не «20 просмотренных, из которых прошло три».
+   *
+   * Сколько для этого придётся прочитать — считает сам прогон: фильтры
+   * (screening, minScore, core-гейт) отсеивают большую часть выдачи, и во
+   * сколько раз именно — заранее не известно. Поэтому адаптеры вызываются
+   * порциями (см. batchSize и SearchFilters.skip), после каждой порции
+   * проверяется, набрано ли нужное, и следующая порция берётся только если
+   * нет.
+   *
+   * Порции распределяются между ФОРМУЛИРОВКАМИ ЗАПРОСА равномерно: очередной
+   * заход делает та формулировка, которая пока доставила меньше всех. Это
+   * само собой перераспределяет остаток, когда чья-то выдача кончается
+   * раньше других — доля выбывшей формулировки не пропадает, её добирают
+   * оставшиеся.
+   *
+   * undefined — цели нет: каждая пара «формулировка × адаптер» опрашивается
+   * ровно один раз, а прогон ограничен только maxResults (поведение до
+   * 2026-08-30, на нём стоят тесты конвейера).
+   */
+  target?: number;
+  /**
+   * Жёсткий потолок на СЫРЫЕ КАРТОЧКИ, прочитанные за весь прогон (все
+   * запросы и адаптеры вместе). Предохранитель, а не настройка: цель задаётся
+   * через target, но фильтры могут отсеивать почти всё, и без потолка прогон
+   * листал бы выдачу до конца, стуча по площадке часами.
+   *
+   * Считается по реально прочитанному адаптерами (report.found — через
+   * AdapterSearchStats.read, когда адаптер его выставляет, иначе по длине
+   * возвращённого массива), а не по числу уникальных после дедупа: это то,
+   * что действительно стоит времени.
+   *
+   * undefined вместе с заданным target — потолок берётся производным от цели
+   * (см. SCAN_PER_DELIVERED). undefined вместе с undefined target — без
+   * потолка.
    */
   maxResults?: number;
+  /**
+   * Сколько сырых карточек адаптер читает за один заход. Меньше — точнее
+   * останов у цели и меньше лишней работы, больше — меньше повторных
+   * навигаций по страницам выдачи. Параметр ради тестов; в бою хватает
+   * значения по умолчанию.
+   */
+  batchSize?: number;
   adapters: Adapter[];
   generate: (v: Vacancy, matched: string[], mode: LetterMode)
     => Promise<{ letter: string; mode: LetterMode }>;
@@ -111,7 +174,7 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
   const report: SearchReport = {
     found: 0, queued: 0, duplicates: 0, belowThreshold: 0, noCoreMatch: 0,
     rejectedExperience: 0, rejectedGrade: 0, rejected1c: 0, rejectedJuniorOnly: 0,
-    adapterErrors: [],
+    adapterErrors: [], stoppedBecause: 'exhausted',
   };
 
   // Дедуп В ПРЕДЕЛАХ этого прогона: разные формулировки запроса находят одну
@@ -133,37 +196,89 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
   // прочитать и тут же выбросить дубль — см. HhAdapter.search.
   const seenThisRun = new Set<string>();
 
-  const tasks: Array<{ qc: SearchQueryConfig; adapter: Adapter }> = [];
-  for (const qc of opts.queries) {
-    for (const adapter of opts.adapters) tasks.push({ qc, adapter });
+  interface Task {
+    qc: SearchQueryConfig;
+    adapter: Adapter;
+    /** Индекс формулировки в opts.queries — по нему считается равномерность. */
+    queryIndex: number;
+    /** Сколько сырых карточек этой пары уже прочитано; смещение следующей порции. */
+    skip: number;
+    /** Выдача кончилась или адаптер упал — больше сюда не ходим. */
+    done: boolean;
   }
 
-  for (const { qc, adapter } of tasks) {
-    const remaining = opts.maxResults === undefined
-      ? undefined
-      : Math.max(0, opts.maxResults - report.found);
-    // Бюджет прогона исчерпан — не открываем больше ни одной страницы
-    // вакансии, даже под ещё не опробованной формулировкой/адаптером.
-    if (remaining === 0) break;
+  const tasks: Task[] = [];
+  opts.queries.forEach((qc, queryIndex) => {
+    for (const adapter of opts.adapters) {
+      tasks.push({ qc, adapter, queryIndex, skip: 0, done: false });
+    }
+  });
+
+  const target = opts.target;
+  const batchSize = opts.batchSize ?? DEFAULT_BATCH_SIZE;
+  const scanCap = opts.maxResults ?? (
+    target === undefined ? undefined : Math.max(MIN_SCAN_CAP, target * SCAN_PER_DELIVERED)
+  );
+
+  // Сколько вакансий доставила каждая ФОРМУЛИРОВКА (не пара формулировка+
+  // адаптер): равномерность человек ожидает между запросами, а не между
+  // площадками — площадки разного размера, и делить поровну между ними
+  // означало бы искусственно душить большую.
+  const deliveredByQuery = new Array<number>(opts.queries.length).fill(0);
+
+  report.stoppedBecause = 'exhausted';
+
+  for (;;) {
+    if (target !== undefined && report.queued >= target) {
+      report.stoppedBecause = 'target';
+      break;
+    }
+    if (scanCap !== undefined && report.found >= scanCap) {
+      report.stoppedBecause = 'scan_cap';
+      break;
+    }
+
+    const live = tasks.filter((t) => !t.done);
+    if (live.length === 0) break;
+
+    // Без цели порядок остаётся прежним — по списку, каждая пара по одному
+    // разу. С целью очередной заход достаётся отстающей формулировке; при
+    // равенстве строгое "<" оставляет первую, то есть исходный порядок.
+    const task = target === undefined
+      ? live[0]!
+      : live.reduce((a, b) => (deliveredByQuery[b.queryIndex]! < deliveredByQuery[a.queryIndex]! ? b : a));
+
+    const remainingScan = scanCap === undefined ? undefined : scanCap - report.found;
+    const budget = target === undefined
+      ? remainingScan
+      : Math.min(batchSize, remainingScan ?? batchSize);
 
     let vacancies: Vacancy[];
     try {
-      vacancies = await adapter.search({ query: qc.query, maxResults: remaining, seenThisRun });
+      vacancies = await task.adapter.search({
+        query: task.qc.query,
+        maxResults: budget,
+        skip: task.skip,
+        seenThisRun,
+      });
     } catch (e) {
-      // Частичный результат — валидный результат. Остальные площадки/запросы работают.
+      // Частичный результат — валидный результат. Остальные площадки/запросы
+      // работают; упавшая пара выбывает, чтобы прогон не крутился на ней.
       report.adapterErrors.push({
-        adapter: adapter.name,
+        adapter: task.adapter.name,
         message: e instanceof Error ? e.message : String(e),
       });
+      task.done = true;
       continue;
     }
 
     // Бюджет и отчёт о фильтрах должны отражать РЕАЛЬНО прочитанное адаптером,
     // а не длину того, что он вернул после собственного предфильтра (см.
-    // AdapterSearchStats выше) — иначе --limit не ограничивает настоящую
+    // AdapterSearchStats выше) — иначе потолок не ограничивает настоящую
     // работу, а rejectedExperience/rejectedGrade показывают почти ноль для
     // источников, которые отсеивают дёшево ещё до дочитки описания.
-    const stats = (adapter as unknown as AdapterWithSearchStats).lastSearchStats;
+    const stats = (task.adapter as unknown as AdapterWithSearchStats).lastSearchStats;
+    const read = stats ? stats.read : vacancies.length;
     if (stats) {
       report.found += stats.read;
       report.rejectedExperience += stats.rejectedExperience;
@@ -173,12 +288,22 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
       report.found += vacancies.length;
     }
 
+    // Ноль прочитанных карточек означает конец выдачи по этой формулировке:
+    // смещение ушло за последнюю страницу. Иначе двигаем смещение на
+    // прочитанное — следующая порция продолжит, а не перечитает то же самое.
+    if (read === 0) task.done = true;
+    else task.skip += read;
+    // Без цели пара опрашивается ровно один раз (прежнее поведение).
+    if (target === undefined) task.done = true;
+
     for (const v of vacancies) {
+      if (target !== undefined && report.queued >= target) break;
+
       const key = vacancyKey(v);
       if (seenThisRun.has(key)) { report.duplicates++; continue; }
       seenThisRun.add(key);
 
-      if (qc.constraints?.juniorOnly === true && !isJuniorExperience(v.experience)) {
+      if (task.qc.constraints?.juniorOnly === true && !isJuniorExperience(v.experience)) {
         report.rejectedJuniorOnly++;
         continue;
       }
@@ -200,8 +325,12 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
       const mode = pickMode(score, opts.config.letterFullThreshold);
       const { letter, mode: usedMode } = await opts.generate(v, matched, mode);
 
-      if (opts.queue.insertPending(v, score, matched, letter, usedMode)) report.queued++;
-      else report.duplicates++;
+      if (opts.queue.insertPending(v, score, matched, letter, usedMode)) {
+        report.queued++;
+        deliveredByQuery[task.queryIndex]!++;
+      } else {
+        report.duplicates++;
+      }
     }
   }
 

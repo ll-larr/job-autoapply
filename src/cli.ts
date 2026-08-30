@@ -40,10 +40,14 @@ import { HrGeAdapter } from './adapters/hrge.js';
 import { generateLetter, pickTemplate, pickMode } from './core/letter.js';
 import type { Adapter } from './adapters/types.js';
 
-// 500 — потолок, который пользователь выбрал 2026-08-30 сам, разобрав первую
-// живую очередь (см. resolveLimit ниже про то, почему потолок вообще
-// обязателен). --limit остаётся флагом именно для того, чтобы можно было
-// быстро прогнать поиск с меньшим числом при отладке.
+// 500 — число, которое пользователь выбрал 2026-08-30 сам, разобрав первую
+// живую очередь. С 2026-08-30 оно означает ЦЕЛЬ, а не потолок просмотра:
+// «набери 500 вакансий в очередь», сколько бы выдачи для этого ни пришлось
+// прочитать (см. RunSearchOptions.target). До цели такого размера прогон
+// почти наверняка не дойдёт — раньше кончится выдача, — и это нормальный,
+// названный в отчёте исход ('exhausted'). Основной вход теперь панель, где
+// число вводится руками; --limit остался ради отладочных прогонов с меньшим
+// числом.
 
 /**
  * Ключ OpenRouter из файла `.env`, если он есть.
@@ -139,8 +143,15 @@ export function formatSearchReport(
     }`,
   );
   lines.push('');
-  lines.push(`Найдено:                 ${report.found}`);
-  lines.push(`Поставлено в очередь:    ${report.queued}`);
+  lines.push(`Просмотрено:             ${report.found}`);
+  lines.push(
+    `Поставлено в очередь:    ${report.queued}` +
+      (report.stoppedBecause === 'exhausted'
+        ? ' (выдача кончилась — больше подходящего на площадках нет)'
+        : report.stoppedBecause === 'scan_cap'
+          ? ' (упёрлись в потолок просмотра — подходящего почти не попадается)'
+          : ''),
+  );
   lines.push(`Дубли:                   ${report.duplicates}`);
   lines.push(`Отсеяно (ниже minScore): ${report.belowThreshold}`);
   lines.push(`Отсеяно (core-гейт):     ${report.noCoreMatch}`);
@@ -254,7 +265,11 @@ export interface SearchCommandDeps {
   adapters: Adapter[];
   /** Формулировки запроса. Разные фразы находят разные вакансии. */
   queries: SearchQueryConfig[];
-  /** Потолок на число вакансий за прогон. См. resolveLimit. */
+  /**
+   * Сколько вакансий должно ЛЕЧЬ В ОЧЕРЕДЬ за прогон — цель, а не потолок
+   * просмотра: прогон сам решает, сколько для этого прочитать (см.
+   * RunSearchOptions.target). См. resolveLimit.
+   */
   limit: number;
   resume: string;
   generateLetterFn: typeof generateLetter;
@@ -279,7 +294,7 @@ export async function runSearchCommand(
     queue: deps.queue,
     config: deps.config,
     queries: deps.queries,
-    maxResults: deps.limit,
+    target: deps.limit,
     adapters: deps.adapters,
     generate: async (v, matched, mode) => {
       const templateName = deps.pickTemplateFn(v, matched);

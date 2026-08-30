@@ -80,6 +80,36 @@ describe('HrGeAdapter.search', () => {
     expect(sentBody!['Query']).toBe('analyst');
   });
 
+  it('skip уезжает в Start — конвейер просит следующий срез, а не тот же первый', async () => {
+    // Без этого прогон с целью по доставленным вакансиям встал бы: каждая
+    // следующая порция возвращала бы те же карточки, дедуп прогона выбрасывал
+    // бы их все, и очередь не росла бы никогда.
+    let sentBody: Record<string, unknown> | null = null;
+    const a = new HrGeAdapter({
+      fetchImpl: async (url, init) => {
+        if (String(url).includes('announcement-search')) {
+          sentBody = JSON.parse(String((init as RequestInit).body));
+          return new Response(JSON.stringify(searchFixture), { status: 200 });
+        }
+        return new Response(JSON.stringify(detailFixture), { status: 200 });
+      },
+    });
+    await a.search({ query: 'analyst', maxResults: 1, skip: 40 });
+    expect(sentBody!['Start']).toBe(40);
+  });
+
+  it('без skip начинает с начала выдачи', async () => {
+    let sentBody: Record<string, unknown> | null = null;
+    const a = new HrGeAdapter({
+      fetchImpl: async (_url, init) => {
+        sentBody = JSON.parse(String((init as RequestInit).body));
+        return new Response(JSON.stringify(searchFixture), { status: 200 });
+      },
+    });
+    await a.search({ query: 'analyst', maxResults: 0 });
+    expect(sentBody!['Start']).toBe(0);
+  });
+
   it('дочитывает описание для каждой возвращённой вакансии', async () => {
     let detailCalls = 0;
     const a = new HrGeAdapter({

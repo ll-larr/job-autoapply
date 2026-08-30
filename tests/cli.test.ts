@@ -75,12 +75,12 @@ describe('formatSearchReport', () => {
   const BASE_REPORT: SearchReport = {
     found: 10, queued: 4, duplicates: 2, belowThreshold: 3, noCoreMatch: 1,
     rejectedExperience: 0, rejectedGrade: 0, rejected1c: 0,
-      rejectedJuniorOnly: 0, adapterErrors: [],
+      rejectedJuniorOnly: 0, adapterErrors: [], stoppedBecause: 'target',
   };
 
   it('содержит все пункты отчёта, требуемые заданием', () => {
     const lines = formatSearchReport('бизнес-аналитик', BASE_REPORT, 0, true).join('\n');
-    expect(lines).toContain('Найдено:                 10');
+    expect(lines).toContain('Просмотрено:             10');
     expect(lines).toContain('Поставлено в очередь:    4');
     expect(lines).toContain('Дубли:                   2');
     expect(lines).toContain('Отсеяно (ниже minScore): 3');

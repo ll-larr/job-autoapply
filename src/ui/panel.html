@@ -59,7 +59,7 @@
     <div class="bar">
       <strong>Очередь откликов</strong>
       <div class="search-box">
-        <label for="searchLimit">Искать вакансий</label>
+        <label for="searchLimit">Найти вакансий</label>
         <input type="number" id="searchLimit" value="20" min="1" max="500" step="10">
         <button id="searchStart">Найти</button>
       </div>
@@ -74,7 +74,7 @@
 
   <section id="pane-pending" role="tabpanel" aria-labelledby="tab-pending">
     <div class="actions">
-      <button id="approveAll">Одобрить всё со скором ≥ 75</button>
+      <button id="approveAll">Одобрить всё</button>
     </div>
     <div id="list"></div>
   </section>
@@ -296,7 +296,8 @@ async function pollSearch() {
   if (searchPolling) return;
   searchBtn.disabled = true;
   searchLimit.disabled = true;
-  searchNote.textContent = 'Поиск идёт. Откроется браузер — это нормально, страницы только читаются.';
+  searchNote.textContent = 'Поиск идёт. Откроется браузер — это нормально, страницы только читаются. '
+    + 'Выдача листается, пока не наберётся заказанное число подходящих, так что это надолго.';
 
   searchPolling = setInterval(async () => {
     const st = await fetchJson('/api/search/status');
@@ -315,7 +316,14 @@ async function pollSearch() {
       searchNote.textContent = 'Поиск упал: ' + st.error;
     } else if (st.result) {
       const r = st.result.report;
-      const parts = [`найдено ${r.found}`, `в очередь ${r.queued}`];
+      // "Просмотрено", а не "найдено": found считает сырые карточки выдачи,
+      // прочитанные ради того, чтобы набрать заказанное число подходящих.
+      const parts = [`просмотрено ${r.found}`, `в очередь ${r.queued}`];
+      // Недобор надо назвать причиной. "В очередь 12" при заказанных 20
+      // одинаково выглядит и когда подходящего больше нет, и когда прогон
+      // упёрся в предохранитель — а делать с этим нужно разное.
+      if (r.stoppedBecause === 'exhausted') parts.push('выдача кончилась');
+      else if (r.stoppedBecause === 'scan_cap') parts.push('упёрлись в потолок просмотра');
       if (r.duplicates) parts.push(`уже было ${r.duplicates}`);
       if (r.belowThreshold) parts.push(`ниже порога ${r.belowThreshold}`);
       if (r.noCoreMatch) parts.push(`не по профилю ${r.noCoreMatch}`);
@@ -329,12 +337,23 @@ async function pollSearch() {
   }, 3000);
 }
 
-// Отправка в два шага. Первый клик только вооружает кнопку, второй запускает.
-// Причина не в перестраховке: подача на hh.ru необратима, работодатель видит
-// отклик сразу, и в этом проекте промах мышью уже стоил одной заявки. Один
-// клик тут слишком дёшев для действия, которое нельзя отменить.
-let sendArmed = false;
+// Отправка одним кликом — по решению владельца аккаунта. Здесь было
+// подтверждение в два клика (первый вооружал кнопку, второй запускал), и
+// повод у него был: подача на hh.ru необратима, работодатель видит отклик
+// сразу. Но одобрение уже И ЕСТЬ это решение — вакансия попадает на вкладку
+// "Одобрено" только после того, как человек прочитал её и письмо и нажал
+// "Принять", а второе подтверждение переспрашивало про то же самое и просто
+// выглядело как неработающая кнопка.
 let sendPolling = null;
+
+// Итог последней отправки. Держится отдельно от текста подсказки, потому что
+// подсказку перерисовывает renderApproved на КАЖДОМ load() — а load() идёт
+// сразу за отправкой, чтобы убрать уехавшие строки со вкладки. Раньше это
+// затирало "Отправлено 3, не удалось 0" через несколько миллисекунд после
+// показа, и панель оставалась с надписью "Нечего отправлять" — то есть с тем
+// же текстом, что и когда отправка не запускалась вовсе. Ровно так отправка и
+// выглядела неработающей.
+let sendResultText = null;
 
 const sendBtn = document.getElementById('sendAll');
 const sendHint = document.getElementById('sendHint');
@@ -354,30 +373,32 @@ function buildSendResultText(r) {
 }
 
 function resetSendButton(approved) {
-  sendArmed = false;
   sendBtn.disabled = approved === 0;
   sendBtn.textContent = 'Отправить всё';
-  sendHint.textContent = approved === 0
+  // Итог прошлой отправки главнее подсказки: он единственный ответ на вопрос
+  // "сработало ли". Держится до следующего запуска.
+  sendHint.textContent = sendResultText ?? (approved === 0
     ? 'Нечего отправлять.'
-    : 'Отправка необратима: отклик на hh.ru нельзя отозвать.';
+    : 'Отправка необратима: отклик на hh.ru нельзя отозвать.');
 }
 
 sendBtn.onclick = async () => {
   const st = await fetchJson('/api/send/status');
   if (st.running) return;
 
-  if (!sendArmed) {
-    sendArmed = true;
-    sendBtn.textContent = `Точно отправить ${st.approved}? Нажми ещё раз`;
-    sendHint.textContent = 'Второй клик запустит подачу. Любое другое действие отменит.';
-    return;
-  }
+  // Кнопка гасится сразу, до ответа сервера: подача идёт минутами, и второй
+  // клик по ещё живой кнопке успел бы уйти раньше, чем придёт статус
+  // "running". Сервер такой второй запуск отобьёт (409), но человеку не
+  // должно казаться, что первый клик не сработал.
+  sendBtn.disabled = true;
+  sendBtn.textContent = 'Отправка идёт...';
+  sendResultText = null;
+  sendHint.textContent = `Запускаю подачу: ${st.approved}.`;
 
-  sendArmed = false;
   const res = await post('/api/send/start', {});
   if (!res.ok) {
     const err = await res.json();
-    sendHint.textContent = err.error ?? 'Не удалось запустить отправку.';
+    sendResultText = err.error ?? 'Не удалось запустить отправку.';
     resetSendButton(st.approved);
     return;
   }
@@ -400,12 +421,15 @@ async function pollSend() {
     sendPolling = null;
 
     if (st.error) {
-      sendHint.textContent = 'Отправка упала: ' + st.error;
+      sendResultText = 'Отправка упала: ' + st.error;
     } else if (st.report) {
-      sendHint.textContent = buildSendResultText(st.report);
+      sendResultText = buildSendResultText(st.report);
     }
+    sendHint.textContent = sendResultText ?? sendHint.textContent;
     sendBtn.disabled = false;
     sendBtn.textContent = 'Отправить всё';
+    // Убирает со вкладки строки, которые только что уехали. Итог отправки эта
+    // перерисовка больше не затирает — см. sendResultText.
     load();
   }, 3000);
 }
@@ -416,13 +440,18 @@ document.getElementById('clearSkipped').onclick = async () => {
 };
 
 document.getElementById('approveAll').onclick = async () => {
+  // Одобряет ВСЁ, что лежит в "В ожидании", без порога по скору. Порог здесь
+  // был лишним ситом: очередь уже прошла minScore, core-гейт и три жёстких
+  // фильтра на этапе поиска, а решение по каждой оставшейся вакансии человек
+  // принимает глазами. Скор остаётся на карточке как подсказка, а не как
+  // условие.
+  //
   // Читаем текущее значение textarea из живого DOM, а не письмо из
   // последнего fetch — если человек успел отредактировать черновик, но не
-  // нажал "Отправить" для конкретной карточки, эта правка не должна тихо
+  // нажал "Принять" для конкретной карточки, эта правка не должна тихо
   // потеряться при массовом одобрении. Textarea — источник истины.
   const cards = document.querySelectorAll('#list .card[data-score]');
   for (const card of cards) {
-    if (Number(card.dataset.score) < 75) continue;
     const id = Number(card.dataset.id);
     const letter = card.querySelector('textarea').value;
     await post('/api/approve', { id, letter });
