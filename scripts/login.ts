@@ -8,14 +8,32 @@ import { isLoggedIn, openProfile, PROFILE_DIR } from '../src/browser.js';
 //
 // Run: npx tsx scripts/login.ts
 
-const LOGIN_URL = 'https://hh.ru/account/login';
+// Куда открыть окно. По умолчанию hh.ru; площадка выбирается аргументом,
+// потому что профиль общий и логиниться в него нужно на каждую площадку
+// отдельно — careerist.ru появился 2026-08-31, дальше будут ещё.
+//
+//   npx tsx scripts/login.ts            -> hh.ru
+//   npx tsx scripts/login.ts careerist  -> careerist.ru
+const LOGIN_URLS: Record<string, string> = {
+  hh: 'https://hh.ru/account/login',
+  careerist: 'https://careerist.ru/login.html',
+};
+const site = process.argv[2] ?? 'hh';
+const LOGIN_URL = LOGIN_URLS[site];
+if (LOGIN_URL === undefined) {
+  console.error(`Не знаю площадку "${site}". Известны: ${Object.keys(LOGIN_URLS).join(', ')}`);
+  process.exit(1);
+}
 const SAFETY_TIMEOUT_MS = 30 * 60 * 1000; // 30 минут — чтобы не висеть вечно, если забыли
 const HEARTBEAT_MS = 5000;
 
-console.log('Открываю hh.ru в браузере...');
+console.log(`Открываю ${LOGIN_URL} в браузере...`);
 const ctx = await openProfile(false);
 const page = await ctx.newPage();
 await page.goto(LOGIN_URL);
+
+// Дальше heartbeat проверяет только hh.ru — isLoggedIn написана под неё.
+const checkLogin = site === 'hh';
 
 console.log('');
 console.log('====================================================================');
@@ -50,7 +68,7 @@ async function finish(message: string, exitCode: number): Promise<void> {
 // закрыть браузер посреди капчи или многошагового логина (например,
 // SMS-кода), которые для этой эвристики неотличимы от "ещё логинится".
 const heartbeat = setInterval(() => {
-  if (closed) return;
+  if (closed || !checkLogin) return;
   isLoggedIn(page)
     .then((ok) => {
       if (ok && !closed) {
