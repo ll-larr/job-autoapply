@@ -412,23 +412,32 @@ async function main(): Promise<void> {
     // панели гарантированно падал; теперь один и тот же адаптер просто
     // переиспользует уже открытый браузер (см. HhAdapter.getContext).
     const adapters = buildAdapters();
-    await startPanel(queue, PANEL_PORT, {
-      adapters,
-      config,
-      // Та же проводка, что у команды search: панель не собирает конвейер
-      // заново, а зовёт ровно то, что вызывает npm run search.
-      startSearch: (limit) => runSearchCommand({
-        queue,
-        config,
+    try {
+      await startPanel(queue, PANEL_PORT, {
         adapters,
-        queries: config.searchQueries,
-        limit,
-        resume: readFileSync(RESUME_PATH, 'utf8'),
-        generateLetterFn: generateLetter,
-        pickTemplateFn: pickTemplate,
-        readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
-      }),
-    });
+        config,
+        // Та же проводка, что у команды search: панель не собирает конвейер
+        // заново, а зовёт ровно то, что вызывает npm run search.
+        startSearch: (limit) => runSearchCommand({
+          queue,
+          config,
+          adapters,
+          queries: config.searchQueries,
+          limit,
+          resume: readFileSync(RESUME_PATH, 'utf8'),
+          generateLetterFn: generateLetter,
+          pickTemplateFn: pickTemplate,
+          readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
+        }),
+      });
+    } catch (e) {
+      // Занятый порт и подобное — обычная бытовая ситуация, а не сбой,
+      // заслуживающий трассировки. Причина уже названа в тексте ошибки.
+      queue.close();
+      console.error(e instanceof Error ? e.message : String(e));
+      process.exitCode = 1;
+      return;
+    }
     for (const line of formatPanelStartup(stuck, PANEL_PORT)) console.log(line);
     // Намеренно НЕ queue.close(): панель держит процесс живым, пока слушает
     // http; закрыть БД здесь значило бы, что первый же запрос к /api/pending

@@ -36,6 +36,19 @@ async function post(url: string, body: unknown): Promise<Response> {
   });
 }
 
+describe('панель — занятый порт', () => {
+  it('вторая панель на том же порту падает объяснимым сообщением, а не дампом стека', async () => {
+    // Без обработчика 'error' на server Node роняет процесс необработанным
+    // событием: человек, дважды нажавший кнопку запуска, получал двадцать
+    // строк трассировки вместо одной фразы про уже открытую панель.
+    await expect(startPanel(q, PORT)).rejects.toThrow(/занят/);
+  });
+
+  it('сообщение называет адрес, по которому уже работающая панель доступна', async () => {
+    await expect(startPanel(q, PORT)).rejects.toThrow(new RegExp(`127\.0\.0\.1:${PORT}`));
+  });
+});
+
 describe('панель', () => {
   it('GET /api/pending отдаёт ожидающие записи', async () => {
     const res = await fetch(`http://127.0.0.1:${PORT}/api/pending`);

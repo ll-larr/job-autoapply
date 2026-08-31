@@ -253,7 +253,24 @@ export async function startPanel(
   // Порт 0 просит систему выдать свободный. Возвращаем фактический, чтобы
   // вызывающий не гадал: в тестах это снимает гонку за фиксированный порт
   // между перезапусками панели.
-  await new Promise<void>((r) => server.listen(port, '127.0.0.1', r));
+  //
+  // Ошибку listen ловим явно. Без обработчика 'error' Node роняет процесс
+  // необработанным событием, и человек, дважды открывший панель, получает
+  // вместо объяснения дамп стека на двадцать строк — при том что причина
+  // ровно одна и она безобидная: панель уже запущена в другом окне.
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once('error', (e: NodeJS.ErrnoException) => {
+      rejectListen(
+        e.code === 'EADDRINUSE'
+          ? new Error(
+            `Порт ${port} занят — скорее всего, панель уже запущена в другом окне. `
+            + `Открой http://127.0.0.1:${port} или закрой то окно (Ctrl+C) и повтори.`,
+          )
+          : e,
+      );
+    });
+    server.listen(port, '127.0.0.1', () => resolveListen());
+  });
   const address = server.address();
   const actualPort = typeof address === 'object' && address !== null ? address.port : port;
 
