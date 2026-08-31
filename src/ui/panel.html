@@ -75,6 +75,8 @@
   <section id="pane-pending" role="tabpanel" aria-labelledby="tab-pending">
     <div class="actions">
       <button id="approveAll">Одобрить всё</button>
+      <button id="fillLettersPending">Дописать письма</button>
+      <span class="hint" id="lettersHint"></span>
     </div>
     <div id="list"></div>
   </section>
@@ -82,6 +84,7 @@
   <section id="pane-approved" role="tabpanel" aria-labelledby="tab-approved" hidden>
     <div class="actions">
       <button id="sendAll">Отправить всё</button>
+      <button id="fillLetters">Дописать письма</button>
       <span class="hint" id="sendHint">Отправка необратима: отклик на hh.ru нельзя отозвать.</span>
     </div>
     <div id="approvedList"></div>
@@ -212,18 +215,39 @@ function renderApproved(rows) {
       </div>
       <div>
         <div class="desc letter-preview" style="max-height:none;"></div>
+        <textarea class="letter-edit" style="display:none;"
+                  placeholder="Впиши сопроводительное письмо — без него заявка не отправится."></textarea>
         <div style="margin-top:8px; display:flex; gap:8px;">
+          <button data-act="save" style="display:none;">Сохранить письмо</button>
           <button data-act="cancel">Отменить</button>
         </div>
       </div>`;
     el.querySelector('.desc').textContent = r.vacancy.description;
     const preview = el.querySelector('.letter-preview');
+    const edit = el.querySelector('.letter-edit');
+    const save = el.querySelector('[data-act="save"]');
+
     if (r.letter.trim() === '') {
       // Пустое письмо на одобренной заявке — не мелочь: отправка её пропустит
       // целиком, и без этой пометки «Отправлено 0» выглядело бы поломкой.
-      preview.textContent = 'ПИСЬМА НЕТ — заявка не отправится. Впиши текст или нажми «Дописать письма».';
+      // Раньше здесь была только надпись, отсылавшая к кнопке, которой не
+      // существовало, и вписать текст было некуда. Теперь и поле, и кнопка.
+      preview.textContent = 'ПИСЬМА НЕТ — заявка не отправится. Впиши текст ниже или нажми «Дописать письма».';
       preview.style.color = '#b00';
       preview.style.fontWeight = '600';
+      edit.style.display = '';
+      save.style.display = '';
+      save.onclick = async () => {
+        const text = edit.value.trim();
+        if (text === '') return;
+        const res = await post('/api/letter', { id: r.id, letter: text });
+        if (!res.ok) {
+          const err = await res.json();
+          preview.textContent = err.error ?? 'Не удалось сохранить письмо.';
+          return;
+        }
+        load();
+      };
     } else {
       preview.textContent = r.letter;
     }
@@ -341,6 +365,70 @@ async function pollSearch() {
       if (rejected) parts.push(`отсеяно фильтрами ${rejected}`);
       if (st.result.emptyLetters) parts.push(`БЕЗ ПИСЬМА ${st.result.emptyLetters}`);
       searchNote.textContent = parts.join(' · ');
+    }
+    load();
+  }, 3000);
+}
+
+// Дозаполнение писем. Идёт минутами (модель на каждое письмо), поэтому та же
+// схема, что у поиска и отправки: запуск асинхронный, состояние опрашивается.
+//
+// Кнопка есть на обеих вкладках: пустое письмо мешает и там, и там, а гонять
+// человека между вкладками ради одного действия незачем.
+let lettersPolling = null;
+
+const lettersBtns = [
+  document.getElementById('fillLetters'),
+  document.getElementById('fillLettersPending'),
+];
+const lettersHint = document.getElementById('lettersHint');
+
+function setLettersBtns(disabled, text) {
+  for (const b of lettersBtns) {
+    if (!b) continue;
+    b.disabled = disabled;
+    b.textContent = text;
+  }
+}
+
+async function startLetters() {
+  const res = await post('/api/letters/start', {});
+  if (!res.ok) {
+    const err = await res.json();
+    lettersHint.textContent = err.error ?? 'Не удалось запустить дозаполнение.';
+    return;
+  }
+  pollLetters();
+}
+
+for (const b of lettersBtns) if (b) b.onclick = startLetters;
+
+async function pollLetters() {
+  if (lettersPolling) return;
+  setLettersBtns(true, 'Пишу письма...');
+  lettersHint.textContent = 'Модель пишет письмо на каждую вакансию — это небыстро.';
+
+  lettersPolling = setInterval(async () => {
+    const st = await fetchJson('/api/letters/status');
+    if (st.running) return;
+
+    clearInterval(lettersPolling);
+    lettersPolling = null;
+    setLettersBtns(false, 'Дописать письма');
+
+    if (st.error) {
+      lettersHint.textContent = 'Дозаполнение упало: ' + st.error;
+    } else if (st.result) {
+      const r = st.result;
+      if (r.found === 0) {
+        lettersHint.textContent = 'Пустых писем нет.';
+      } else {
+        // Причину надо назвать. Двадцать пустых писем без объяснения уже
+        // стоили прогона: оказалось, кончились деньги на OpenRouter, но
+        // понять это по панели было нельзя.
+        lettersHint.textContent = `Заполнено ${r.filled} из ${r.found}.`
+          + (r.filled < r.found && r.failure ? ` Причина: ${r.failure}` : '');
+      }
     }
     load();
   }, 3000);
@@ -487,6 +575,14 @@ fetchJson('/api/search/status').then((st) => {
     searchBtn.disabled = true;
     searchLimit.disabled = true;
     searchNote.textContent = 'Панель запущена без поиска — используй npm run search.';
+  }
+});
+
+fetchJson('/api/letters/status').then((st) => {
+  if (st.running) pollLetters();
+  else if (!st.canFillLetters) {
+    setLettersBtns(true, 'Дописать письма');
+    lettersHint.textContent = 'Панель запущена без генерации — используй npm run letters.';
   }
 });
 

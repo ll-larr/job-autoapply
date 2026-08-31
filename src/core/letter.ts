@@ -265,12 +265,46 @@ export function isUsableLetter(text: string, input: LetterInput): boolean {
   return true;
 }
 
+/**
+ * Почему письмо не получилось. Человекочитаемая строка, а не код: она идёт
+ * прямиком в панель и в консоль.
+ *
+ * Существует потому, что молчаливый провал уже стоил живого прогона:
+ * 2026-08-31 поиск вернул двадцать вакансий с пустыми письмами и ни словом не
+ * объяснил, почему. Причина оказалась банальной — на счету OpenRouter
+ * кончились деньги, платная модель отвечала 402, бесплатные 429, — но чтобы
+ * это выяснить, пришлось лезть в код и стучаться в API руками. `!res.ok`
+ * здесь раньше просто отбрасывался вместе со статусом и телом ответа.
+ */
+export function describeHttpFailure(status: number, body: string): string {
+  if (status === 401 || status === 403) {
+    return `ключ OpenRouter отвергнут (HTTP ${status}) — проверь OPENROUTER_API_KEY в .env`;
+  }
+  if (status === 402) {
+    return 'на счету OpenRouter кончились деньги (HTTP 402) — пополни баланс или оставь в letterModels только бесплатные модели';
+  }
+  if (status === 429) {
+    return 'лимит запросов (HTTP 429) — у бесплатных моделей он общий на всех, стоит подождать или добавить платную';
+  }
+  // Текст ошибки от OpenRouter бывает содержательным — показываем начало.
+  const hint = body.trim().slice(0, 160);
+  return `HTTP ${status}${hint === '' ? '' : ` — ${hint}`}`;
+}
+
 export async function generateLetter(
   input: LetterInput,
   options: GenerateLetterOptions,
-): Promise<{ letter: string; mode: LetterMode }> {
+): Promise<{ letter: string; mode: LetterMode; failure?: string }> {
   const apiKey = process.env['OPENROUTER_API_KEY'];
-  if (!apiKey) return EMPTY_RESULT;
+  if (!apiKey) {
+    return { ...EMPTY_RESULT, failure: 'OPENROUTER_API_KEY не найден — положи ключ в .env рядом с package.json' };
+  }
+
+  // Последняя увиденная причина. Именно последняя, а не первая: цепочка идёт
+  // от бесплатных моделей к запасным, и человеку полезнее знать, обо что
+  // споткнулась ПОСЛЕДНЯЯ попытка, чем то, что первая бесплатная привычно
+  // отдала 429.
+  let failure = 'ни одна модель из letterModels не ответила пригодным письмом';
 
   const fetchImpl = options.fetchImpl ?? fetch;
   const prompt = buildPrompt(input);
@@ -300,24 +334,37 @@ export async function generateLetter(
         body: JSON.stringify({ model, messages: prompt.messages }),
         signal: AbortSignal.timeout(timeoutMs),
       });
-      if (!res.ok) continue;
+      if (!res.ok) {
+        failure = `${model}: ${describeHttpFailure(res.status, await res.text().catch(() => ''))}`;
+        continue;
+      }
 
       const text = extractText(await res.json());
-      if (text === undefined) continue;
+      if (text === undefined) {
+        failure = `${model}: ответ без текста письма`;
+        continue;
+      }
       // Модель может вернуть внешне правдоподобное письмо, которое на деле
       // бесполезно: в гибридном режиме слабые модели вырезают {{HOOK}} и
       // {{FIT}} вместо того, чтобы их заполнить, и на выходе оказывается голый
       // скелет без единого слова про эту вакансию. Ради этих двух вставок
       // гибридный режим и существует, поэтому такой ответ считаем неудачей и
       // пробуем следующую модель.
-      if (!isUsableLetter(text, input)) continue;
+      if (!isUsableLetter(text, input)) {
+        failure = `${model}: письмо не прошло проверку (вырезаны вставки, испорчен скелет или выдуман факт)`;
+        continue;
+      }
       return { letter: text, mode: input.mode };
-    } catch {
+    } catch (e) {
       // Эта попытка не удалась — пробуем ещё раз, потом следующую запись.
+      const msg = e instanceof Error ? e.message : String(e);
+      failure = `${model}: ${msg.includes('timeout') || msg.includes('aborted')
+        ? `модель не ответила за ${timeoutMs / 1000} с`
+        : msg.slice(0, 160)}`;
       continue;
     }
     }
   }
 
-  return EMPTY_RESULT;
+  return { ...EMPTY_RESULT, failure };
 }

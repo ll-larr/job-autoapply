@@ -133,6 +133,7 @@ export function formatSearchReport(
   report: SearchReport,
   emptyLetters: number,
   hasApiKey: boolean,
+  letterFailure?: string,
 ): string[] {
   const lines: string[] = [];
   lines.push(`=== Поиск: "${query}" ===`);
@@ -159,6 +160,9 @@ export function formatSearchReport(
   lines.push(`Отсеяно (опыт):          ${report.rejectedExperience}`);
   lines.push(`Отсеяно (грейд):         ${report.rejectedGrade}`);
   lines.push(`Отсеяно (1С):            ${report.rejected1c}`);
+  if (emptyLetters > 0 && letterFailure !== undefined) {
+    lines.push(`Почему письма пустые:    ${letterFailure}`);
+  }
   lines.push(
     `Письма пустые:           ${emptyLetters}` +
       (report.queued > 0 ? ` из ${report.queued} поставленных в очередь` : '') +
@@ -279,6 +283,74 @@ export function buildAdapterMap(adapters: readonly Adapter[]): Map<string, Adapt
   return new Map(adapters.map((a) => [a.name, a] as const));
 }
 
+
+export interface FillLettersDeps {
+  queue: Queue;
+  config: Config;
+  resume: string;
+  generateLetterFn: typeof generateLetter;
+  pickTemplateFn: typeof pickTemplate;
+  readTemplate: (name: string) => string;
+  /** Куда сообщать о ходе. Команда пишет в консоль, панель — никуда. */
+  log?: (line: string) => void;
+}
+
+export interface FillLettersResult {
+  /** Сколько строк с пустым письмом нашлось. */
+  found: number;
+  /** Сколько удалось заполнить. */
+  filled: number;
+  /** Почему не получилось у остальных. */
+  failure?: string;
+}
+
+/**
+ * Дозаполнение писем у строк, которые уже в очереди, но остались с пустым
+ * письмом: генерация могла не удаться из-за отсутствующего ключа, 429 у
+ * бесплатной модели или кончившихся денег. Повторный поиск такие строки не
+ * чинит — их отсекает дедупликация по (source, source_id) ещё до генерации.
+ *
+ * Берёт и `pending`, и `approved`: одобрение как раз и выводило строку
+ * из-под досягаемости этой операции, хотя именно одобренные и мешают
+ * отправке (см. Sender — заявку с пустым письмом он пропускает).
+ */
+export async function fillEmptyLetters(deps: FillLettersDeps): Promise<FillLettersResult> {
+  const log = deps.log ?? (() => {});
+  const empty = [...deps.queue.listByStatus('pending'), ...deps.queue.listByStatus('approved')]
+    .filter((r) => r.letter.trim() === '');
+
+  if (empty.length === 0) return { found: 0, filled: 0 };
+
+  log(`Пустых писем: ${empty.length}. Генерирую.`);
+  let filled = 0;
+  let failure: string | undefined;
+
+  for (const row of empty) {
+    const mode = pickMode(row.score, deps.config.letterFullThreshold);
+    const templateName = deps.pickTemplateFn(row.vacancy, row.matched);
+    const result = await deps.generateLetterFn(
+      {
+        vacancy: row.vacancy,
+        matched: row.matched,
+        mode,
+        resume: deps.resume,
+        template: deps.readTemplate(templateName),
+      },
+      { models: deps.config.letterModels },
+    );
+    if (result.letter.trim() === '') {
+      failure = result.failure ?? failure;
+      log(`  #${row.id} не удалось: ${row.vacancy.title.slice(0, 45)}`);
+      continue;
+    }
+    deps.queue.setLetter(row.id, result.letter, result.mode);
+    filled++;
+    log(`  #${row.id} готово (${result.letter.length} симв.): ${row.vacancy.title.slice(0, 45)}`);
+  }
+
+  return { found: empty.length, filled, failure };
+}
+
 export interface SearchCommandDeps {
   queue: Queue;
   config: Config;
@@ -308,8 +380,13 @@ export interface SearchCommandDeps {
  */
 export async function runSearchCommand(
   deps: SearchCommandDeps,
-): Promise<{ report: SearchReport; emptyLetters: number }> {
+): Promise<{ report: SearchReport; emptyLetters: number; letterFailure?: string }> {
   let emptyLetters = 0;
+  // Причина последнего провала генерации. Без неё пустые письма выглядят как
+  // необъяснимое поведение системы: 2026-08-31 прогон вернул двадцать вакансий
+  // с пустыми письмами, и чтобы узнать, что просто кончились деньги на
+  // OpenRouter, пришлось лезть в код и стучаться в API руками.
+  let letterFailure: string | undefined;
   const report = await runSearch({
     queue: deps.queue,
     config: deps.config,
@@ -328,11 +405,14 @@ export async function runSearchCommand(
         },
         { models: deps.config.letterModels },
       );
-      if (result.mode === 'none') emptyLetters++;
+      if (result.mode === 'none') {
+        emptyLetters++;
+        letterFailure = result.failure ?? letterFailure;
+      }
       return result;
     },
   });
-  return { report, emptyLetters };
+  return { report, emptyLetters, letterFailure };
 }
 
 /**
@@ -438,6 +518,14 @@ async function main(): Promise<void> {
         config,
         // Та же проводка, что у команды search: панель не собирает конвейер
         // заново, а зовёт ровно то, что вызывает npm run search.
+        fillLetters: () => fillEmptyLetters({
+          queue,
+          config,
+          resume: readFileSync(RESUME_PATH, 'utf8'),
+          generateLetterFn: generateLetter,
+          pickTemplateFn: pickTemplate,
+          readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
+        }),
         startSearch: (limit) => runSearchCommand({
           queue,
           config,
@@ -466,10 +554,6 @@ async function main(): Promise<void> {
   }
 
   if (cmd === 'letters') {
-    // Дозаполнение писем у строк, которые уже в очереди, но остались с пустым
-    // письмом: генерация могла не удаться из-за отсутствующего ключа или 429
-    // от бесплатной модели. Повторный search такие строки не чинит — их
-    // отсекает дедупликация по (source, source_id) ещё до генерации.
     warnIfProxyFlagMissing();
     const config = loadConfig();
     const queue = new Queue(DB_PATH);
@@ -482,46 +566,24 @@ async function main(): Promise<void> {
         return;
       }
 
-      const resume = readFileSync(RESUME_PATH, 'utf8');
-      // И pending, и approved. Раньше брались только pending — и это оставляло
-      // ровно ту дыру, ради которой команда написана: строка, одобренная с
-      // пустым письмом, чинилась только руками в панели, а «Отправить всё»
-      // отправляло её как есть, без письма. Одобрение не означает, что письмо
-      // появилось; чаще наоборот — человек одобряет вакансию, а письмо не
-      // сгенерировалось из-за 429 или пропавшего ключа.
-      const empty = [...queue.listByStatus('pending'), ...queue.listByStatus('approved')]
-        .filter((r) => r.letter.trim() === '');
-      if (empty.length === 0) {
+      const res = await fillEmptyLetters({
+        queue,
+        config,
+        resume: readFileSync(RESUME_PATH, 'utf8'),
+        generateLetterFn: generateLetter,
+        pickTemplateFn: pickTemplate,
+        readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
+        log: (line) => console.log(line),
+      });
+
+      if (res.found === 0) {
         console.log('Пустых писем нет — дозаполнять нечего.');
         return;
       }
-
-      console.log(`Пустых писем: ${empty.length}. Генерирую.`);
-      let filled = 0;
-      for (const row of empty) {
-        const mode = pickMode(row.score, config.letterFullThreshold);
-        const templateName = pickTemplate(row.vacancy, row.matched);
-        const result = await generateLetter(
-          {
-            vacancy: row.vacancy,
-            matched: row.matched,
-            mode,
-            resume,
-            template: readFileSync(`templates/${templateName}.md`, 'utf8'),
-          },
-          { models: config.letterModels },
-        );
-        if (result.letter.trim() === '') {
-          console.log(`  #${row.id} не удалось: ${row.vacancy.title.slice(0, 45)}`);
-          continue;
-        }
-        queue.setLetter(row.id, result.letter, result.mode);
-        filled++;
-        console.log(`  #${row.id} готово (${result.letter.length} симв.): ${row.vacancy.title.slice(0, 45)}`);
-      }
-      console.log(`\nЗаполнено ${filled} из ${empty.length}.`);
-      if (filled < empty.length) {
-        console.log('Оставшиеся можно повторить этой же командой — свободные модели часто отдают 429.');
+      console.log(`\nЗаполнено ${res.filled} из ${res.found}.`);
+      if (res.filled < res.found) {
+        if (res.failure !== undefined) console.log(`Причина: ${res.failure}`);
+        console.log('Оставшиеся можно повторить этой же командой.');
       }
     } finally {
       queue.close();
@@ -542,7 +604,7 @@ async function main(): Promise<void> {
       const resume = readFileSync(RESUME_PATH, 'utf8');
       const hasApiKey = Boolean(process.env['OPENROUTER_API_KEY']);
 
-      const { report, emptyLetters } = await runSearchCommand({
+      const { report, emptyLetters, letterFailure } = await runSearchCommand({
         queue,
         config,
         adapters: buildAdapters(),
@@ -554,7 +616,7 @@ async function main(): Promise<void> {
         readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
       });
 
-      for (const line of formatSearchReport(formatQueryLabel(queries), report, emptyLetters, hasApiKey)) {
+      for (const line of formatSearchReport(formatQueryLabel(queries), report, emptyLetters, hasApiKey, letterFailure)) {
         console.log(line);
       }
     } finally {

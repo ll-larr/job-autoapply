@@ -51,6 +51,14 @@ interface SearchState {
   error: string | null;
 }
 
+/** Состояние дозаполнения писем. Та же схема, что у поиска и отправки, и по той же причине: это минуты. */
+interface LettersState {
+  running: boolean;
+  startedAt: number | null;
+  result: { found: number; filled: number; failure?: string } | null;
+  error: string | null;
+}
+
 export interface PanelDeps {
   /** Нужны только для отправки. Без них кнопка «Отправить всё» недоступна. */
   adapters?: Adapter[];
@@ -64,6 +72,14 @@ export interface PanelDeps {
    * Без неё кнопка поиска в панели недоступна.
    */
   startSearch?: (limit: number) => Promise<{ report: unknown; emptyLetters: number }>;
+  /**
+   * Дозаполнение пустых писем. Без неё кнопка «Дописать письма» недоступна.
+   *
+   * Нужна именно в панели, а не только командой: письмо может не
+   * сгенерироваться (429, кончились деньги на OpenRouter), и человек видит
+   * это в панели — там же должна быть и кнопка, а не отсылка в терминал.
+   */
+  fillLetters?: () => Promise<{ found: number; filled: number; failure?: string }>;
 }
 
 export async function startPanel(
@@ -73,6 +89,8 @@ export async function startPanel(
   const canSend = deps.adapters !== undefined && deps.config !== undefined;
   const search: SearchState = { running: false, startedAt: null, result: null, error: null };
   const canSearch = deps.startSearch !== undefined;
+  const letters: LettersState = { running: false, startedAt: null, result: null, error: null };
+  const canFillLetters = deps.fillLetters !== undefined;
 
   const server = createServer(async (req, res) => {
     try {
@@ -149,6 +167,63 @@ export async function startPanel(
         })();
 
         return json(res, { started: true }, 202);
+      }
+
+      if (req.method === 'GET' && req.url === '/api/letters/status') {
+        return json(res, {
+          running: letters.running,
+          canFillLetters,
+          result: letters.result,
+          error: letters.error,
+          startedAt: letters.startedAt,
+        });
+      }
+
+      if (req.method === 'POST' && req.url === '/api/letters/start') {
+        if (!canFillLetters) {
+          return json(res, { error: 'Панель запущена без генерации писем — используй npm run letters.' }, 409);
+        }
+        if (letters.running) return json(res, { error: 'Дозаполнение уже идёт.' }, 409);
+        // Поиск тоже зовёт модель; два потока генерации разом упрутся в лимит
+        // быстрее, чем один, и разобрать, кто чей 429, будет невозможно.
+        if (search.running) {
+          return json(res, { error: 'Идёт поиск — он тоже пишет письма. Дождись его.' }, 409);
+        }
+
+        letters.running = true;
+        letters.startedAt = Date.now();
+        letters.result = null;
+        letters.error = null;
+
+        void (async () => {
+          try {
+            letters.result = await deps.fillLetters!();
+          } catch (e) {
+            letters.error = e instanceof Error ? e.message : String(e);
+          } finally {
+            letters.running = false;
+          }
+        })();
+
+        return json(res, { started: true }, 202);
+      }
+
+      // Письмо, вписанное руками. Отдельная ручка, а не /api/approve: approve
+      // меняет статус и на уже одобренной строке бросает, а править надо
+      // именно письмо. Queue.setLetter пускает сюда только пустое письмо
+      // одобренной строки — непустое одобренное не перезаписывается ниоткуда.
+      if (req.method === 'POST' && req.url === '/api/letter') {
+        const body = await readJson(req);
+        const id = Number(body['id']);
+        const letter = String(body['letter'] ?? '');
+        if (!Number.isInteger(id)) return json(res, { error: 'нужен числовой id' }, 400);
+        if (letter.trim() === '') return json(res, { error: 'письмо пустое' }, 400);
+        try {
+          queue.setLetter(id, letter, 'manual');
+          return json(res, { ok: true });
+        } catch (e) {
+          return json(res, { error: e instanceof Error ? e.message : String(e) }, 409);
+        }
       }
 
       if (req.method === 'GET' && req.url === '/api/send/status') {

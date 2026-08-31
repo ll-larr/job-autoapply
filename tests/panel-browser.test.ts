@@ -51,6 +51,7 @@ let page: Page;
 let q: Queue;
 let panel: { port: number; close(): Promise<void> };
 let adapter: ReturnType<typeof mkSpyAdapter>;
+let fillCalls: number;
 
 beforeAll(async () => { browser = await chromium.launch(); });
 afterAll(async () => { await browser.close(); });
@@ -72,7 +73,21 @@ beforeEach(async () => {
   clearStop();
   q = new Queue(join(mkdtempSync(join(tmpdir(), 'jaa-pb-')), 'test.db'));
   adapter = mkSpyAdapter();
-  panel = await startPanel(q, 0, { adapters: [adapter], config: CONFIG });
+  fillCalls = 0;
+  panel = await startPanel(q, 0, {
+    adapters: [adapter],
+    config: CONFIG,
+    // Подставная генерация: настоящую модель дёргать незачем, проверяется
+    // проводка кнопки, а не качество письма.
+    fillLetters: async () => {
+      fillCalls++;
+      let filled = 0;
+      for (const row of q.listByStatus('approved')) {
+        if (row.letter.trim() === '') { q.setLetter(row.id, 'дописанное письмо', 'full'); filled++; }
+      }
+      return { found: filled, filled };
+    },
+  });
   page = await browser.newPage();
 });
 afterEach(async () => {
@@ -180,5 +195,71 @@ describe('панель в браузере — «Одобрить всё»', () 
     await open('pending');
     const label = await page.textContent('#approveAll');
     expect(label?.trim()).toBe('Одобрить всё');
+  }, 30000);
+});
+
+
+describe('панель в браузере — пустое письмо у одобренной заявки', () => {
+  it('карточку видно как проблемную, и в неё МОЖНО вписать письмо руками', async () => {
+    // Раньше здесь была только красная надпись, отсылавшая к кнопке, которой
+    // не существовало, а вписать текст было некуда вообще.
+    const id = seed('1', 80);
+    q.approve(id, '');
+
+    await open('approved');
+    const warn = await page.textContent('#approvedList .letter-preview');
+    expect(warn).toMatch(/ПИСЬМА НЕТ/);
+
+    await page.fill('#approvedList .letter-edit', 'написал руками');
+    await page.click('#approvedList [data-act="save"]');
+    await page.waitForFunction(
+      () => !/ПИСЬМА НЕТ/.test(document.querySelector('#approvedList .letter-preview')?.textContent ?? ''),
+      undefined, { timeout: 15000 },
+    );
+
+    expect(q.listByStatus('approved')[0]!.letter).toBe('написал руками');
+  }, 30000);
+
+  it('вписанное руками письмо помечается режимом manual, а не выдаётся за сгенерированное', async () => {
+    const id = seed('1', 80);
+    q.approve(id, '');
+    await open('approved');
+    await page.fill('#approvedList .letter-edit', 'мой текст');
+    await page.click('#approvedList [data-act="save"]');
+    await page.waitForFunction(
+      () => !/ПИСЬМА НЕТ/.test(document.querySelector('#approvedList .letter-preview')?.textContent ?? ''),
+      undefined, { timeout: 15000 },
+    );
+    expect(q.listByStatus('approved')[0]!.letterMode).toBe('manual');
+  }, 30000);
+
+  it('у заявки С письмом поля для правки нет — одобренный текст не подменяют', async () => {
+    const id = seed('1', 80);
+    q.approve(id, 'письмо, которое человек утвердил');
+    await open('approved');
+    const visible = await page.isVisible('#approvedList .letter-edit');
+    expect(visible).toBe(false);
+  }, 30000);
+
+  it('кнопка «Дописать письма» существует и действительно запускает генерацию', async () => {
+    // Кнопка была обещана в тексте предупреждения и при этом отсутствовала.
+    const id = seed('1', 80);
+    q.approve(id, '');
+
+    await open('approved');
+    await page.click('#fillLetters');
+    await page.waitForFunction(
+      () => !/ПИСЬМА НЕТ/.test(document.querySelector('#approvedList .letter-preview')?.textContent ?? ''),
+      undefined, { timeout: 20000 },
+    );
+
+    expect(fillCalls).toBe(1);
+    expect(q.listByStatus('approved')[0]!.letter).toBe('дописанное письмо');
+  }, 40000);
+
+  it('кнопка есть и на вкладке «В ожидании»', async () => {
+    seed('1', 80);
+    await open('pending');
+    expect(await page.isVisible('#fillLettersPending')).toBe(true);
   }, 30000);
 });

@@ -4,7 +4,16 @@ import { dirname } from 'node:path';
 import type { Vacancy } from './vacancy.js';
 
 export type Status = 'pending' | 'approved' | 'skipped' | 'sent' | 'failed';
-export type LetterMode = 'hybrid' | 'full' | 'none';
+/**
+ * Откуда взялось письмо.
+ *
+ * `hybrid` и `full` — режимы генерации (скелет со вставками / целиком с нуля,
+ * см. core/letter.ts#pickMode). `none` — сгенерировать не удалось, письма нет.
+ * `manual` — человек написал его руками в панели: это не режим генерации, но
+ * и не отсутствие письма, и слепить его с остальными значило бы врать в
+ * отчётах о том, что модель сделала.
+ */
+export type LetterMode = 'hybrid' | 'full' | 'none' | 'manual';
 
 export interface QueueRow {
   id: number;
