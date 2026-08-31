@@ -1,6 +1,8 @@
+import type { BrowserContext } from 'playwright';
 import type { Adapter, ApplyResult, SearchFilters } from './types.js';
 import { normalizeVacancy, type Vacancy } from '../core/vacancy.js';
 import { parseExperienceFromText } from '../core/screening.js';
+import { sharedProfile } from '../browser.js';
 
 /**
  * careerist.ru. Контракт снят живьём, см. docs/careerist-selectors.md — там же
@@ -188,6 +190,57 @@ export function parseVacancyPage(rawHtml: string): CareeristVacancyDetail {
   };
 }
 
+
+/**
+ * Ответ любого `/mson/`-маршрута — это JSON, УПАКОВАННЫЙ percent-encoding'ом
+ * целиком (на странице его разворачивает `vfJsonDecode`). Не заголовок
+ * `Content-Type` тому свидетель: он говорит `text/html`, а тело начинается с
+ * `%7B%22params%22...`. Разбирать как HTML бесполезно.
+ */
+export function decodeMsonResponse(body: string): { output?: string; result?: boolean } {
+  try {
+    return JSON.parse(decodeURIComponent(body)) as { output?: string; result?: boolean };
+  } catch {
+    return {};
+  }
+}
+
+/** Поля формы отклика, которые надо вернуть серверу нетронутыми. */
+export interface CareeristApplyForm {
+  /** PHP-сериализованный blob: несёт VacancyID, id резюме и хеш пользователя. Собрать его нельзя, только передать как есть. */
+  afdata: string;
+  total: string;
+  extentionInstall: string;
+  /** Имя поля письма. Есть — значит письмо уходит ВМЕСТЕ с откликом. */
+  letterField: string | null;
+}
+
+export function parseApplyForm(outputHtml: string): CareeristApplyForm | null {
+  const afdata = /name="afdata"\s+value="([^"]*)"/.exec(outputHtml)
+    ?? /value="([^"]*)"\s+name="afdata"/.exec(outputHtml);
+  if (afdata === null) return null;
+
+  const total = /name="Total"[^>]*\svalue="([^"]*)"/.exec(outputHtml);
+  const ext = /name="extention_install"[^>]*\svalue="([^"]*)"|value="([^"]*)"[^>]*name="extention_install"/.exec(outputHtml);
+  const letter = /<textarea[^>]*\sname="([^"]+)"/.exec(outputHtml);
+
+  return {
+    afdata: afdata[1]!,
+    total: total === null ? '1' : total[1]!,
+    extentionInstall: ext === null ? '0' : (ext[1] ?? ext[2] ?? '0'),
+    letterField: letter === null ? null : letter[1]!,
+  };
+}
+
+/**
+ * Id резюме пользователя. Один и тот же во всех кнопках отклика на странице,
+ * потому что он принадлежит аккаунту, а не вакансии.
+ */
+export function extractResumeId(html: string): string | null {
+  const m = /resume\/send\/\d+\/(\d+)/.exec(html);
+  return m === null ? null : m[1]!;
+}
+
 /** См. AdapterSearchStats в src/pipeline.ts — необязательный бонус-сигнал, не часть Adapter. */
 export interface CareeristSearchStats {
   read: number;
@@ -200,9 +253,45 @@ export class CareeristAdapter implements Adapter {
   readonly name = 'careerist';
   lastSearchStats?: CareeristSearchStats;
   private fetchImpl: typeof fetch;
+  private context?: BrowserContext;
+  private openContext: () => Promise<BrowserContext>;
+  private resumeId?: string;
 
-  constructor(opts: { fetchImpl?: typeof fetch } = {}) {
+  /**
+   * Поиск ходит обычным fetch — страницы серверные, браузер для них лишний.
+   * Подача, наоборот, требует залогиненного профиля, поэтому контекст
+   * открывается лениво и только под неё: запускать Chromium ради поиска
+   * значило бы платить секундами за каждый прогон впустую.
+   */
+  constructor(opts: {
+    fetchImpl?: typeof fetch;
+    context?: BrowserContext;
+    openContext?: () => Promise<BrowserContext>;
+  } = {}) {
     this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.context = opts.context;
+    this.openContext = opts.openContext ?? sharedProfile;
+  }
+
+  /** Тот же самовосстанавливающийся приём, что у HhAdapter: закрытый контекст открывается заново. */
+  private async getContext(): Promise<BrowserContext> {
+    if (this.context !== undefined) {
+      try {
+        // Дешёвая проверка живости: у закрытого контекста бросает.
+        this.context.pages();
+        return this.context;
+      } catch {
+        this.context = undefined;
+      }
+    }
+    this.context = await this.openContext();
+    return this.context;
+  }
+
+  async close(): Promise<void> {
+    const ctx = this.context;
+    this.context = undefined;
+    if (ctx !== undefined) await ctx.close().catch(() => {});
   }
 
   async search(filters: SearchFilters): Promise<Vacancy[]> {
@@ -313,18 +402,99 @@ export class CareeristAdapter implements Adapter {
   }
 
   /**
-   * Отклик на careerist.ru требует аккаунта: кнопка «Отправить резюме» ведёт
-   * на `register.html?vacancyID=…` (docs/careerist-selectors.md). Аккаунта нет,
-   * а регистрировать его за пользователя нельзя.
+   * Подача отклика. Контракт снят живьём 2026-08-31 на залогиненном профиле,
+   * см. docs/careerist-selectors.md. Два шага:
    *
-   * `auth_required` — честный ответ на это: заявка остаётся `approved` и
-   * дождётся человека, вместо того чтобы уйти в `failed` и потерять уже
-   * написанное письмо. Когда аккаунт появится и пользователь залогинится в
-   * браузерный профиль, здесь появится настоящая подача — снятая живьём, как
-   * это сделано для hh.ru, а не написанная по догадке.
+   *   1. `POST /mson/resume/send/<vacancyId>/<resumeId>` с телом `id=<любой>`
+   *      — ОТДАЁТ ФОРМУ, отклик не подаёт. Это проверено, а не предположено:
+   *      после него раздел «Отклики» остался пуст. Проверять пришлось именно
+   *      так, потому что на hh.ru запрос с таким же безобидным именем
+   *      («popup») оказался самой подачей и стоил живого отклика.
+   *   2. `POST /mson/ajaxform/post` (multipart) с полями формы из шага 1 и
+   *      письмом в `TextRes` — вот это и есть подача.
+   *
+   * `afdata` из шага 1 передаётся НЕТРОНУТЫМ: это PHP-сериализованный blob с
+   * VacancyID, id резюме и хешем пользователя, собрать его самому нельзя.
+   *
+   * Письмо уходит ВМЕСТЕ с откликом — в отличие от hh.ru, где его приходится
+   * досылать вторым шагом в чат.
+   *
+   * Успех проверяется по разделу «Отклики», а не по строке-маркеру в ответе:
+   * маркер пришлось бы угадывать, а список поданных заявок — это то, что
+   * пользователь и сам увидит в своём кабинете.
    */
-  async apply(_vacancy: Vacancy, _letter: string): Promise<ApplyResult> {
-    return { status: 'auth_required' };
+  async apply(vacancy: Vacancy, letter: string): Promise<ApplyResult> {
+    const ctx = await this.getContext();
+
+    const alreadyBefore = await this.hasResponse(ctx, vacancy.sourceId);
+    if (alreadyBefore === 'auth') return { status: 'auth_required' };
+    if (alreadyBefore) return { status: 'already_applied' };
+
+    const resumeId = await this.getResumeId(ctx, vacancy.url);
+    if (resumeId === null) {
+      // Кнопок отклика на странице нет вовсе — так выглядит разлогиненный
+      // профиль: анонимному площадка показывает ссылку на регистрацию.
+      return { status: 'auth_required' };
+    }
+
+    const formRes = await ctx.request.post(
+      `${ORIGIN}/mson/resume/send/${vacancy.sourceId}/${resumeId}`,
+      { form: { id: 'resume-send-auto' }, headers: { 'X-Requested-With': 'XMLHttpRequest' } },
+    );
+    if (!formRes.ok()) {
+      return { status: 'failed', reason: `форма отклика недоступна: HTTP ${formRes.status()}` };
+    }
+
+    const output = decodeMsonResponse(await formRes.text()).output ?? '';
+    const form = parseApplyForm(output);
+    if (form === null) {
+      return { status: 'failed', reason: 'в ответе нет формы отклика — разметка площадки изменилась' };
+    }
+    if (form.letterField === null) {
+      // Отправлять отклик без письма нельзя: вся очередь построена вокруг
+      // того, что человек письмо прочитал и одобрил. Молча выбросить его
+      // значило бы подать не то, что он утверждал.
+      return { status: 'failed', reason: 'в форме отклика пропало поле письма — подача без письма не делается' };
+    }
+
+    const sendRes = await ctx.request.post(`${ORIGIN}/mson/ajaxform/post`, {
+      multipart: {
+        afdata: form.afdata,
+        Total: form.total,
+        extention_install: form.extentionInstall,
+        [form.letterField]: letter,
+      },
+    });
+    if (!sendRes.ok()) {
+      return { status: 'failed', reason: `подача отклонена: HTTP ${sendRes.status()}` };
+    }
+
+    const appeared = await this.hasResponse(ctx, vacancy.sourceId);
+    if (appeared === 'auth') return { status: 'auth_required' };
+    if (appeared) return { status: 'sent' };
+
+    // Ответ 200, но заявки в кабинете нет. Не выдаём это за успех: очередь
+    // пометила бы вакансию отправленной и больше к ней не вернулась.
+    return { status: 'failed', reason: 'отклик не появился в разделе «Отклики» после подачи' };
+  }
+
+  /** Есть ли уже отклик на эту вакансию. `'auth'` — профиль разлогинен. */
+  private async hasResponse(ctx: BrowserContext, vacancyId: string): Promise<boolean | 'auth'> {
+    const res = await ctx.request.get(`${ORIGIN}/responds/`);
+    if (!res.ok()) return 'auth';
+    const html = await res.text();
+    // Разлогиненному кабинет не показывают — его редиректит на вход.
+    if (/\/login\.html|register\.html/.test(res.url())) return 'auth';
+    return html.includes(vacancyId);
+  }
+
+  private async getResumeId(ctx: BrowserContext, vacancyUrl: string): Promise<string | null> {
+    if (this.resumeId !== undefined) return this.resumeId;
+    const res = await ctx.request.get(vacancyUrl);
+    if (!res.ok()) return null;
+    const id = extractResumeId(await res.text());
+    if (id !== null) this.resumeId = id;
+    return id;
   }
 }
 

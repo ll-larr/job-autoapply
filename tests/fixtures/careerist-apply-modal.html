@@ -1,0 +1,47 @@
+<div class="modal in" id="resume-send-e4199f04433dd93fde3927a6dfe33547" tabindex="-1" role="dialog" aria-labelledby="resume-send-e4199f04433dd93fde3927a6dfe33547Label" aria-hidden="true" style="display: block;"><div class="modal-dialog" role="document"><form target="inv_frame" enctype="multipart/form-data" id="form-2090201987" onsubmit="afPrepareSubmit();" method="post" action="https://careerist.ru/mson/ajaxform/post"><input type="hidden" id="afdata-form-2090201987" name="afdata" value="YTo0OntzOjExOiJmb3JtLW9iamVjdCI7czoyNToicmVzdW1lL21hdGVyaWFsLWZvcm06c2VuZCI7czoxMzoiZm9ybS1zYXZlYWJsZSI7YTo3OntzOjg6ImZvcm1OYW1lIjtzOjE1OiJmb3JtLTIwOTAyMDE5ODciO3M6OToiVmFjYW5jeUlEIjtpOjg5MDQ0ODcwO3M6MzoiVUlEIjtzOjg6IjExMTExMTExIjtzOjExOiJ2YWNEZWxpdmVyeSI7aToxMTExMTExMTtzOjEwOiJ2YWNhbnREZW1vIjtpOjA7czoxMjoiaXNWYWNhbnREZW1vIjtiOjE7czoxNToib25seU9uZVJlc3VtZUlEIjtzOjc6IjIyMjIyMjIiO31zOjc6InVzZXItaWQiO3M6MzI6IjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwIjtzOjExOiJsaXZlLW9iamVjdCI7YTozOntzOjY6Im9iamVjdCI7czo2OiJyZXN1bWUiO3M6MjoiaWQiO2k6MDtzOjQ6ImluZm8iO2E6MDp7fX19"><div id="regform" class="modal-content">
+  <div class="modal-header">
+      <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span id="tt1" class="icon material-icons" tabindex="0">close</span>
+      </button>
+      <h4 class="modal-title">Отправить резюме</h4>
+  </div>
+
+    <input id="Total" name="Total" type="hidden" value="1">
+        <div class="modal-body">
+        <p>Компания Партнерские Вакансии принимает только отклики. Отправьте резюме и в случае заинтересованности с вами свяжутся представители компании.</p>
+                    <p>Вы откликаетесь профессиональным резюме <b>«Бизнес-аналитик»</b></p>
+            <div class="dWLineForm formLine">
+                <label>Cопроводительное письмо:</label>
+                <div class="inputCntrTextEditor"><div class=" nicEdit-textarea" style="width: 100%; border: 1px solid rgb(155, 163, 169); border-radius: 0.1875rem; padding: 0.40625rem 0.75rem; font-size: 0.875rem; color: rgb(0, 0, 0); overflow: hidden auto; max-height: 300px;"><div class=" nicEdit-main" style="width: 100%; margin: 4px; min-height: 110px; overflow: hidden;" contenteditable="true"><p style="font-size: 14px; font-weight: 400; color: #000000; margin: 0;">Здравствуйте!</p>
+                        <p style="font-size: 14px; font-weight: 400; color: #000000; margin: 0;">
+                            Прошу вас рассмотреть мое резюме на вакансию Senior Бизнес аналитик \ Product Owner.<br>
+                            С уважением,<br>
+                            Имя 
+                        </p></div></div><textarea width="100%" class="texteditor simpleEditor" id="TextRes" name="TextRes" style="height: 110px !important; display: none;">&lt;p style="font-size: 14px; font-weight: 400; color: #000000; margin: 0;"&gt;Здравствуйте!&lt;/p&gt;
+                        &lt;p style="font-size: 14px; font-weight: 400; color: #000000; margin: 0;"&gt;
+                            Прошу вас рассмотреть мое резюме на вакансию Senior Бизнес аналитик \ Product Owner.&lt;br/&gt;
+                            С уважением,&lt;br/&gt;
+                            Имя 
+                        &lt;/p&gt;</textarea></div>
+            </div>
+                
+    </div>
+    <input type="hidden" value="0" name="extention_install" id="extention_install">
+    <div class="modal-footer">
+        <a class="btn btn-grey-blue" onclick="$('.close').trigger('click');">Отменить</a>
+        <button type="submit" class="btn btn-grey-blue active blockedModalButton" onclick="clickOnSendButton(); beforeSendResume();">Отправить</button>
+    </div>
+
+    </div>
+<script>
+window.beforeSendResume = function(){
+  if (typeof window.car === 'undefined' || window.car.isExtInstalled()) return;
+  var showInlineRes = window.car.showInlineIfCan(function(){
+      $('.close').trigger('click');
+  });
+  if (showInlineRes) {
+      $('input#extention_install').val('1');
+  }
+};
+
+window.clickOnSendButton = 

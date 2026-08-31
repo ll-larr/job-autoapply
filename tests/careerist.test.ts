@@ -8,6 +8,9 @@ import {
   stripHtml,
   extractCompanyFromTitle,
   extractBalancedDiv,
+  decodeMsonResponse,
+  parseApplyForm,
+  extractResumeId,
   CareeristAdapter,
   ITEMS_PER_PAGE,
 } from '../src/adapters/careerist.js';
@@ -32,6 +35,14 @@ const vacancyHtml = readFileSync('tests/fixtures/careerist-vacancy.html', 'utf8'
  * тело рекламного скрипта. Нашёл это живой прогон, а не фикстуры.
  */
 const nestedHtml = readFileSync('tests/fixtures/careerist-vacancy-nested.html', 'utf8');
+/**
+ * Настоящее модальное окно отклика, снятое с залогиненного профиля 2026-08-31.
+ * Хеш пользователя, id резюме и имя в тексте заменены на синтетические —
+ * структура PHP-сериализации внутри `afdata` при этом сохранена ровно,
+ * поэтому разбор проверяется на настоящей форме, а в репозиторий не уезжает
+ * ничего, чем можно воспользоваться.
+ */
+const applyModalHtml = readFileSync('tests/fixtures/careerist-apply-modal.html', 'utf8');
 
 describe('careerist — адреса', () => {
   it('входной адрес несёт текст запроса и категорию', () => {
@@ -276,22 +287,6 @@ describe('CareeristAdapter.search — без сети, на фикстурах',
   });
 });
 
-describe('CareeristAdapter.apply', () => {
-  it('возвращает auth_required: отклик требует регистрации, аккаунта нет', async () => {
-    // Кнопка «Отправить резюме» ведёт на register.html?vacancyID=… Регистрация
-    // за пользователя невозможна, поэтому подача честно объявляется требующей
-    // человека: заявка остаётся approved и не теряет уже написанное письмо.
-    const a = new CareeristAdapter();
-    const res = await a.apply({ sourceId: '1' } as never, 'письмо');
-    expect(res).toEqual({ status: 'auth_required' });
-  });
-
-  it('НЕ сообщает об успехе: sent отсюда невозможен, пока нет аккаунта', async () => {
-    const a = new CareeristAdapter();
-    const res = await a.apply({ sourceId: '1' } as never, 'письмо');
-    expect(res.status).not.toBe('sent');
-  });
-});
 
 
 describe('careerist — реклама и вложенность на странице вакансии', () => {
@@ -377,5 +372,199 @@ describe('careerist — рекламный скрипт не может стат
   it('остальные поля страницы при этом читаются', () => {
     expect(detail.company).toBe('Контора');
     expect(detail.geo).toBe('Москва');
+  });
+});
+
+
+describe('careerist — разбор ответа /mson/', () => {
+  it('разворачивает percent-encoded JSON, которым площадка отвечает', () => {
+    // Заголовок говорит text/html, но тело — это JSON целиком под
+    // percent-encoding'ом (на странице его разворачивает vfJsonDecode).
+    // Разбирать такой ответ как HTML бесполезно.
+    const packed = encodeURIComponent(JSON.stringify({ result: true, output: '<form></form>' }));
+    expect(decodeMsonResponse(packed)).toEqual({ result: true, output: '<form></form>' });
+  });
+
+  it('мусор не роняет разбор', () => {
+    expect(decodeMsonResponse('не json вовсе')).toEqual({});
+    expect(decodeMsonResponse('%')).toEqual({});
+  });
+});
+
+describe('careerist — parseApplyForm на настоящем модальном окне', () => {
+  const form = parseApplyForm(applyModalHtml);
+
+  it('достаёт afdata — его нельзя собрать, только передать как есть', () => {
+    expect(form).not.toBeNull();
+    expect(form!.afdata.length).toBeGreaterThan(100);
+  });
+
+  it('в afdata лежит PHP-сериализованный блок с VacancyID и id резюме', () => {
+    // Именно поэтому поле передаётся нетронутым: собрать его самим нельзя.
+    const raw = Buffer.from(form!.afdata, 'base64').toString('utf8');
+    expect(raw).toContain('VacancyID');
+    expect(raw).toContain('resume/material-form:send');
+  });
+
+  it('находит поле письма — значит письмо уходит ВМЕСТЕ с откликом', () => {
+    // В отличие от hh.ru, где письмо приходится досылать вторым шагом в чат.
+    expect(form!.letterField).toBe('TextRes');
+  });
+
+  it('достаёт остальные скрытые поля', () => {
+    expect(form!.total).toBe('1');
+    expect(form!.extentionInstall).toBe('0');
+  });
+
+  it('разметка без формы — null, а не выдуманные поля', () => {
+    expect(parseApplyForm('<div>ничего</div>')).toBeNull();
+  });
+});
+
+describe('careerist — extractResumeId', () => {
+  it('берёт id резюме из кнопки отклика', () => {
+    expect(extractResumeId("vfShowInFrame('x', 'resume/send/89044870/14292072',true,true, false);"))
+      .toBe('14292072');
+  });
+
+  it('нет кнопок отклика — null (так выглядит разлогиненный профиль)', () => {
+    expect(extractResumeId('<a href="/register.html?vacancyID=1">Отправить резюме</a>')).toBeNull();
+  });
+});
+
+describe('CareeristAdapter.apply — на подставном контексте, без сети', () => {
+  interface Call { method: string; url: string; opts?: Record<string, unknown> }
+
+  function mkCtx(opts: {
+    responds?: string[];        // тело /responds/ на последовательных вызовах
+    respondsOk?: boolean;
+    vacancyPage?: string;
+    formOutput?: string | null;
+    formOk?: boolean;
+    sendOk?: boolean;
+  }) {
+    const calls: Call[] = [];
+    let respondsCall = 0;
+    const responds = opts.responds ?? ['<html>пусто</html>', '<html>пусто</html>'];
+
+    const reply = (body: string, ok = true, url = 'https://careerist.ru/x') => ({
+      ok: () => ok,
+      status: () => (ok ? 200 : 500),
+      url: () => url,
+      text: async () => body,
+    });
+
+    const ctx = {
+      pages: () => [],
+      close: async () => {},
+      request: {
+        get: async (url: string) => {
+          calls.push({ method: 'GET', url });
+          if (url.includes('/responds/')) {
+            const body = responds[Math.min(respondsCall++, responds.length - 1)]!;
+            return reply(body, opts.respondsOk ?? true, url);
+          }
+          return reply(opts.vacancyPage ?? "vfShowInFrame('x','resume/send/1/14292072',true,true,false)");
+        },
+        post: async (url: string, o?: Record<string, unknown>) => {
+          calls.push({ method: 'POST', url, opts: o });
+          if (url.includes('/mson/resume/send/')) {
+            if (opts.formOk === false) return reply('', false, url);
+            const out = opts.formOutput === undefined ? applyModalHtml : opts.formOutput;
+            return reply(encodeURIComponent(JSON.stringify({ output: out ?? '' })), true, url);
+          }
+          return reply('ok', opts.sendOk ?? true, url);
+        },
+      },
+    };
+    return { ctx, calls };
+  }
+
+  const VAC = { sourceId: '89044870', url: 'https://careerist.ru/vakansii/x-89044870.html' } as never;
+
+  it('успешная подача: письмо уходит в поле формы, статус sent', async () => {
+    const { ctx, calls } = mkCtx({ responds: ['<html>пусто</html>', '<html>… 89044870 …</html>'] });
+    const a = new CareeristAdapter({ context: ctx as never });
+
+    const res = await a.apply(VAC, 'моё письмо');
+    expect(res).toEqual({ status: 'sent' });
+
+    const send = calls.find((c) => c.url.includes('/mson/ajaxform/post'));
+    expect(send).toBeDefined();
+    const parts = (send!.opts as { multipart: Record<string, string> }).multipart;
+    expect(parts['TextRes']).toBe('моё письмо');
+    // afdata возвращается нетронутым — собрать его самим нельзя.
+    expect(parts['afdata']!.length).toBeGreaterThan(100);
+  });
+
+  it('уже откликались — вторая подача не делается вовсе', async () => {
+    // Единственная защита от двойного отклика на стороне площадки; наш
+    // уникальный индекс ловит только повторы внутри очереди.
+    const { ctx, calls } = mkCtx({ responds: ['<html>… 89044870 …</html>'] });
+    const a = new CareeristAdapter({ context: ctx as never });
+
+    expect(await a.apply(VAC, 'письмо')).toEqual({ status: 'already_applied' });
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(0);
+  });
+
+  it('кабинет недоступен — auth_required, а не failed', async () => {
+    // Заявка обязана остаться approved: письмо уже написано и одобрено.
+    const { ctx, calls } = mkCtx({ respondsOk: false });
+    const a = new CareeristAdapter({ context: ctx as never });
+
+    expect(await a.apply(VAC, 'письмо')).toEqual({ status: 'auth_required' });
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(0);
+  });
+
+  it('на странице нет кнопок отклика (разлогинен) — auth_required', async () => {
+    const { ctx } = mkCtx({ vacancyPage: '<a href="/register.html?vacancyID=1">Отправить резюме</a>' });
+    const a = new CareeristAdapter({ context: ctx as never });
+    expect(await a.apply(VAC, 'письмо')).toEqual({ status: 'auth_required' });
+  });
+
+  it('в форме пропало поле письма — НЕ подаём и говорим почему', async () => {
+    // Подача без письма противоречит смыслу очереди: человек одобрял письмо,
+    // а ушло бы одно резюме.
+    const { ctx, calls } = mkCtx({ formOutput: '<form><input name="afdata" value="AAAA-длинное-значение-более-ста-символов-чтобы-пройти-проверку-длины-в-тесте-и-остаться-читаемым"></form>' });
+    const a = new CareeristAdapter({ context: ctx as never });
+
+    const res = await a.apply(VAC, 'письмо');
+    expect(res.status).toBe('failed');
+    expect((res as { reason: string }).reason).toMatch(/письм/i);
+    expect(calls.some((c) => c.url.includes('/mson/ajaxform/post'))).toBe(false);
+  });
+
+  it('форма не пришла — failed с причиной, подача не делается', async () => {
+    const { ctx, calls } = mkCtx({ formOutput: null });
+    const a = new CareeristAdapter({ context: ctx as never });
+
+    const res = await a.apply(VAC, 'письмо');
+    expect(res.status).toBe('failed');
+    expect(calls.some((c) => c.url.includes('/mson/ajaxform/post'))).toBe(false);
+  });
+
+  it('ответ 200, но отклика в кабинете нет — это НЕ успех', async () => {
+    // Иначе очередь пометила бы вакансию отправленной и больше к ней не
+    // вернулась, а отклик до работодателя не дошёл.
+    const { ctx } = mkCtx({ responds: ['<html>пусто</html>', '<html>пусто</html>'] });
+    const a = new CareeristAdapter({ context: ctx as never });
+
+    const res = await a.apply(VAC, 'письмо');
+    expect(res.status).toBe('failed');
+    expect(res.status).not.toBe('sent');
+  });
+
+  it('подача отклонена по HTTP — failed, а не sent', async () => {
+    const { ctx } = mkCtx({ sendOk: false });
+    const a = new CareeristAdapter({ context: ctx as never });
+    const res = await a.apply(VAC, 'письмо');
+    expect(res.status).toBe('failed');
+  });
+
+  it('проверка «уже откликались» идёт ДО запроса формы', async () => {
+    const { ctx, calls } = mkCtx({ responds: ['<html>… 89044870 …</html>'] });
+    const a = new CareeristAdapter({ context: ctx as never });
+    await a.apply(VAC, 'письмо');
+    expect(calls[0]!.url).toContain('/responds/');
   });
 });

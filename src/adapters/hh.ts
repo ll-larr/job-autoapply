@@ -3,7 +3,7 @@ import { normalizeVacancy, type ExperienceLevel, type Vacancy } from '../core/va
 import { parseExperienceFromText } from '../core/screening.js';
 import type { Adapter, ApplyResult, SearchFilters } from './types.js';
 import { isExperienceAcceptable, isSeniorTitle } from '../core/screening.js';
-import { isLoggedIn, openProfile } from '../browser.js';
+import { isLoggedIn, sharedProfile } from '../browser.js';
 
 /**
  * Селекторы и контракт подачи взяты дословно из docs/hh-selectors.md — карты,
@@ -342,7 +342,8 @@ export interface HhAdapterOptions {
   /**
    * Как открыть контекст заново — при первом обращении и каждый раз, когда
    * предыдущий закрылся сам. По умолчанию — настоящий залогиненный профиль
-   * (openProfile). Тесты подменяют её на одноразовый offline-контекст, чтобы
+   * (sharedProfile — общий на процесс, см. src/browser.ts: два адаптера
+   * не могут открыть один каталог профиля порознь). Тесты подменяют её на одноразовый offline-контекст, чтобы
    * не трогать реальный browser-profile/ пользователя.
    */
   openContext?: () => Promise<BrowserContext>;
@@ -377,7 +378,7 @@ export class HhAdapter implements Adapter {
 
   constructor(opts: HhAdapterOptions = {}) {
     this.timeouts = { ...DEFAULT_TIMEOUTS, ...opts.timeouts };
-    this.openContextFn = opts.openContext ?? (() => openProfile(false));
+    this.openContextFn = opts.openContext ?? sharedProfile;
     if (opts.context) this.setContext(opts.context);
   }
 
