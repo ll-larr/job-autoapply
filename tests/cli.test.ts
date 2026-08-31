@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { resolveLimit,
@@ -157,7 +157,7 @@ describe('formatSendPreflight', () => {
 });
 
 describe('formatSendResult', () => {
-  const OK: SendReport = { sent: 3, failed: 0, halted: null, unthrottledSources: [] };
+  const OK: SendReport = { sent: 3, failed: 0, halted: null, unthrottledSources: [], haltedSources: [] };
 
   it('без halted — exitCode 0, никакого "ОСТАНОВЛЕНО"', () => {
     const { lines, exitCode } = formatSendResult(OK);
@@ -174,7 +174,7 @@ describe('formatSendResult', () => {
   ] as const)('halted reason=%s — exitCode 1 и понятное объяснение', (reason, pattern) => {
     const report: SendReport = {
       sent: 0, failed: 0, unthrottledSources: [],
-      halted: { source: 'hh', reason },
+      halted: { source: 'hh', reason }, haltedSources: [{ source: 'hh', reason }],
     };
     const { lines, exitCode } = formatSendResult(report);
     expect(exitCode).toBe(1);
@@ -183,7 +183,7 @@ describe('formatSendResult', () => {
   });
 
   it('unthrottledSources выводится громко, даже когда halted нет', () => {
-    const report: SendReport = { ...OK, unthrottledSources: ['hrge'] };
+    const report: SendReport = { ...OK, unthrottledSources: ['hrge'], haltedSources: [] };
     const { lines, exitCode } = formatSendResult(report);
     expect(exitCode).toBe(0); // не halted — просто пропущенный источник, не остановка всей очереди
     expect(lines.join('\n')).toContain('ВНИМАНИЕ');
@@ -194,6 +194,7 @@ describe('formatSendResult', () => {
     const report: SendReport = {
       sent: 1, failed: 0, unthrottledSources: ['hrge'],
       halted: { source: 'hh', reason: 'captcha' },
+      haltedSources: [{ source: 'hh', reason: 'captcha' }],
     };
     const { lines } = formatSendResult(report);
     expect(lines.join('\n')).toContain('ОСТАНОВЛЕНО');
@@ -221,9 +222,20 @@ describe('formatStatusReport', () => {
 });
 
 describe('buildAdapters / buildAdapterMap — сборка адаптеров без обращения к сети', () => {
-  it('buildAdapters даёт оба адаптера с ожидаемыми именами', () => {
+  it('buildAdapters даёт все площадки с ожидаемыми именами', () => {
     const adapters = buildAdapters();
-    expect(adapters.map((a) => a.name).sort()).toEqual(['hh', 'hrge']);
+    expect(adapters.map((a) => a.name).sort()).toEqual(['careerist', 'hh', 'hrge']);
+  });
+
+  it('у каждой собранной площадки есть запись в config.throttle', () => {
+    // Sender намеренно fail-closed: площадка с адаптером, но без записи о
+    // паузах, пропускается целиком и не отправляет ничего (см. core/sender.ts).
+    // Новый адаптер, забытый в config.json, выглядел бы как «отправка молча
+    // не работает», поэтому связь проверяется здесь, а не в бою.
+    const config = JSON.parse(readFileSync('config.json', 'utf8')) as { throttle: Record<string, unknown> };
+    for (const a of buildAdapters()) {
+      expect(config.throttle[a.name], `нет config.throttle["${a.name}"]`).toBeDefined();
+    }
   });
 
   it('buildAdapterMap индексирует по имени', () => {

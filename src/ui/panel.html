@@ -365,7 +365,15 @@ const sendHint = document.getElementById('sendHint');
 // заявок, а панель писала "Отправлено 0, не удалось 0" — неотличимо от
 // пустой очереди.
 function buildSendResultText(r) {
-  const halted = r.halted ? `, ОСТАНОВЛЕНО (${r.halted.reason})` : '';
+  // Остановка поштучная по площадкам: careerist.ru ждёт аккаунта и отваливается
+  // сразу, но hh.ru при этом отправляет дальше. Строка обязана называть каждую
+  // отвалившуюся, иначе «ОСТАНОВЛЕНО (auth_required)» читается как «ничего не
+  // ушло», хотя ушло.
+  const sources = (r.haltedSources && r.haltedSources.length)
+    ? r.haltedSources.map((h) => `${h.source}: ${h.reason}`).join('; ')
+    : null;
+  const halted = sources ? `, ОСТАНОВЛЕНО (${sources})`
+    : r.halted ? `, ОСТАНОВЛЕНО (${r.halted.reason})` : '';
   const unthrottled = (r.unthrottledSources && r.unthrottledSources.length)
     ? `, ПРОПУЩЕНО БЕЗ ОТПРАВКИ (нет записи в config.throttle): ${r.unthrottledSources.join(', ')}`
     : '';

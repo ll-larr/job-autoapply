@@ -37,6 +37,7 @@ import type { SendReport } from './core/sender.js';
 import { startPanel } from './ui/server.js';
 import { HhAdapter } from './adapters/hh.js';
 import { HrGeAdapter } from './adapters/hrge.js';
+import { CareeristAdapter } from './adapters/careerist.js';
 import { generateLetter, pickTemplate, pickMode } from './core/letter.js';
 import type { Adapter } from './adapters/types.js';
 
@@ -219,6 +220,13 @@ export function formatSendResult(report: SendReport): { lines: string[]; exitCod
     lines.push(`ОСТАНОВЛЕНО: ${explainHalt(report.halted)}`);
   }
 
+  // Остановка теперь поштучная по площадкам, и первая из них — не вся правда:
+  // прогон мог продолжиться, споткнуться ещё об одну и всё равно что-то
+  // отправить. Называем каждую, кроме уже названной выше.
+  for (const h of report.haltedSources.slice(1)) {
+    lines.push(`ОСТАНОВЛЕНО: ${explainHalt(h)}`);
+  }
+
   if (report.unthrottledSources.length > 0) {
     lines.push(
       `ВНИМАНИЕ: в config.throttle нет записи для: ${report.unthrottledSources.join(', ')} — ` +
@@ -252,7 +260,11 @@ export function formatStatusReport(
 // ============================================================================
 
 export function buildAdapters(): Adapter[] {
-  return [new HhAdapter(), new HrGeAdapter()];
+  // careerist.ru пока умеет только искать: отклик там требует регистрации, и
+  // её adapter.apply честно объявляет `auth_required` (см. adapters/careerist.ts).
+  // В очередь вакансии попадают наравне с остальными, а отправка обходит их
+  // стороной, не задевая hh.ru — Sender останавливает площадку, а не прогон.
+  return [new HhAdapter(), new HrGeAdapter(), new CareeristAdapter()];
 }
 
 export function buildAdapterMap(adapters: readonly Adapter[]): Map<string, Adapter> {

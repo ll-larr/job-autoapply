@@ -23,7 +23,11 @@ export function isStopRequested(): boolean {
 export interface SendReport {
   sent: number;
   failed: number;
-  halted: null | { source: string; reason: 'captcha' | 'auth_required' | 'killed' | 'too_many_failures' };
+  /**
+   * Первая остановка за прогон. Оставлено ради панели и прежних вызовов:
+   * полный список — в haltedSources ниже.
+   */
+  halted: null | { source: string; reason: HaltReason };
   /**
    * Sources that had rows due to send but no `config.throttle` entry, so
    * their rows were skipped (left `approved`, never sent unthrottled).
@@ -32,7 +36,29 @@ export interface SendReport {
    * a skip that nobody looks at is as bad as no protection at all.
    */
   unthrottledSources: string[];
+  /**
+   * Площадки, отвалившиеся по своей причине, и эта причина. Прогон по ним
+   * прекращается, по остальным продолжается.
+   *
+   * Раньше первая же капча или требование логина обрывали ВЕСЬ прогон. Пока
+   * площадка была одна, разницы не было. С появлением careerist.ru, где
+   * отклик пока в принципе невозможен без аккаунта и apply() честно отвечает
+   * `auth_required`, разница стала решающей: одна такая заявка в очереди
+   * означала бы, что до заявок на hh.ru отправка не доходит вообще.
+   *
+   * Строки отвалившейся площадки остаются `approved` и уйдут в следующий
+   * прогон — ровно как и раньше.
+   */
+  haltedSources: Array<{ source: string; reason: HaltReason }>;
 }
+
+/**
+ * Почему прогон по площадке (или весь прогон, в случае `killed`) прекращён.
+ * `killed` — единственная причина, останавливающая всё сразу: это человек
+ * нажал стоп, и продолжать «по другим площадкам» тут было бы прямым
+ * неподчинением.
+ */
+export type HaltReason = 'captcha' | 'auth_required' | 'killed' | 'too_many_failures';
 
 interface Deps {
   sleep?: (ms: number) => Promise<void>;
@@ -63,19 +89,38 @@ export class Sender {
   }
 
   async run(): Promise<SendReport> {
-    const report: SendReport = { sent: 0, failed: 0, halted: null, unthrottledSources: [] };
+    const report: SendReport = {
+      sent: 0, failed: 0, halted: null, unthrottledSources: [], haltedSources: [],
+    };
     const rows = this.queue.listByStatus('approved');
     const consecutiveFailures = new Map<string, number>();
     const maxConsecutiveFailures = this.config.maxConsecutiveFailures ?? 3;
     const unthrottledSources = new Set<string>();
+    // Площадки, по которым прогон уже прекращён. Их строки пропускаются и
+    // остаются approved; остальные площадки работают дальше.
+    const halted = new Map<string, HaltReason>();
+
+    const haltSource = (source: string, reason: HaltReason): void => {
+      if (halted.has(source)) return;
+      halted.set(source, reason);
+      report.haltedSources.push({ source, reason });
+      // Первая остановка попадает и в halted — прежний контракт отчёта.
+      report.halted ??= { source, reason };
+    };
 
     for (const row of rows) {
       // Проверка перед каждой подачей: незавершённое остаётся approved.
       if (this.stopRequested()) {
-        report.halted = { source: '-', reason: 'killed' };
+        // Единственная причина, обрывающая весь прогон, а не одну площадку:
+        // это человек нажал стоп.
+        haltSource('-', 'killed');
         report.unthrottledSources = [...unthrottledSources].sort();
         return report;
       }
+
+      // Площадка уже отвалилась в этом прогоне — её строки не трогаем, они
+      // остаются approved и дождутся следующего запуска.
+      if (halted.has(row.source)) continue;
 
       const adapter = this.adapters.get(row.source);
       if (adapter === undefined) {
@@ -126,11 +171,14 @@ export class Sender {
         // Narrowed by an explicit tag comparison rather than
         // isHaltingResult(): that helper returns a plain boolean, not a
         // type predicate, so it wouldn't narrow `result` here and
-        // `result.status` would need an unproven cast to fit SendReport's
-        // narrower 'captcha' | 'auth_required' field.
-        report.halted = { source: row.source, reason: result.status };
-        report.unthrottledSources = [...unthrottledSources].sort();
-        return report;
+        // `result.status` would need an unproven cast to fit the report's
+        // narrower reason field.
+        //
+        // Останавливается ТОЛЬКО эта площадка. Капча на hh.ru ничего не
+        // говорит о hr.ge, а careerist.ru, где отклик пока требует аккаунта,
+        // иначе блокировал бы отправку на hh.ru целиком.
+        haltSource(row.source, result.status);
+        continue;
       }
 
       if (result.status === 'sent' || result.status === 'already_applied') {
@@ -159,9 +207,10 @@ export class Sender {
         // предохранителя капча выглядела бы как череда обычных failed.
         consecutiveFailures.set(row.source, (consecutiveFailures.get(row.source) ?? 0) + 1);
         if ((consecutiveFailures.get(row.source) ?? 0) >= maxConsecutiveFailures) {
-          report.halted = { source: row.source, reason: 'too_many_failures' };
-          report.unthrottledSources = [...unthrottledSources].sort();
-          return report;
+          // Тоже по площадке: череда отказов на одной ничего не доказывает
+          // про другую.
+          haltSource(row.source, 'too_many_failures');
+          continue;
         }
       }
 

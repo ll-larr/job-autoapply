@@ -392,3 +392,128 @@ describe('Sender лимиты как «без ограничения»', () => {
     expect(q.listByStatus('approved')).toHaveLength(3);
   });
 });
+
+
+/**
+ * Остановка по площадке, а не по всему прогону.
+ *
+ * Пока площадка была одна, разницы не было. Появление careerist.ru её создало:
+ * отклик там требует аккаунта, adapter.apply честно отвечает `auth_required`,
+ * и при прежнем поведении одна такая заявка означала бы, что до заявок на
+ * hh.ru отправка не доходит вообще.
+ */
+describe('Sender — остановка по площадкам', () => {
+  const TWO_SOURCES = {
+    ...CONFIG,
+    throttle: {
+      hh: { minDelayMs: 0, maxDelayMs: 0 },
+      careerist: { minDelayMs: 0, maxDelayMs: 0 },
+    },
+  };
+
+  function mkNamed(name: string, results: ApplyResult[]): Adapter & { calls: number } {
+    let i = 0;
+    return {
+      name,
+      calls: 0,
+      async search() { return []; },
+      async apply(this: { calls: number }) {
+        this.calls++;
+        return results[Math.min(i++, results.length - 1)]!;
+      },
+    } as Adapter & { calls: number };
+  }
+
+  it('auth_required на одной площадке не мешает отправке на другой', async () => {
+    seed(q, 2, 'careerist');
+    seed(q, 3, 'hh');
+
+    const careerist = mkNamed('careerist', [{ status: 'auth_required' }]);
+    const hh = mkNamed('hh', [{ status: 'sent' }]);
+    const s = new Sender(q, new Map<string, Adapter>([['careerist', careerist], ['hh', hh]]),
+      TWO_SOURCES, { sleep: async () => {} });
+
+    const rep = await s.run();
+
+    expect(rep.sent).toBe(3);
+    expect(rep.haltedSources).toEqual([{ source: 'careerist', reason: 'auth_required' }]);
+    // Заявки на площадку, требующую человека, остаются approved — письмо не
+    // теряется и уйдёт, когда аккаунт появится.
+    expect(q.listByStatus('approved')).toHaveLength(2);
+    expect(q.listByStatus('sent')).toHaveLength(3);
+    expect(q.listByStatus('failed')).toHaveLength(0);
+  });
+
+  it('после остановки площадки её оставшиеся заявки не трогаются повторно', async () => {
+    seed(q, 4, 'careerist');
+    const careerist = mkNamed('careerist', [{ status: 'auth_required' }]);
+    const s = new Sender(q, new Map<string, Adapter>([['careerist', careerist]]),
+      TWO_SOURCES, { sleep: async () => {} });
+
+    await s.run();
+
+    // Ровно одна попытка: дальше площадка помечена отвалившейся. Иначе прогон
+    // четыре раза стучался бы в форму, которая заведомо требует логина.
+    expect(careerist.calls).toBe(1);
+    expect(q.listByStatus('approved')).toHaveLength(4);
+  });
+
+  it('капча на одной площадке не отменяет отправку на другой', async () => {
+    seed(q, 1, 'careerist');
+    seed(q, 2, 'hh');
+    const careerist = mkNamed('careerist', [{ status: 'captcha' }]);
+    const hh = mkNamed('hh', [{ status: 'sent' }]);
+    const s = new Sender(q, new Map<string, Adapter>([['careerist', careerist], ['hh', hh]]),
+      TWO_SOURCES, { sleep: async () => {} });
+
+    const rep = await s.run();
+    expect(rep.sent).toBe(2);
+    expect(rep.haltedSources.map((h) => h.reason)).toEqual(['captcha']);
+  });
+
+  it('череда отказов гасит только свою площадку', async () => {
+    seed(q, 5, 'careerist');
+    seed(q, 2, 'hh');
+    const careerist = mkNamed('careerist', [{ status: 'failed', reason: 'вёрстка' }]);
+    const hh = mkNamed('hh', [{ status: 'sent' }]);
+    const s = new Sender(q, new Map<string, Adapter>([['careerist', careerist], ['hh', hh]]),
+      { ...TWO_SOURCES, maxConsecutiveFailures: 3 }, { sleep: async () => {} });
+
+    const rep = await s.run();
+
+    expect(rep.failed).toBe(3);
+    expect(rep.sent).toBe(2);
+    expect(rep.haltedSources).toEqual([{ source: 'careerist', reason: 'too_many_failures' }]);
+  });
+
+  it('halted по-прежнему называет ПЕРВУЮ остановку — прежний контракт отчёта', async () => {
+    seed(q, 1, 'careerist');
+    seed(q, 1, 'hh');
+    const careerist = mkNamed('careerist', [{ status: 'auth_required' }]);
+    const hh = mkNamed('hh', [{ status: 'captcha' }]);
+    const s = new Sender(q, new Map<string, Adapter>([['careerist', careerist], ['hh', hh]]),
+      TWO_SOURCES, { sleep: async () => {} });
+
+    const rep = await s.run();
+    expect(rep.halted).toEqual({ source: 'careerist', reason: 'auth_required' });
+    expect(rep.haltedSources).toHaveLength(2);
+  });
+
+  it('стоп-флаг по-прежнему рвёт ВЕСЬ прогон, а не одну площадку', async () => {
+    // Единственная причина, которая обязана останавливать всё: это человек
+    // нажал стоп, и «продолжу по другим площадкам» здесь было бы прямым
+    // неподчинением.
+    seed(q, 2, 'careerist');
+    seed(q, 2, 'hh');
+    const careerist = mkNamed('careerist', [{ status: 'sent' }]);
+    const hh = mkNamed('hh', [{ status: 'sent' }]);
+    const s = new Sender(q, new Map<string, Adapter>([['careerist', careerist], ['hh', hh]]),
+      TWO_SOURCES, { sleep: async () => {}, stopRequested: () => true });
+
+    const rep = await s.run();
+    expect(rep.sent).toBe(0);
+    expect(rep.halted).toEqual({ source: '-', reason: 'killed' });
+    expect(careerist.calls).toBe(0);
+    expect(hh.calls).toBe(0);
+  });
+});
