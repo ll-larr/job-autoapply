@@ -42,7 +42,8 @@ export async function openProfile(headless = false): Promise<BrowserContext> {
  *
  * Закрытый контекст открывается заново: адаптеры вызывают close()
  * независимо друг от друга, и переиспользовать мёртвый было бы хуже, чем
- * потратить секунду на новый.
+ * потратить секунду на новый. Как именно определяется «закрыт» — см.
+ * makeContextCache: это событие, а не опрос.
  *
  * Окно ВИДИМОЕ, и параметра для этого нет намеренно. Общий контекст один на
  * всех, так что режим задал бы тот адаптер, который обратился первым, — и
@@ -50,27 +51,54 @@ export async function openProfile(headless = false): Promise<BrowserContext> {
  * может выскочить капча, а капчу в headless-окне человек не решит, и
  * автоматика её не обходит.
  */
-let shared: BrowserContext | undefined;
+/**
+ * Кеш одного живого контекста поверх функции, умеющей его открыть.
+ *
+ * Живость определяется СОБЫТИЕМ `close`, а не опросом. Опрос тут не работает
+ * в принципе, и это стоило падения «browserContext.newPage: Target page,
+ * context or browser has been closed» на живой отправке: `context.pages()` у
+ * закрытого контекста не бросает, а спокойно возвращает пустой массив, так
+ * что проверка «дёрнем и поймаем исключение» всегда говорила «жив» и отдавала
+ * наружу мёртвый контекст.
+ *
+ * Playwright эмитит `close` и когда контекст закрыли явно, и когда браузер
+ * персистентного профиля закрыли извне — например, человек закрыл окно
+ * Chromium руками. Оба случая обязаны приводить к переоткрытию на следующем
+ * обращении.
+ */
+export function makeContextCache(
+  open: () => Promise<BrowserContext>,
+): { get: () => Promise<BrowserContext>; close: () => Promise<void> } {
+  let ctx: BrowserContext | undefined;
+  let closed = true;
+
+  return {
+    async get(): Promise<BrowserContext> {
+      if (ctx === undefined || closed) {
+        ctx = await open();
+        closed = false;
+        ctx.once('close', () => { closed = true; });
+      }
+      return ctx;
+    },
+    async close(): Promise<void> {
+      const c = ctx;
+      ctx = undefined;
+      closed = true;
+      if (c !== undefined) await c.close().catch(() => {});
+    },
+  };
+}
+
+const sharedCache = makeContextCache(() => openProfile(false));
 
 export async function sharedProfile(): Promise<BrowserContext> {
-  if (shared !== undefined) {
-    try {
-      // Дешёвая проверка живости: у закрытого контекста бросает.
-      shared.pages();
-      return shared;
-    } catch {
-      shared = undefined;
-    }
-  }
-  shared = await openProfile(false);
-  return shared;
+  return sharedCache.get();
 }
 
 /** Отпускает общий контекст. Безопасно вызывать повторно и на неоткрытом. */
 export async function closeSharedProfile(): Promise<void> {
-  const ctx = shared;
-  shared = undefined;
-  if (ctx !== undefined) await ctx.close().catch(() => {});
+  await sharedCache.close();
 }
 
 /**

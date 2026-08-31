@@ -2,7 +2,7 @@ import type { BrowserContext } from 'playwright';
 import type { Adapter, ApplyResult, SearchFilters } from './types.js';
 import { normalizeVacancy, type Vacancy } from '../core/vacancy.js';
 import { parseExperienceFromText } from '../core/screening.js';
-import { sharedProfile } from '../browser.js';
+import { makeContextCache, sharedProfile } from '../browser.js';
 
 /**
  * careerist.ru. Контракт снят живьём, см. docs/careerist-selectors.md — там же
@@ -253,8 +253,7 @@ export class CareeristAdapter implements Adapter {
   readonly name = 'careerist';
   lastSearchStats?: CareeristSearchStats;
   private fetchImpl: typeof fetch;
-  private context?: BrowserContext;
-  private openContext: () => Promise<BrowserContext>;
+  private readonly ctxCache: { get: () => Promise<BrowserContext>; close: () => Promise<void> };
   private resumeId?: string;
 
   /**
@@ -269,29 +268,18 @@ export class CareeristAdapter implements Adapter {
     openContext?: () => Promise<BrowserContext>;
   } = {}) {
     this.fetchImpl = opts.fetchImpl ?? fetch;
-    this.context = opts.context;
-    this.openContext = opts.openContext ?? sharedProfile;
+    const given = opts.context;
+    const open = opts.openContext ?? (given === undefined ? sharedProfile : async () => given);
+    this.ctxCache = makeContextCache(open);
   }
 
-  /** Тот же самовосстанавливающийся приём, что у HhAdapter: закрытый контекст открывается заново. */
+  /** Закрытый контекст открывается заново — см. makeContextCache. */
   private async getContext(): Promise<BrowserContext> {
-    if (this.context !== undefined) {
-      try {
-        // Дешёвая проверка живости: у закрытого контекста бросает.
-        this.context.pages();
-        return this.context;
-      } catch {
-        this.context = undefined;
-      }
-    }
-    this.context = await this.openContext();
-    return this.context;
+    return this.ctxCache.get();
   }
 
   async close(): Promise<void> {
-    const ctx = this.context;
-    this.context = undefined;
-    if (ctx !== undefined) await ctx.close().catch(() => {});
+    await this.ctxCache.close();
   }
 
   async search(filters: SearchFilters): Promise<Vacancy[]> {

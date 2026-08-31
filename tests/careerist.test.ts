@@ -456,6 +456,9 @@ describe('CareeristAdapter.apply — на подставном контекст�
 
     const ctx = {
       pages: () => [],
+      // Кеш контекста подписывается на 'close' (см. makeContextCache):
+      // опрашивать закрытость нельзя, pages() у мёртвого контекста молчит.
+      once: () => {},
       close: async () => {},
       request: {
         get: async (url: string) => {
