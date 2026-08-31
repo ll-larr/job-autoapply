@@ -157,7 +157,7 @@ describe('formatSendPreflight', () => {
 });
 
 describe('formatSendResult', () => {
-  const OK: SendReport = { sent: 3, failed: 0, halted: null, unthrottledSources: [], haltedSources: [] };
+  const OK: SendReport = { sent: 3, failed: 0, halted: null, unthrottledSources: [], haltedSources: [], skippedEmptyLetter: [] };
 
   it('без halted — exitCode 0, никакого "ОСТАНОВЛЕНО"', () => {
     const { lines, exitCode } = formatSendResult(OK);
@@ -174,7 +174,7 @@ describe('formatSendResult', () => {
   ] as const)('halted reason=%s — exitCode 1 и понятное объяснение', (reason, pattern) => {
     const report: SendReport = {
       sent: 0, failed: 0, unthrottledSources: [],
-      halted: { source: 'hh', reason }, haltedSources: [{ source: 'hh', reason }],
+      halted: { source: 'hh', reason }, haltedSources: [{ source: 'hh', reason }], skippedEmptyLetter: [],
     };
     const { lines, exitCode } = formatSendResult(report);
     expect(exitCode).toBe(1);
@@ -182,8 +182,17 @@ describe('formatSendResult', () => {
     expect(lines.join('\n')).toMatch(pattern);
   });
 
+  it('пустые письма названы громко: «Отправлено 0» иначе выглядит поломкой', () => {
+    const report: SendReport = { ...OK, skippedEmptyLetter: ['Системный аналитик'] };
+    const { lines } = formatSendResult(report);
+    expect(lines.join('\n')).toContain('ВНИМАНИЕ');
+    expect(lines.join('\n')).toContain('пустого письма');
+    expect(lines.join('\n')).toContain('Системный аналитик');
+    expect(lines.join('\n')).toContain('npm run letters');
+  });
+
   it('unthrottledSources выводится громко, даже когда halted нет', () => {
-    const report: SendReport = { ...OK, unthrottledSources: ['hrge'], haltedSources: [] };
+    const report: SendReport = { ...OK, unthrottledSources: ['hrge'], haltedSources: [], skippedEmptyLetter: [] };
     const { lines, exitCode } = formatSendResult(report);
     expect(exitCode).toBe(0); // не halted — просто пропущенный источник, не остановка всей очереди
     expect(lines.join('\n')).toContain('ВНИМАНИЕ');
@@ -194,7 +203,7 @@ describe('formatSendResult', () => {
     const report: SendReport = {
       sent: 1, failed: 0, unthrottledSources: ['hrge'],
       halted: { source: 'hh', reason: 'captcha' },
-      haltedSources: [{ source: 'hh', reason: 'captcha' }],
+      haltedSources: [{ source: 'hh', reason: 'captcha' }], skippedEmptyLetter: [],
     };
     const { lines } = formatSendResult(report);
     expect(lines.join('\n')).toContain('ОСТАНОВЛЕНО');

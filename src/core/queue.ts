@@ -113,14 +113,25 @@ export class Queue {
    * и единственным выходом было бы удалить базу и потерять уже принятые
    * решения. Отсюда отдельная операция дозаполнения.
    *
-   * Только из `pending`: письмо в одобренной строке трогать нельзя — человек
-   * одобрил конкретный текст, и подменять его под ним недопустимо.
+   * Из `pending` — всегда. Из `approved` — ТОЛЬКО когда письмо там пустое.
+   *
+   * Запрет на правку одобренного письма остаётся в силе и он правильный:
+   * человек одобрил конкретный текст, подменять его под ним недопустимо. Но
+   * пустое письмо он не одобрял — одобрять было нечего. Строка попадает в
+   * approved без текста, когда генерация не удалась (пропал ключ, свободная
+   * модель отдала 429), а человек одобряет вакансию, а не письмо. Найдено на
+   * живой очереди 2026-08-31: шесть таких заявок ждали отправки, и починить
+   * их было нечем — `letters` брала только pending, а тут стоял этот гейт.
+   *
+   * Условие `TRIM(letter) = ''` держит инвариант ровно: непустое одобренное
+   * письмо не перезапишется даже отсюда.
    */
   setLetter(id: number, letter: string, letterMode: LetterMode): void {
     const result = this.db.prepare(
-      "UPDATE applications SET letter=?, letter_mode=? WHERE id=? AND status='pending'",
+      "UPDATE applications SET letter=?, letter_mode=? WHERE id=? AND "
+      + "(status='pending' OR (status='approved' AND TRIM(letter) = ''))",
     ).run(letter, letterMode, id);
-    this.requireTransitioned(id, 'pending', result.changes);
+    this.requireTransitioned(id, ['pending', 'approved'], result.changes);
   }
 
   skip(id: number): void {

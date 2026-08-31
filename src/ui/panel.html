@@ -217,7 +217,16 @@ function renderApproved(rows) {
         </div>
       </div>`;
     el.querySelector('.desc').textContent = r.vacancy.description;
-    el.querySelector('.letter-preview').textContent = r.letter;
+    const preview = el.querySelector('.letter-preview');
+    if (r.letter.trim() === '') {
+      // Пустое письмо на одобренной заявке — не мелочь: отправка её пропустит
+      // целиком, и без этой пометки «Отправлено 0» выглядело бы поломкой.
+      preview.textContent = 'ПИСЬМА НЕТ — заявка не отправится. Впиши текст или нажми «Дописать письма».';
+      preview.style.color = '#b00';
+      preview.style.fontWeight = '600';
+    } else {
+      preview.textContent = r.letter;
+    }
 
     el.querySelector('[data-act="cancel"]').onclick = async () => {
       // skip() принимает и approved: отправитель работает медленно, с
@@ -374,10 +383,13 @@ function buildSendResultText(r) {
     : null;
   const halted = sources ? `, ОСТАНОВЛЕНО (${sources})`
     : r.halted ? `, ОСТАНОВЛЕНО (${r.halted.reason})` : '';
+  const empty = (r.skippedEmptyLetter && r.skippedEmptyLetter.length)
+    ? `, БЕЗ ПИСЬМА пропущено ${r.skippedEmptyLetter.length} (нажми «Дописать письма»)`
+    : '';
   const unthrottled = (r.unthrottledSources && r.unthrottledSources.length)
     ? `, ПРОПУЩЕНО БЕЗ ОТПРАВКИ (нет записи в config.throttle): ${r.unthrottledSources.join(', ')}`
     : '';
-  return `Отправлено ${r.sent}, не удалось ${r.failed}${halted}${unthrottled}.`;
+  return `Отправлено ${r.sent}, не удалось ${r.failed}${empty}${halted}${unthrottled}.`;
 }
 
 function resetSendButton(approved) {

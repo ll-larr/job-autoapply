@@ -376,3 +376,42 @@ describe('Queue очистка вкладки «Отменённые»', () => {
     expect(q.archiveSkipped()).toBe(0);
   });
 });
+
+
+function seedOne(queue: Queue, letter: string): number {
+  queue.insertPending(mkVacancy('one'), 50, [], letter, 'hybrid');
+  return queue.listByStatus('pending')[0]!.id;
+}
+
+describe('Queue.setLetter — дозаполнение одобренных с пустым письмом', () => {
+  // Найдено на живой очереди 2026-08-31: шесть заявок стояли в approved с
+  // письмом длиной ноль. Починить их было нечем — гейт пускал только pending.
+  it('заполняет пустое письмо у одобренной строки', () => {
+    const id = seedOne(q, '');
+    q.approve(id, '');
+    q.setLetter(id, 'дописанное письмо', 'hybrid');
+    expect(q.listByStatus('approved')[0]!.letter).toBe('дописанное письмо');
+  });
+
+  it('НЕ перезаписывает непустое одобренное письмо', () => {
+    // Человек одобрил конкретный текст — подменять его под ним недопустимо.
+    const id = seedOne(q, 'письмо, которое человек прочитал');
+    q.approve(id, 'письмо, которое человек прочитал');
+    expect(() => q.setLetter(id, 'подмена', 'hybrid')).toThrow(/illegal transition/);
+    expect(q.listByStatus('approved')[0]!.letter).toBe('письмо, которое человек прочитал');
+  });
+
+  it('письмо из одних пробелов считается пустым и дозаполняется', () => {
+    const id = seedOne(q, '   ');
+    q.approve(id, '   ');
+    q.setLetter(id, 'текст', 'hybrid');
+    expect(q.listByStatus('approved')[0]!.letter).toBe('текст');
+  });
+
+  it('отправленную строку не трогает даже с пустым письмом', () => {
+    const id = seedOne(q, '');
+    q.approve(id, '');
+    q.markSent(id);
+    expect(() => q.setLetter(id, 'поздно', 'hybrid')).toThrow(/illegal transition/);
+  });
+});

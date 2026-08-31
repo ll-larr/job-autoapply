@@ -227,6 +227,14 @@ export function formatSendResult(report: SendReport): { lines: string[]; exitCod
     lines.push(`ОСТАНОВЛЕНО: ${explainHalt(h)}`);
   }
 
+  if (report.skippedEmptyLetter.length > 0) {
+    lines.push(
+      `ВНИМАНИЕ: пропущено без отправки из-за пустого письма: ${report.skippedEmptyLetter.length}. ` +
+        'Заявки остались approved. Дозаполни письма командой `npm run letters` и запусти send снова.',
+    );
+    for (const title of report.skippedEmptyLetter) lines.push(`   - ${title}`);
+  }
+
   if (report.unthrottledSources.length > 0) {
     lines.push(
       `ВНИМАНИЕ: в config.throttle нет записи для: ${report.unthrottledSources.join(', ')} — ` +
@@ -475,7 +483,14 @@ async function main(): Promise<void> {
       }
 
       const resume = readFileSync(RESUME_PATH, 'utf8');
-      const empty = queue.listByStatus('pending').filter((r) => r.letter.trim() === '');
+      // И pending, и approved. Раньше брались только pending — и это оставляло
+      // ровно ту дыру, ради которой команда написана: строка, одобренная с
+      // пустым письмом, чинилась только руками в панели, а «Отправить всё»
+      // отправляло её как есть, без письма. Одобрение не означает, что письмо
+      // появилось; чаще наоборот — человек одобряет вакансию, а письмо не
+      // сгенерировалось из-за 429 или пропавшего ключа.
+      const empty = [...queue.listByStatus('pending'), ...queue.listByStatus('approved')]
+        .filter((r) => r.letter.trim() === '');
       if (empty.length === 0) {
         console.log('Пустых писем нет — дозаполнять нечего.');
         return;

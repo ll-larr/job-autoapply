@@ -517,3 +517,76 @@ describe('Sender — остановка по площадкам', () => {
     expect(hh.calls).toBe(0);
   });
 });
+
+
+/**
+ * Пустое письмо на одобренной заявке.
+ *
+ * Найдено на живой очереди 2026-08-31: шесть заявок стояли в approved с
+ * письмом длиной ноль — они попали туда, когда генерация падала (пропавший
+ * ключ, 429 бесплатной модели), а человек одобрял вакансию, а не текст. Один
+ * клик по «Отправить всё» отправил бы шесть голых откликов от его имени.
+ */
+describe('Sender — пустое письмо не отправляется', () => {
+  const CFG = { ...CONFIG, throttle: { hh: { minDelayMs: 0, maxDelayMs: 0 } } };
+
+  function seedWithLetter(letter: string, sourceId: string): void {
+    const v = normalizeVacancy({
+      source: 'hh', sourceId, title: `вакансия ${sourceId}`, company: 'C',
+      url: 'u', description: 'd', geo: 'Москва', postedAt: '2026-08-20T00:00:00Z',
+    });
+    q.insertPending(v, 50, [], letter, 'hybrid');
+    const row = q.listByStatus('pending').find((r) => r.vacancy.sourceId === sourceId)!;
+    q.approve(row.id, letter);
+  }
+
+  it('заявку с пустым письмом не подаёт и оставляет approved', async () => {
+    seedWithLetter('', 'пусто-1');
+    let applied = 0;
+    const adapter: Adapter = {
+      name: 'hh',
+      async search() { return []; },
+      async apply() { applied++; return { status: 'sent' }; },
+    };
+    const s = new Sender(q, new Map([['hh', adapter]]), CFG, { sleep: async () => {} });
+
+    const rep = await s.run();
+
+    expect(applied).toBe(0);
+    expect(rep.sent).toBe(0);
+    expect(rep.failed).toBe(0); // не failed: письмо дозаполнится и заявка уйдёт сама
+    expect(q.listByStatus('approved')).toHaveLength(1);
+    expect(rep.skippedEmptyLetter).toEqual(['вакансия пусто-1']);
+  });
+
+  it('письмо из одних пробелов считается пустым', async () => {
+    seedWithLetter('   \n\t  ', 'пусто-2');
+    let applied = 0;
+    const adapter: Adapter = {
+      name: 'hh',
+      async search() { return []; },
+      async apply() { applied++; return { status: 'sent' }; },
+    };
+    const s = new Sender(q, new Map([['hh', adapter]]), CFG, { sleep: async () => {} });
+    await s.run();
+    expect(applied).toBe(0);
+  });
+
+  it('соседние заявки с письмами уходят нормально', async () => {
+    seedWithLetter('', 'пусто-3');
+    seedWithLetter('настоящее письмо', 'есть-1');
+    const sent: string[] = [];
+    const adapter: Adapter = {
+      name: 'hh',
+      async search() { return []; },
+      async apply(v) { sent.push(v.sourceId); return { status: 'sent' }; },
+    };
+    const s = new Sender(q, new Map([['hh', adapter]]), CFG, { sleep: async () => {} });
+
+    const rep = await s.run();
+
+    expect(sent).toEqual(['есть-1']);
+    expect(rep.sent).toBe(1);
+    expect(rep.skippedEmptyLetter).toHaveLength(1);
+  });
+});

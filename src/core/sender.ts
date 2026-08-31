@@ -50,6 +50,14 @@ export interface SendReport {
    * прогон — ровно как и раньше.
    */
   haltedSources: Array<{ source: string; reason: HaltReason }>;
+  /**
+   * Заголовки заявок, пропущенных из-за пустого письма. Они остались
+   * `approved` и уйдут, как только письмо появится (`npm run letters`).
+   *
+   * Молчать об этом нельзя: «Отправлено 0» при шести одобренных заявках
+   * неотличимо от поломки отправки.
+   */
+  skippedEmptyLetter: string[];
 }
 
 /**
@@ -91,11 +99,13 @@ export class Sender {
   async run(): Promise<SendReport> {
     const report: SendReport = {
       sent: 0, failed: 0, halted: null, unthrottledSources: [], haltedSources: [],
+      skippedEmptyLetter: [],
     };
     const rows = this.queue.listByStatus('approved');
     const consecutiveFailures = new Map<string, number>();
     const maxConsecutiveFailures = this.config.maxConsecutiveFailures ?? 3;
     const unthrottledSources = new Set<string>();
+    const emptyLetters: string[] = [];
     // Площадки, по которым прогон уже прекращён. Их строки пропускаются и
     // остаются approved; остальные площадки работают дальше.
     const halted = new Map<string, HaltReason>();
@@ -115,6 +125,7 @@ export class Sender {
         // это человек нажал стоп.
         haltSource('-', 'killed');
         report.unthrottledSources = [...unthrottledSources].sort();
+        report.skippedEmptyLetter = emptyLetters;
         return report;
       }
 
@@ -161,6 +172,23 @@ export class Sender {
       if (rule.maxPerDay !== undefined) {
         const inDay = this.queue.countSentSince(row.source, this.now() - DAY);
         if (inDay >= rule.maxPerDay) continue;
+      }
+
+      // Пустое письмо не отправляется никогда.
+      //
+      // Вся очередь построена вокруг того, что человек письмо прочитал и
+      // одобрил. Строка может дойти до approved и БЕЗ письма: генерация
+      // падает от 429 бесплатной модели или пропавшего ключа, а человек
+      // одобряет вакансию, а не текст. Отправить её значило бы подать голый
+      // отклик от его имени — ровно то, что уже случилось однажды на hh.ru и
+      // чего он не выбирал.
+      //
+      // Строка остаётся approved, а не уходит в failed: письмо дозаполняется
+      // командой `npm run letters`, после чего заявка уйдёт следующим
+      // прогоном сама.
+      if (row.letter.trim() === '') {
+        emptyLetters.push(row.vacancy.title);
+        continue;
       }
 
       const result = await adapter.apply(row.vacancy, row.letter);
@@ -219,6 +247,7 @@ export class Sender {
     }
 
     report.unthrottledSources = [...unthrottledSources].sort();
+    report.skippedEmptyLetter = emptyLetters;
     return report;
   }
 }
