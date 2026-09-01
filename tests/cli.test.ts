@@ -75,7 +75,8 @@ describe('groupBySource', () => {
 describe('formatSearchReport', () => {
   const BASE_REPORT: SearchReport = {
     found: 10, queued: 4, duplicates: 2, belowThreshold: 3, noCoreMatch: 1,
-    rejectedExperience: 0, rejectedGrade: 0, rejected1c: 0,
+    rejectedExperience: 0, rejectedGrade: 0, rejectedPlatform: 0,
+    rejectedNotAnalyst: 0, rejectedInternship: 0,
       rejectedJuniorOnly: 0, adapterErrors: [], stoppedBecause: 'target',
   };
 
@@ -88,14 +89,19 @@ describe('formatSearchReport', () => {
     expect(lines).toContain('Отсеяно (core-гейт):     1');
   });
 
-  it('показывает три жёстких screening-фильтра поимённо', () => {
+  it('показывает каждый screening-фильтр поимённо', () => {
+    // Поимённо и по отдельности: ссыпать их в одну строку значило бы врать —
+    // «отсеяно по 1С: 9» при девяти вакансиях, где 1С никто не упоминал.
     const report: SearchReport = {
-      ...BASE_REPORT, rejectedExperience: 5, rejectedGrade: 2, rejected1c: 1,
+      ...BASE_REPORT, rejectedExperience: 5, rejectedGrade: 2, rejectedPlatform: 1,
+      rejectedNotAnalyst: 4, rejectedInternship: 3,
     };
     const lines = formatSearchReport('q', report, 0, true).join('\n');
     expect(lines).toContain('Отсеяно (опыт):          5');
     expect(lines).toContain('Отсеяно (грейд):         2');
-    expect(lines).toContain('Отсеяно (1С):            1');
+    expect(lines).toContain('Отсеяно (платформа):     1');
+    expect(lines).toContain('Отсеяно (не аналитик):   4');
+    expect(lines).toContain('Отсеяно (стажировка):    3');
   });
 
   it('видно, найден ли OPENROUTER_API_KEY', () => {
@@ -268,7 +274,7 @@ describe('runSearchCommand — связка pipeline + генерация пис
       name,
       async search() {
         return descs.map((d, i) => normalizeVacancy({
-          source: name, sourceId: String(i), title: 'БА', company: 'C',
+          source: name, sourceId: String(i), title: 'Бизнес-аналитик', company: 'C',
           url: `https://${name}/vacancy/${i}`, description: d, geo: 'Москва',
           postedAt: '2026-08-20T00:00:00Z',
         }));

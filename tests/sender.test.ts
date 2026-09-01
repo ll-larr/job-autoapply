@@ -29,7 +29,7 @@ function mkAdapter(results: ApplyResult[]): Adapter {
 function seed(q: Queue, n: number, source = 'hh') {
   for (let i = 0; i < n; i++) {
     const v = normalizeVacancy({
-      source, sourceId: `${source}-${i}`, title: 'БА', company: 'C',
+      source, sourceId: `${source}-${i}`, title: 'Бизнес-аналитик', company: 'C',
       url: 'u', description: 'd', geo: 'Москва', postedAt: '2026-08-20T00:00:00Z',
     });
     q.insertPending(v, 50, [], 'письмо', 'hybrid');

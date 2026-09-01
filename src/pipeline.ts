@@ -2,7 +2,7 @@ import type { Queue, LetterMode } from './core/queue.js';
 import type { Config, SearchQueryConfig } from './core/config.js';
 import type { Adapter } from './adapters/types.js';
 import { scoreVacancy } from './core/scorer.js';
-import { screenVacancy, isJuniorExperience } from './core/screening.js';
+import { screenVacancy, isJuniorExperience, isAboveJuniorTitle } from './core/screening.js';
 import { pickMode } from './core/letter.js';
 import { vacancyKey, type Vacancy } from './core/vacancy.js';
 
@@ -73,7 +73,20 @@ export interface SearchReport {
    */
   rejectedExperience: number;
   rejectedGrade: number;
-  rejected1c: number;
+  /**
+   * Вакансия построена вокруг платформы, которой владелец не владеет — 1С или
+   * Битрикс24. Поле звалось rejected1c, пока платформа была одна.
+   */
+  rejectedPlatform: number;
+  /**
+   * Заголовок не называет вакансию аналитической. Добавлено 2026-09-01 по
+   * разбору очереди: «Менеджер по операционному консалтингу» и подобные
+   * набирали проходной скор описанием, но владелец их отменял — скор говорит,
+   * чем занимаются, а заголовок отвечает, кем при этом зовут.
+   */
+  rejectedNotAnalyst: number;
+  /** Стажировки. */
+  rejectedInternship: number;
   /**
    * Per-query ограничение "только junior" (config.json →
    * searchQueries[].constraints.juniorOnly, добавлено 2026-08-30 для
@@ -173,7 +186,8 @@ export interface RunSearchOptions {
 export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
   const report: SearchReport = {
     found: 0, queued: 0, duplicates: 0, belowThreshold: 0, noCoreMatch: 0,
-    rejectedExperience: 0, rejectedGrade: 0, rejected1c: 0, rejectedJuniorOnly: 0,
+    rejectedExperience: 0, rejectedGrade: 0, rejectedPlatform: 0,
+    rejectedNotAnalyst: 0, rejectedInternship: 0, rejectedJuniorOnly: 0,
     adapterErrors: [], stoppedBecause: 'exhausted',
   };
 
@@ -303,7 +317,12 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
       if (seenThisRun.has(key)) { report.duplicates++; continue; }
       seenThisRun.add(key);
 
-      if (task.qc.constraints?.juniorOnly === true && !isJuniorExperience(v.experience)) {
+      // juniorOnly смотрит и на структурный опыт, и на ЗАГОЛОВОК. Опыт есть не
+      // везде: «Старший системный аналитик» пришёл с careerist без него
+      // вообще, isJuniorExperience(null) пропустил, и вакансия дошла до
+      // очереди. Владелец её отменил — системный аналитик он максимум младший.
+      if (task.qc.constraints?.juniorOnly === true
+        && (!isJuniorExperience(v.experience) || isAboveJuniorTitle(v.title))) {
         report.rejectedJuniorOnly++;
         continue;
       }
@@ -312,9 +331,14 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
 
       const screen = screenVacancy(v);
       if (!screen.passed) {
+        // Каждая причина считается своей строкой. Ссыпать их в одну кучу
+        // значило бы врать в отчёте: «отсеяно по 1С: 9» при девяти вакансиях,
+        // где 1С никто не упоминал.
         if (screen.reason === 'experience') report.rejectedExperience++;
         else if (screen.reason === 'grade') report.rejectedGrade++;
-        else report.rejected1c++;
+        else if (screen.reason === 'not_analyst') report.rejectedNotAnalyst++;
+        else if (screen.reason === 'internship') report.rejectedInternship++;
+        else report.rejectedPlatform++;
         continue;
       }
 

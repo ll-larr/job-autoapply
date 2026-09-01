@@ -17,7 +17,7 @@ beforeEach(async () => {
   q = new Queue(join(mkdtempSync(join(tmpdir(), 'jaa-ui-')), 'test.db'));
   q.insertPending(
     normalizeVacancy({
-      source: 'hh', sourceId: '1', title: 'БА', company: 'Сбер',
+      source: 'hh', sourceId: '1', title: 'Бизнес-аналитик', company: 'Сбер',
       url: 'https://hh.ru/vacancy/1', description: 'd', geo: 'Москва',
       postedAt: '2026-08-20T00:00:00Z',
     }),

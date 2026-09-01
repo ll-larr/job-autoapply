@@ -159,7 +159,9 @@ export function formatSearchReport(
   lines.push(`Отсеяно (core-гейт):     ${report.noCoreMatch}`);
   lines.push(`Отсеяно (опыт):          ${report.rejectedExperience}`);
   lines.push(`Отсеяно (грейд):         ${report.rejectedGrade}`);
-  lines.push(`Отсеяно (1С):            ${report.rejected1c}`);
+  lines.push(`Отсеяно (платформа):     ${report.rejectedPlatform}`);
+  lines.push(`Отсеяно (не аналитик):   ${report.rejectedNotAnalyst}`);
+  lines.push(`Отсеяно (стажировка):    ${report.rejectedInternship}`);
   if (emptyLetters > 0 && letterFailure !== undefined) {
     lines.push(`Почему письма пустые:    ${letterFailure}`);
   }

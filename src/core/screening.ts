@@ -17,7 +17,15 @@ import type { ExperienceLevel, Vacancy } from './vacancy.js';
  * паттерна ТЗ.
  */
 
-export type ScreenReason = 'experience' | 'grade' | '1c';
+export type ScreenReason =
+  | 'experience'
+  | 'grade'
+  /** Заголовок — не про аналитика вообще. */
+  | 'not_analyst'
+  /** Стажировка. */
+  | 'internship'
+  /** Вакансия построена вокруг платформы, которой владелец не владеет (1С, Битрикс24). */
+  | 'platform';
 
 export type ScreenResult =
   | { passed: true }
@@ -186,6 +194,33 @@ const ONE_C_TOKEN_RE = /(?<!\d)1\s?[CcСс](?![a-zа-яёA-ZА-ЯЁ0-9])/g;
  */
 const ONE_C_DESCRIPTION_THRESHOLD = 3;
 
+/**
+ * Битрикс24 — та же история, что и 1С: платформа, вокруг которой строится вся
+ * вакансия, и которой владелец не владеет («аналитик битрикс — я его не
+ * знаю», 2026-09-01). Отменены «Системный аналитик Bitrix24» и
+ * «Интегратор/аналитик Битрикс24».
+ *
+ * Порог здесь ниже, чем у 1С, и по делу: «1С» мелькает в перечислениях систем
+ * у половины корпоративных вакансий, а Битрикс в таких списках почти не
+ * встречается — если он назван дважды, вакансия про него. Заголовок считается
+ * отдельно и решает сразу: «аналитик Битрикс24» дальше можно не читать.
+ */
+const BITRIX_TOKEN_RE = /битрикс|bitrix/gi;
+const BITRIX_DESCRIPTION_THRESHOLD = 2;
+
+function countBitrixMentions(text: string): number {
+  return [...text.matchAll(BITRIX_TOKEN_RE)].length;
+}
+
+export function isBitrixCentric(v: Vacancy): boolean {
+  if (BITRIX_TOKEN_RE.test(v.title)) {
+    BITRIX_TOKEN_RE.lastIndex = 0;
+    return true;
+  }
+  BITRIX_TOKEN_RE.lastIndex = 0;
+  return countBitrixMentions(v.description) >= BITRIX_DESCRIPTION_THRESHOLD;
+}
+
 function count1cMentions(text: string): number {
   return [...text.matchAll(ONE_C_TOKEN_RE)].length;
 }
@@ -194,6 +229,77 @@ function count1cMentions(text: string): number {
 export function is1cCentric(v: Pick<Vacancy, 'title' | 'description'>): boolean {
   if (count1cMentions(v.title) > 0) return true;
   return count1cMentions(v.description) >= ONE_C_DESCRIPTION_THRESHOLD;
+}
+
+
+// ============================================================================
+// 4. Заголовок обязан называть аналитика.
+// ============================================================================
+
+/**
+ * Роль в заголовке. Разбор очереди 2026-09-01: в предложенное попали
+ * «Менеджер по операционному консалтингу», «Менеджер по повышению
+ * эффективности бизнеса», «Управляющий директор по развитию эффективности
+ * сегментов». Все три набрали проходной скор — лексика процессов и требований
+ * в описании у них честно есть, — и все три владелец отменил. Скор говорит,
+ * ЧЕМ занимаются; кем при этом зовут — отдельный вопрос, и на него отвечает
+ * заголовок.
+ *
+ * Гейт намеренно строгий: пропускает только то, что названо аналитиком. Он
+ * отсеет и «Специалиста по бизнес-процессам», если такой попадётся, — это
+ * известная плата, снимается добавлением слова сюда.
+ */
+const ANALYST_TITLE_PATTERNS: readonly RegExp[] = [
+  /аналитик/i,
+  // Латиница: \b здесь работает, кириллицы в паттерне нет.
+  /\banalyst\b/i,
+  /\bba\b/i,
+  /\bsa\b/i,
+];
+
+export function isAnalystTitle(title: string): boolean {
+  return ANALYST_TITLE_PATTERNS.some((re) => re.test(title));
+}
+
+// ============================================================================
+// 5. Стажировки.
+// ============================================================================
+
+/**
+ * Стажировка — не его уровень: 2026-09-01 владелец отменил «Аналитик
+ * внедрения-стажер» со словами «стажерская вакансия не по профилю».
+ *
+ * Это отменяет прежнее правило письма («если откликаемся на стажировку —
+ * сказать, что рассматриваем junior+/middle»): откликаться на них больше не
+ * будем вовсе, так что писать эту фразу негде.
+ */
+const INTERNSHIP_TITLE_PATTERNS: readonly RegExp[] = [
+  /стажёр|стажер|стажиров/i,
+  /\bintern(ship)?\b/i,
+  /\btrainee\b/i,
+];
+
+export function isInternshipTitle(title: string): boolean {
+  return INTERNSHIP_TITLE_PATTERNS.some((re) => re.test(title));
+}
+
+// ============================================================================
+// 6. Грейд выше junior — для запросов с ограничением juniorOnly.
+// ============================================================================
+
+/**
+ * «Старший» и прочие маркеры не-начального грейда В ЗАГОЛОВКЕ.
+ *
+ * Отдельно от SENIOR_TITLE_PATTERNS и намеренно: «старший» там нет и быть не
+ * должно. Владелец отправил отклик на «Старший ИТ аналитик» и в тот же день
+ * отменил «Старший системный аналитик», объяснив: системный аналитик он
+ * максимум младший. То есть «старший» отсекается не везде, а только там, где
+ * запрос помечен juniorOnly — сейчас это «системный аналитик» в config.json.
+ */
+const ABOVE_JUNIOR_TITLE_RE = /старш[а-яё]*|\bsenior\b|\bмиддл\b|\bmiddle\b/i;
+
+export function isAboveJuniorTitle(title: string): boolean {
+  return ABOVE_JUNIOR_TITLE_RE.test(title) || isSeniorTitle(title);
 }
 
 // ============================================================================
@@ -224,8 +330,25 @@ export function screenVacancy(v: Vacancy): ScreenResult {
   if (is1cCentric(v)) {
     return {
       passed: false,
-      reason: '1c',
+      reason: 'platform',
       detail: '1С — основной продукт автоматизации в этой вакансии, не одна из систем в списке',
+    };
+  }
+  if (isBitrixCentric(v)) {
+    return {
+      passed: false,
+      reason: 'platform',
+      detail: 'вакансия построена вокруг Битрикс24 — платформы, которой владелец не владеет',
+    };
+  }
+  if (isInternshipTitle(v.title)) {
+    return { passed: false, reason: 'internship', detail: 'стажировка' };
+  }
+  if (!isAnalystTitle(v.title)) {
+    return {
+      passed: false,
+      reason: 'not_analyst',
+      detail: 'заголовок не называет вакансию аналитической, каким бы ни был скор описания',
     };
   }
   return { passed: true };

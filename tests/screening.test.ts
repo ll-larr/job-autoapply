@@ -8,6 +8,10 @@ import {
   is1cCentric,
   isJuniorExperience,
   JUNIOR_EXPERIENCE,
+  isAnalystTitle,
+  isInternshipTitle,
+  isAboveJuniorTitle,
+  isBitrixCentric,
 } from '../src/core/screening.js';
 
 function v(over: Partial<Parameters<typeof normalizeVacancy>[0]> = {}) {
@@ -261,11 +265,11 @@ describe('is1cCentric', () => {
   });
 });
 
-describe('screenVacancy — 1С', () => {
-  it('отклоняет 1С-центричную вакансию с причиной 1c', () => {
+describe('screenVacancy — платформы, которыми владелец не владеет', () => {
+  it('отклоняет 1С-центричную вакансию с причиной platform', () => {
     const r = screenVacancy(v({ title: 'Аналитик 1С' }));
     expect(r.passed).toBe(false);
-    if (!r.passed) expect(r.reason).toBe('1c');
+    if (!r.passed) expect(r.reason).toBe('platform');
   });
 
   it('пропускает вакансию, где 1С — одна из систем среди прочих', () => {
@@ -285,5 +289,114 @@ describe('screenVacancy — обычная вакансия без наруше�
   it('passed: true, без reason', () => {
     const r = screenVacancy(v());
     expect(r).toEqual({ passed: true });
+  });
+});
+
+
+/**
+ * Правила, выведенные из разбора отменённых вакансий 2026-09-01. Каждый
+ * заголовок ниже — настоящий, из очереди: владелец их отменил и назвал
+ * причину. Проверяем не абстракции, а ровно те случаи, которые прошли фильтры
+ * и не должны были.
+ */
+describe('правила по разбору отменённых 2026-09-01', () => {
+  describe('Битрикс — платформа, которой владелец не владеет', () => {
+    it('отсекает «Системный аналитик Bitrix24» по заголовку', () => {
+      const r = screenVacancy(v({ title: 'Системный аналитик Bitrix24' }));
+      expect(r.passed).toBe(false);
+      if (!r.passed) expect(r.reason).toBe('platform');
+    });
+
+    it('отсекает «Интегратор/аналитик Битрикс24» — кириллицей тоже', () => {
+      expect(screenVacancy(v({ title: 'Интегратор/аналитик Битрикс24' })).passed).toBe(false);
+    });
+
+    it('отсекает по описанию, когда вакансия про Битрикс, а заголовок молчит', () => {
+      expect(isBitrixCentric(v({
+        title: 'Системный аналитик',
+        description: 'Портал на Битрикс24, дорабатываем Битрикс под задачи заказчика.',
+      }))).toBe(true);
+    });
+
+    it('НЕ отсекает вакансию, где Битрикс упомянут единожды среди систем', () => {
+      // Тот же принцип, что у 1С: одно упоминание в перечислении систем —
+      // не повод считать вакансию про эту платформу.
+      expect(isBitrixCentric(v({
+        title: 'Бизнес-аналитик',
+        description: 'Интеграции: SAP, Битрикс24, самописная CRM, шина данных.',
+      }))).toBe(false);
+    });
+  });
+
+  describe('заголовок обязан называть аналитика', () => {
+    it('отсекает «Менеджер по операционному консалтингу»', () => {
+      // Скор у неё был проходной: процессная лексика в описании честно есть.
+      // Гейт отвечает на другой вопрос — кем зовут, а не чем занимаются.
+      const r = screenVacancy(v({ title: 'Менеджер по операционному консалтингу' }));
+      expect(r.passed).toBe(false);
+      if (!r.passed) expect(r.reason).toBe('not_analyst');
+    });
+
+    it('отсекает «Менеджер по повышению эффективности бизнеса (направление lean)»', () => {
+      expect(isAnalystTitle('Менеджер по повышению эффективности бизнеса (направление lean)')).toBe(false);
+    });
+
+    it('отсекает «Управляющий директор по развитию эффективности сегментов»', () => {
+      expect(isAnalystTitle('Управляющий директор по развитию эффективности сегментов')).toBe(false);
+    });
+
+    it('пропускает настоящие аналитические заголовки из очереди', () => {
+      for (const t of [
+        'Бизнес-аналитик',
+        'Системный аналитик',
+        'Старший ИТ аналитик',
+        'Аналитик проектного отдела',
+        'Бизнес-аналитик / Специалист по моделированию',
+        'Customer Business Analyst',
+      ]) {
+        expect(isAnalystTitle(t), t).toBe(true);
+      }
+    });
+  });
+
+  describe('стажировки', () => {
+    it('отсекает «Аналитик внедрения-стажер»', () => {
+      const r = screenVacancy(v({ title: 'Аналитик внедрения-стажер' }));
+      expect(r.passed).toBe(false);
+      if (!r.passed) expect(r.reason).toBe('internship');
+    });
+
+    it('ловит и «стажёр» через ё, и латиницу', () => {
+      expect(isInternshipTitle('Стажёр-аналитик')).toBe(true);
+      expect(isInternshipTitle('Analyst Intern')).toBe(true);
+      expect(isInternshipTitle('Trainee Business Analyst')).toBe(true);
+    });
+
+    it('не считает стажировкой обычную вакансию', () => {
+      expect(isInternshipTitle('Бизнес-аналитик')).toBe(false);
+    });
+  });
+
+  describe('грейд выше junior — только для запросов juniorOnly', () => {
+    it('«Старший системный аналитик» считается выше junior', () => {
+      expect(isAboveJuniorTitle('Старший системный аналитик')).toBe(true);
+    });
+
+    it('«Старший ИТ аналитик» тоже — и это НЕ мешает ему пройти обычный screening', () => {
+      // Владелец отправил на неё отклик руками в тот же день, когда отменил
+      // «Старшего системного аналитика»: «старший» отсекается не везде, а
+      // только там, где запрос помечен juniorOnly.
+      expect(isAboveJuniorTitle('Старший ИТ аналитик')).toBe(true);
+      expect(screenVacancy(v({ title: 'Старший ИТ аналитик' })).passed).toBe(true);
+    });
+
+    it('обычный «Системный аналитик» junior-гейт проходит', () => {
+      expect(isAboveJuniorTitle('Системный аналитик')).toBe(false);
+    });
+
+    it('маркеры лид-ролей тоже выше junior', () => {
+      expect(isAboveJuniorTitle('Ведущий бизнес-аналитик')).toBe(true);
+      expect(isAboveJuniorTitle('Senior Analyst')).toBe(true);
+    });
   });
 });

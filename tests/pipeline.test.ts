@@ -18,7 +18,7 @@ function mkAdapter(descs: string[], name = 'hh'): Adapter {
     name,
     async search() {
       return descs.map((d, i) => normalizeVacancy({
-        source: name, sourceId: String(i), title: 'БА', company: 'C',
+        source: name, sourceId: String(i), title: 'Бизнес-аналитик', company: 'C',
         url: `https://${name}/vacancy/${i}`, description: d, geo: 'Москва',
         postedAt: '2026-08-20T00:00:00Z',
       }));
@@ -140,7 +140,7 @@ describe('runSearch', () => {
       expect(rep.queued).toBe(0);
       expect(rep.rejectedExperience).toBe(1);
       expect(rep.rejectedGrade).toBe(0);
-      expect(rep.rejected1c).toBe(0);
+      expect(rep.rejectedPlatform).toBe(0);
       expect(rep.belowThreshold).toBe(0);
       expect(rep.noCoreMatch).toBe(0);
       expect(letterCalls).toBe(0);
@@ -172,7 +172,7 @@ describe('runSearch', () => {
         generate: async () => { letterCalls++; return { letter: 'письмо', mode: 'hybrid' as const }; },
       });
       expect(rep.queued).toBe(0);
-      expect(rep.rejected1c).toBe(1);
+      expect(rep.rejectedPlatform).toBe(1);
       expect(letterCalls).toBe(0);
     });
 
@@ -186,7 +186,7 @@ describe('runSearch', () => {
         })],
         generate: async () => ({ letter: 'письмо', mode: 'hybrid' as const }),
       });
-      expect(rep.rejected1c).toBe(0);
+      expect(rep.rejectedPlatform).toBe(0);
       expect(rep.queued).toBe(1);
     });
 
@@ -202,7 +202,7 @@ describe('runSearch', () => {
       });
       expect(rep.rejectedExperience).toBe(0);
       expect(rep.rejectedGrade).toBe(0);
-      expect(rep.rejected1c).toBe(0);
+      expect(rep.rejectedPlatform).toBe(0);
       expect(rep.queued).toBe(1);
     });
   });
@@ -327,7 +327,24 @@ describe('runSearch', () => {
         expect(rep.rejectedExperience).toBe(0);
       });
 
-      it('пропускает noExperience под juniorOnly — включая стажировки', async () => {
+      it('noExperience под juniorOnly проходит гейт опыта', async () => {
+        const rep = await runSearch({
+          queue: q, config: CONFIG,
+          queries: [{ query: 'системный аналитик', constraints: { juniorOnly: true } }],
+          adapters: [mkQueryAwareAdapter(() => [
+            mkExperienceVacancy('1', 'noExperience', 'Системный аналитик'),
+          ])],
+          generate: async () => ({ letter: 'письмо', mode: 'hybrid' as const }),
+        });
+        expect(rep.rejectedJuniorOnly).toBe(0);
+        expect(rep.queued).toBe(1);
+      });
+
+      it('но стажировка отсекается — она не по профилю', async () => {
+        // Прежде тест утверждал обратное. Владелец 2026-09-01 отменил
+        // «Аналитик внедрения-стажер» словами «стажерская вакансия не по
+        // профилю», и это отменяет прежнее правило письма про junior+/middle:
+        // откликаться на стажировки больше не будем вовсе.
         const rep = await runSearch({
           queue: q, config: CONFIG,
           queries: [{ query: 'системный аналитик', constraints: { juniorOnly: true } }],
@@ -336,8 +353,8 @@ describe('runSearch', () => {
           ])],
           generate: async () => ({ letter: 'письмо', mode: 'hybrid' as const }),
         });
-        expect(rep.rejectedJuniorOnly).toBe(0);
-        expect(rep.queued).toBe(1);
+        expect(rep.queued).toBe(0);
+        expect(rep.rejectedInternship).toBe(1);
       });
 
       it('без constraints тот же between1And3 проходит как обычно', async () => {
@@ -415,7 +432,7 @@ describe('runSearch', () => {
 
     it('report.found считает read адаптера, а не длину возвращённого массива', async () => {
       const returned = [normalizeVacancy({
-        source: 'hh', sourceId: '1', title: 'БА', company: 'C', url: 'u',
+        source: 'hh', sourceId: '1', title: 'Бизнес-аналитик', company: 'C', url: 'u',
         description: PROCESS_LANGUAGE, geo: 'Москва', postedAt: '2026-08-20T00:00:00Z',
       })];
       const adapter = mkPrescreeningAdapter(
@@ -562,7 +579,7 @@ function mkPagedAdapter(
         ? chunk.slice(skip)
         : chunk.slice(skip, skip + filters.maxResults);
       return slice.map((d, i) => normalizeVacancy({
-        source: name, sourceId: filters.query + '-' + String(skip + i), title: 'БА', company: 'C',
+        source: name, sourceId: filters.query + '-' + String(skip + i), title: 'Бизнес-аналитик', company: 'C',
         url: 'https://' + name + '/vacancy/' + String(skip + i),
         description: d, geo: 'Москва', postedAt: '2026-08-20T00:00:00Z',
       }));
