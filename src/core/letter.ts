@@ -266,6 +266,15 @@ export function isUsableLetter(text: string, input: LetterInput): boolean {
 }
 
 /**
+ * Признак блок-страницы провайдера. Ловится по телу, а не по статусу: 403
+ * отдаёт и OpenRouter, когда ключ негоден, и блокировка, когда Node пошёл
+ * напрямую. Тело у них разное, и только оно позволяет назвать причину верно.
+ */
+export function isProxyBlockPage(body: string): boolean {
+  return /Access denied by security policy/i.test(body);
+}
+
+/**
  * Почему письмо не получилось. Человекочитаемая строка, а не код: она идёт
  * прямиком в панель и в консоль.
  *
@@ -277,6 +286,21 @@ export function isUsableLetter(text: string, input: LetterInput): boolean {
  * здесь раньше просто отбрасывался вместе со статусом и телом ответа.
  */
 export function describeHttpFailure(status: number, body: string): string {
+  // Блок-страница провайдера, а НЕ ответ OpenRouter. Node не ходит через
+  // HTTP_PROXY сам: без `--use-env-proxy` (или NODE_USE_ENV_PROXY=1, заданной
+  // ДО старта процесса — из кода её выставить поздно, undici читает её один
+  // раз) запрос идёт напрямую и упирается в блокировку, которая отвечает
+  // 403 с этим телом.
+  //
+  // Отличать обязательно. Первая версия этой функции звала такой ответ
+  // «ключ отвергнут», и живой прогон 2026-09-01 отправил владельца проверять
+  // совершенно исправный ключ вместо того, чтобы перезапустить панель с
+  // флагом. Различитель — тело, а не статус.
+  if (isProxyBlockPage(body)) {
+    return 'запрос ушёл МИМО прокси и упёрся в блокировку провайдера (403 «Access denied by security policy»). '
+      + 'Это не ответ OpenRouter и не проблема ключа. Перезапусти через npm run panel '
+      + '(там стоит --use-env-proxy) или задай NODE_USE_ENV_PROXY=1 до запуска';
+  }
   if (status === 401 || status === 403) {
     return `ключ OpenRouter отвергнут (HTTP ${status}) — проверь OPENROUTER_API_KEY в .env`;
   }

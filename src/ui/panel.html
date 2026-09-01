@@ -64,6 +64,8 @@
         <button id="searchStart">Найти</button>
       </div>
     </div>
+    <div id="proxyWarn" style="display:none; margin:8px 20px; padding:10px 12px;
+         background:#fff3cd; border:1px solid #e0c068; border-radius:4px; font-size:13px; color:#5a4500;"></div>
     <div id="searchNote"></div>
     <nav role="tablist">
       <button class="tab" role="tab" id="tab-pending"  aria-selected="true"  aria-controls="pane-pending">В ожидании<span class="n" id="n-pending">0</span></button>
@@ -579,6 +581,17 @@ fetchJson('/api/search/status').then((st) => {
 });
 
 fetchJson('/api/letters/status').then((st) => {
+  // Прокси. Без него поиск и генерация внешне работают, но каждое письмо
+  // выходит пустым, а 403 от блок-страницы провайдера легко принять за
+  // проблему с ключом — 2026-09-01 так и вышло, прогон на 22 вакансии
+  // пропал впустую. Полоса висит наверху, пока панель не перезапустят.
+  if (st.proxyEnabled === false) {
+    const w = document.getElementById('proxyWarn');
+    w.style.display = '';
+    w.textContent = 'Панель запущена БЕЗ прокси: запросы к OpenRouter уйдут напрямую и упрутся '
+      + 'в блокировку провайдера. Письма будут пустыми. Закрой это окно (Ctrl+C) и запусти '
+      + 'через Панель.cmd или npm run panel — там стоит --use-env-proxy.';
+  }
   if (st.running) pollLetters();
   else if (!st.canFillLetters) {
     setLettersBtns(true, 'Дописать письма');

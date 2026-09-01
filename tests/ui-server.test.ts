@@ -442,3 +442,35 @@ describe('панель — close() освобождает адаптеры (find
     await expect(p2.close()).resolves.toBeUndefined();
   });
 });
+
+
+describe('панель — состояние прокси', () => {
+  it('сообщает, что прокси выключен, чтобы страница могла предупредить', async () => {
+    // Без прокси панель ищет и «пишет» письма как обычно, только все они
+    // выходят пустыми. Консоль, куда cli печатает предупреждение, человек не
+    // смотрит — значит сказать обязана сама страница.
+    const q2 = new Queue(join(mkdtempSync(join(tmpdir(), 'jaa-px-')), 'test.db'));
+    const p2 = await startPanel(q2, 0, { proxyEnabled: false });
+    try {
+      const st = await (await fetch(`http://127.0.0.1:${p2.port}/api/letters/status`)).json() as
+        { proxyEnabled?: boolean };
+      expect(st.proxyEnabled).toBe(false);
+    } finally {
+      await p2.close();
+      q2.close();
+    }
+  });
+
+  it('когда прокси включён — панель не пугает зря', async () => {
+    const q2 = new Queue(join(mkdtempSync(join(tmpdir(), 'jaa-px2-')), 'test.db'));
+    const p2 = await startPanel(q2, 0, { proxyEnabled: true });
+    try {
+      const st = await (await fetch(`http://127.0.0.1:${p2.port}/api/letters/status`)).json() as
+        { proxyEnabled?: boolean };
+      expect(st.proxyEnabled).toBe(true);
+    } finally {
+      await p2.close();
+      q2.close();
+    }
+  });
+});

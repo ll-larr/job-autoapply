@@ -421,13 +421,22 @@ export async function runSearchCommand(
  * заранее, почему сетевые запросы этой команды могут упасть с чужой
  * блокировкой прокси, а не с настоящей ошибкой API.
  */
+/**
+ * Включено ли проксирование для fetch в ЭТОМ процессе.
+ *
+ * Оба способа настоящие: флаг запуска и переменная окружения. Но выставить
+ * переменную из кода уже поздно — undici читает её один раз при старте
+ * процесса, и `process.env['NODE_USE_ENV_PROXY'] = '1'` в main() ничего не
+ * меняет (проверено 2026-09-01: запрос всё равно уходит напрямую). Поэтому
+ * остаётся только предупредить.
+ */
+export function isEnvProxyEnabled(): boolean {
+  return process.execArgv.includes('--use-env-proxy')
+    || process.env['NODE_USE_ENV_PROXY'] === '1';
+}
+
 function warnIfProxyFlagMissing(): void {
-  // Проверяем оба способа: и флаг, и переменную окружения. Оба реально
-  // включают проксирование, и предупреждать того, кто выставил переменную,
-  // было бы ложной тревогой.
-  const viaFlag = process.execArgv.includes('--use-env-proxy');
-  const viaEnv = process.env['NODE_USE_ENV_PROXY'] === '1';
-  if (!viaFlag && !viaEnv) {
+  if (!isEnvProxyEnabled()) {
     console.error(
       'ВНИМАНИЕ: процесс запущен без --use-env-proxy и без NODE_USE_ENV_PROXY=1. Если провайдер блокирует ' +
         'прямые запросы к OpenRouter/hr.ge, они упадут с "403 Access denied by ' +
@@ -498,6 +507,10 @@ async function main(): Promise<void> {
   }
 
   if (cmd === 'panel') {
+    // Панель — основной вход, и молчать здесь дороже всего: без прокси она
+    // ищет и пишет письма ровно так же, только все письма выходят пустыми, а
+    // причина не названа нигде.
+    warnIfProxyFlagMissing();
     // Конфиг нужен панели ради кнопки «Отправить всё»: отправка идёт через тот
     // же Sender, что и npm run send, с теми же лимитами и предохранителями.
     const config = loadConfig();
@@ -516,6 +529,9 @@ async function main(): Promise<void> {
       await startPanel(queue, PANEL_PORT, {
         adapters,
         config,
+        // Панель показывает это полосой наверху: консоль, в которую она
+        // пишет предупреждение, человек не смотрит.
+        proxyEnabled: isEnvProxyEnabled(),
         // Та же проводка, что у команды search: панель не собирает конвейер
         // заново, а зовёт ровно то, что вызывает npm run search.
         fillLetters: () => fillEmptyLetters({

@@ -80,6 +80,13 @@ export interface PanelDeps {
    * это в панели — там же должна быть и кнопка, а не отсылка в терминал.
    */
   fillLetters?: () => Promise<{ found: number; filled: number; failure?: string }>;
+  /**
+   * Ходит ли fetch этого процесса через прокси. Если нет и провайдер
+   * блокирует прямые запросы, поиск и генерация писем внешне работают, но все
+   * письма выходят пустыми — 2026-09-01 это стоило прогона на 22 вакансии.
+   * Панель обязана сказать об этом сама, а не надеяться на консоль.
+   */
+  proxyEnabled?: boolean;
 }
 
 export async function startPanel(
@@ -173,6 +180,9 @@ export async function startPanel(
         return json(res, {
           running: letters.running,
           canFillLetters,
+          // undefined означает «панель поднята не из cli и не знает» — тогда
+          // полосу не показываем, чтобы не пугать зря (так её поднимают тесты).
+          proxyEnabled: deps.proxyEnabled,
           result: letters.result,
           error: letters.error,
           startedAt: letters.startedAt,

@@ -1,5 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { findForbiddenClaim, buildPrompt, pickTemplate, pickMode, generateLetter, isUsableLetter } from '../src/core/letter.js';
+import {
+  findForbiddenClaim, buildPrompt, pickTemplate, pickMode, generateLetter, isUsableLetter,
+  describeHttpFailure, isProxyBlockPage,
+} from '../src/core/letter.js';
 import type { LetterInput } from '../src/core/letter.js';
 import { normalizeVacancy } from '../src/core/vacancy.js';
 
@@ -431,5 +434,65 @@ describe('findForbiddenClaim', () => {
     expect(isUsableLetter(lying, {
       vacancy: mk(), matched: [], mode: 'hybrid', resume: RESUME, template: skeleton,
     })).toBe(false);
+  });
+});
+
+
+describe('describeHttpFailure — причина, а не догадка', () => {
+  const BLOCK_BODY = '{ "success": false, "error": "Access denied by security policy." }';
+
+  it('403 от блок-страницы провайдера НЕ называется проблемой ключа', () => {
+    // Node не ходит через HTTP_PROXY сам. Без --use-env-proxy запрос уходит
+    // напрямую и упирается в блокировку, которая отвечает 403 с этим телом.
+    // Первая версия этой функции звала такой ответ «ключ отвергнут», и живой
+    // прогон 2026-09-01 отправил владельца проверять совершенно исправный
+    // ключ вместо перезапуска панели с флагом.
+    const msg = describeHttpFailure(403, BLOCK_BODY);
+    expect(msg).toMatch(/мимо прокси/i);
+    expect(msg).not.toMatch(/ключ.*отвергнут/i);
+  });
+
+  it('называет, что делать: перезапуск с флагом', () => {
+    expect(describeHttpFailure(403, BLOCK_BODY)).toMatch(/use-env-proxy|npm run panel/);
+  });
+
+  it('403 БЕЗ признаков блокировки по-прежнему читается как отказ ключа', () => {
+    const msg = describeHttpFailure(403, '{"error":{"message":"No auth credentials found"}}');
+    expect(msg).toMatch(/ключ/i);
+    expect(msg).not.toMatch(/прокси/i);
+  });
+
+  it('401 — отказ ключа', () => {
+    expect(describeHttpFailure(401, '{}')).toMatch(/ключ/i);
+  });
+
+  it('402 говорит про деньги, а не про ключ и не про лимит', () => {
+    const msg = describeHttpFailure(402, '{}');
+    expect(msg).toMatch(/деньги|баланс/i);
+    expect(msg).not.toMatch(/ключ/i);
+  });
+
+  it('429 говорит про лимит', () => {
+    expect(describeHttpFailure(429, '{}')).toMatch(/лимит/i);
+  });
+
+  it('незнакомый статус показывает начало тела, а не проглатывает его', () => {
+    const msg = describeHttpFailure(500, 'upstream exploded in a specific way');
+    expect(msg).toContain('500');
+    expect(msg).toContain('upstream exploded');
+  });
+});
+
+describe('isProxyBlockPage', () => {
+  it('узнаёт блок-страницу по телу', () => {
+    expect(isProxyBlockPage('{ "success": false, "error": "Access denied by security policy." }')).toBe(true);
+  });
+
+  it('обычный ответ OpenRouter блок-страницей не считает', () => {
+    expect(isProxyBlockPage('{"error":{"message":"Insufficient credits","code":402}}')).toBe(false);
+  });
+
+  it('пустое тело — не блокировка', () => {
+    expect(isProxyBlockPage('')).toBe(false);
   });
 });
