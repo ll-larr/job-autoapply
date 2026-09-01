@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { BrowserContext } from 'playwright';
-import { makeContextCache } from '../src/browser.js';
+import { makeContextCache, profileLaunchOptions } from '../src/browser.js';
 
 /**
  * Регрессия, пойманная живой отправкой 2026-08-31: «Отправка упала:
@@ -98,5 +98,25 @@ describe('makeContextCache', () => {
     // Вторая попытка обязана снова попробовать открыть, а не вернуть undefined.
     await expect(cache.get()).resolves.toBeDefined();
     expect(attempt).toBe(2);
+  });
+});
+
+describe('profileLaunchOptions', () => {
+  it('браузер запускается МИМО системного прокси', () => {
+    // На машине владельца в настройках Windows постоянно стоит VPN-клиент, а
+    // Chromium берёт прокси именно оттуда. Через него careerist.ru в браузере
+    // отдаёт ERR_TIMED_OUT — то есть подача на careerist молча ломалась бы,
+    // пока включён VPN. Браузер ходит только на площадки, и им прокси не
+    // нужен ни при каких обстоятельствах.
+    expect(profileLaunchOptions(true).args).toContain('--no-proxy-server');
+  });
+
+  it('headless передаётся как просили', () => {
+    expect(profileLaunchOptions(true).headless).toBe(true);
+    expect(profileLaunchOptions(false).headless).toBe(false);
+  });
+
+  it('локаль русская — выдача и разметка площадок от неё зависят', () => {
+    expect(profileLaunchOptions(false).locale).toBe('ru-RU');
   });
 });

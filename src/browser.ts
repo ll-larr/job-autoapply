@@ -19,12 +19,43 @@ export const PROFILE_DIR = resolve('browser-profile');
  * переживают перезапуски. Паролей в коде нет и не будет — это единственный
  * механизм аутентификации во всём проекте.
  */
-export async function openProfile(headless = false): Promise<BrowserContext> {
-  return chromium.launchPersistentContext(PROFILE_DIR, {
+/**
+ * Параметры запуска профиля. Вынесены отдельной функцией, чтобы их можно было
+ * проверить тестом, не поднимая Chromium.
+ */
+export function profileLaunchOptions(headless: boolean): {
+  headless: boolean;
+  viewport: { width: number; height: number };
+  locale: string;
+  args: string[];
+} {
+  return {
     headless,
     viewport: { width: 1440, height: 900 },
     locale: 'ru-RU',
-  });
+    // Мимо системного прокси, всегда и намеренно.
+    //
+    // Chromium по умолчанию берёт прокси из настроек Windows, а там у
+    // владельца машины постоянно стоит VPN-клиент (127.0.0.1:10801). Через
+    // него площадки не работают: careerist.ru в браузере отдаёт
+    // ERR_TIMED_OUT, hh.ru на обычном fetch — 403. Напрямую обе отвечают 200.
+    // Проверено живьём 2026-09-01, в обе стороны.
+    //
+    // Браузер ходит ТОЛЬКО на площадки — письма пишутся через fetch в Node, и
+    // вот им прокси как раз нужен (OpenRouter напрямую блокируется
+    // провайдером). Поэтому разделение проходит ровно по границе «браузер
+    // против fetch», и здесь оно жёсткое: флаг не зависит ни от настроек
+    // системы, ни от переменных окружения, ни от того, включён ли VPN сейчас.
+    //
+    // Способ — именно флаг Chromium. `proxy: { server: 'direct://' }` не
+    // годится: Playwright его принимает, а Chromium отвечает
+    // ERR_PROXY_CONNECTION_FAILED на любой адрес (проверено).
+    args: ['--no-proxy-server'],
+  };
+}
+
+export async function openProfile(headless = false): Promise<BrowserContext> {
+  return chromium.launchPersistentContext(PROFILE_DIR, profileLaunchOptions(headless));
 }
 
 /**
