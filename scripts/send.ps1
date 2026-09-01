@@ -12,6 +12,11 @@ $ErrorActionPreference = "Stop"
 $OutputEncoding = [Console]::OutputEncoding = [Text.Encoding]::UTF8
 Set-Location (Split-Path $PSScriptRoot -Parent)
 
+# Площадки через прокси не работают (careerist.ru — ConnectTimeout, hh.ru — 403),
+# а подача ходит только к ним. Уводим их напрямую на случай, если прокси задан
+# в окружении, из которого запустили.
+$env:NO_PROXY = "hh.ru,.hh.ru,chatik.hh.ru,careerist.ru,.careerist.ru,hr.ge,.hr.ge,api.p.hr.ge"
+
 if (-not $env:OPENROUTER_API_KEY) {
     $env:OPENROUTER_API_KEY = [Environment]::GetEnvironmentVariable("OPENROUTER_API_KEY", "User")
 }

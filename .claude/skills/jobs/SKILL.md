@@ -86,6 +86,32 @@ Get-Process chrome | Where-Object { $_.Path -like "*ms-playwright*" } | Stop-Pro
 node --use-env-proxy -e "const{DatabaseSync}=require('node:sqlite');const d=new DatabaseSync('data/queue.db');for(const r of d.prepare('select id,status,score,length(letter) ll,vacancy_json from applications order by score desc').all()){const v=JSON.parse(r.vacancy_json);console.log(`#${r.id} [${r.status}] скор=${r.score} письмо=${r.ll} :: ${v.title.slice(0,55)}`)}"
 ```
 
+## Прокси: раздельная маршрутизация
+
+Проверено живьём 2026-09-01, по каждому адресату отдельно:
+
+| адресат | напрямую | через прокси |
+|---|---|---|
+| OpenRouter (письма) | **403 блок-страница** | 200 |
+| hh.ru | 200 | **403** |
+| careerist.ru | 200 | **ConnectTimeout, 3 из 3** |
+| hr.ge | 200 | 200 |
+
+То есть **ни «всё через прокси», ни «всё напрямую» не работает.** Прокси нужен
+ровно одному адресату — OpenRouter; площадкам он ломает связь.
+
+Решение — `NO_PROXY` со списком площадок плюс `HTTP_PROXY`/`HTTPS_PROXY`. С этой
+парой все четыре отвечают 200 одновременно. Переменные задают лаунчеры
+(`scripts/panel.ps1`, `run.ps1`, `send.ps1`): в User- и Machine-области их нет,
+а двойной клик по `.cmd` не наследует окружение терминала.
+
+Node не читает их без `--use-env-proxy` — флаг стоит в npm-скриптах. Выставить
+его или переменные из кода поздно: undici читает конфигурацию один раз при
+старте процесса.
+
+**Короткий ответ на «работает ли без прокси»:** работает всё, кроме генерации
+писем. Поиск, скоринг, фильтры, панель и подача — не трогают OpenRouter.
+
 ## Площадки
 
 Подключены: **hh.ru** (поиск и подача), **hr.ge** (поиск), **careerist.ru** (поиск и подача).
