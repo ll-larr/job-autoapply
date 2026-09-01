@@ -422,28 +422,48 @@ export async function runSearchCommand(
  * блокировкой прокси, а не с настоящей ошибкой API.
  */
 /**
- * Включено ли проксирование для fetch в ЭТОМ процессе.
+ * Реально ли fetch этого процесса пойдёт через прокси.
  *
- * Оба способа настоящие: флаг запуска и переменная окружения. Но выставить
- * переменную из кода уже поздно — undici читает её один раз при старте
- * процесса, и `process.env['NODE_USE_ENV_PROXY'] = '1'` в main() ничего не
- * меняет (проверено 2026-09-01: запрос всё равно уходит напрямую). Поэтому
- * остаётся только предупредить.
+ * Условий ДВА, и второе стоило отдельного разбирательства 2026-09-01. Флаг
+ * `--use-env-proxy` (или `NODE_USE_ENV_PROXY=1`) лишь разрешает Node читать
+ * переменные окружения; сами переменные при этом могут быть не заданы. У
+ * пользователя так и оказалось: панель запускалась с флагом, `proxyEnabled`
+ * честно отвечал `true`, а `HTTP_PROXY` не был задан ни в User-, ни в
+ * Machine-области — читать было нечего, запросы уходили напрямую и упирались
+ * в блок-страницу провайдера.
+ *
+ * Поэтому проверяется и разрешение, и наличие адреса. Флаг сам по себе не
+ * доказывает ничего.
+ *
+ * Выставить переменные из кода уже поздно: undici читает их один раз при
+ * старте процесса (проверено — `process.env[...] = ...` в main() не меняет
+ * ничего). Их задают лаунчеры в scripts/*.ps1.
  */
 export function isEnvProxyEnabled(): boolean {
-  return process.execArgv.includes('--use-env-proxy')
+  const allowed = process.execArgv.includes('--use-env-proxy')
     || process.env['NODE_USE_ENV_PROXY'] === '1';
+  const configured = (process.env['HTTPS_PROXY'] ?? process.env['https_proxy']
+    ?? process.env['HTTP_PROXY'] ?? process.env['http_proxy'] ?? '').trim() !== '';
+  return allowed && configured;
 }
 
 function warnIfProxyFlagMissing(): void {
-  if (!isEnvProxyEnabled()) {
-    console.error(
-      'ВНИМАНИЕ: процесс запущен без --use-env-proxy и без NODE_USE_ENV_PROXY=1. Если провайдер блокирует ' +
-        'прямые запросы к OpenRouter/hr.ge, они упадут с "403 Access denied by ' +
-        'security policy" — это блок-страница прокси, а не ответ API. ' +
-        'Используй npm run search вместо прямого tsx src/cli.ts search.',
-    );
-  }
+  if (isEnvProxyEnabled()) return;
+
+  const allowed = process.execArgv.includes('--use-env-proxy')
+    || process.env['NODE_USE_ENV_PROXY'] === '1';
+  console.error(
+    allowed
+      // Разрешение есть, адреса нет — ровно тот случай, который выглядел как
+      // «всё настроено», пока не полез в переменные окружения.
+      ? 'ВНИМАНИЕ: --use-env-proxy стоит, но HTTP_PROXY/HTTPS_PROXY не заданы — читать нечего, '
+        + 'запросы уйдут напрямую и упрутся в блок-страницу провайдера ("403 Access denied by '
+        + 'security policy"). Запускай через Панель.cmd / npm run panel: лаунчер задаёт их сам.'
+      : 'ВНИМАНИЕ: процесс запущен без --use-env-proxy и без NODE_USE_ENV_PROXY=1. Если провайдер '
+        + 'блокирует прямые запросы к OpenRouter/hr.ge, они упадут с "403 Access denied by '
+        + 'security policy" — это блок-страница провайдера, а не ответ API. '
+        + 'Используй npm run panel / npm run search вместо прямого tsx src/cli.ts.',
+  );
 }
 
 // ============================================================================

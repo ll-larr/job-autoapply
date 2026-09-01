@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { resolveLimit,
+import { isEnvProxyEnabled,
+  resolveLimit,
   resolveSearchQueries,
   formatQueryLabel,
   groupBySource,
@@ -351,5 +352,58 @@ describe('resolveLimit', () => {
     expect(() => resolveLimit(['--limit', '0'])).toThrow('--limit');
     expect(() => resolveLimit(['--limit', 'много'])).toThrow('--limit');
     expect(() => resolveLimit(['--limit'])).toThrow('--limit');
+  });
+});
+
+
+describe('isEnvProxyEnabled — флаг без адреса прокси не считается', () => {
+  const saved = { ...process.env };
+  afterEach(() => {
+    for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'NODE_USE_ENV_PROXY']) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  function clearProxy(): void {
+    for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']) delete process.env[k];
+  }
+
+  it('разрешение есть, адреса нет — НЕ проксировано', () => {
+    // Ровно то, что случилось 2026-09-01: панель шла с --use-env-proxy,
+    // отвечала proxyEnabled:true, а HTTP_PROXY не был задан ни в User-, ни в
+    // Machine-области. Читать было нечего, 22 письма ушли в блок-страницу.
+    process.env['NODE_USE_ENV_PROXY'] = '1';
+    clearProxy();
+    expect(isEnvProxyEnabled()).toBe(false);
+  });
+
+  it('адрес есть, разрешения нет — тоже НЕ проксировано', () => {
+    delete process.env['NODE_USE_ENV_PROXY'];
+    clearProxy();
+    process.env['HTTP_PROXY'] = 'http://127.0.0.1:10801';
+    // execArgv в тестовом процессе флага не несёт, так что это чистый случай.
+    expect(isEnvProxyEnabled()).toBe(false);
+  });
+
+  it('есть и то, и другое — проксировано', () => {
+    process.env['NODE_USE_ENV_PROXY'] = '1';
+    clearProxy();
+    process.env['HTTPS_PROXY'] = 'http://127.0.0.1:10801';
+    expect(isEnvProxyEnabled()).toBe(true);
+  });
+
+  it('пустая строка адресом не считается', () => {
+    process.env['NODE_USE_ENV_PROXY'] = '1';
+    clearProxy();
+    process.env['HTTP_PROXY'] = '   ';
+    expect(isEnvProxyEnabled()).toBe(false);
+  });
+
+  it('строчные имена переменных тоже читаются', () => {
+    process.env['NODE_USE_ENV_PROXY'] = '1';
+    clearProxy();
+    process.env['https_proxy'] = 'http://127.0.0.1:10801';
+    expect(isEnvProxyEnabled()).toBe(true);
   });
 });
