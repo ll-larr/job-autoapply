@@ -199,7 +199,17 @@ export function parseVacancyPage(rawHtml: string): CareeristVacancyDetail {
  */
 export function decodeMsonResponse(body: string): { output?: string; result?: boolean } {
   try {
-    return JSON.parse(decodeURIComponent(body)) as { output?: string; result?: boolean };
+    // Плюс — это ПРОБЕЛ, по правилам form-urlencoded, и разворачивать его
+    // надо ДО decodeURIComponent: настоящий плюс в тексте приезжает как %2B и
+    // после этого разбора вернётся плюсом, а не потеряется.
+    //
+    // Площадка отвечает в обеих формах: на снятой фикстуре пробелов в теле не
+    // было вовсе, а живая подача 2026-09-01 принесла ответ, где ими всё
+    // усыпано. Без этой замены разметка формы приезжала со склеенными
+    // атрибутами (`name="afdata"+value="…"`), parseApplyForm не находил в ней
+    // ничего и отклик падал с «в ответе нет формы отклика».
+    return JSON.parse(decodeURIComponent(body.replace(/\+/g, ' '))) as
+      { output?: string; result?: boolean };
   } catch {
     return {};
   }
@@ -215,20 +225,56 @@ export interface CareeristApplyForm {
   letterField: string | null;
 }
 
-export function parseApplyForm(outputHtml: string): CareeristApplyForm | null {
-  const afdata = /name="afdata"\s+value="([^"]*)"/.exec(outputHtml)
-    ?? /value="([^"]*)"\s+name="afdata"/.exec(outputHtml);
-  if (afdata === null) return null;
+/**
+ * Атрибуты одного тега.
+ *
+ * Разбирается тег целиком, а не выхватывается регуляркой конкретная пара
+ * «имя-значение». Причина конкретная: careerist.ru отдаёт одну и ту же форму
+ * то с двойными кавычками, то с одинарными, то вовсе без атрибута `value` —
+ * всё это встречено на живых ответах. Регулярка под двойные кавычки
+ * (`name="afdata"\s+value="…"`) на форме с одинарными не находила ничего, и
+ * отклик падал с «в ответе нет формы отклика — разметка площадки изменилась».
+ * Разметка не менялась; ожидания были слишком узкими.
+ */
+export function parseTagAttrs(tag: string): Record<string, string> {
+  const attrs: Record<string, string> = {};
+  const re = /([a-zA-Z_:][-\w:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
+  for (let m = re.exec(tag); m !== null; m = re.exec(tag)) {
+    attrs[m[1]!.toLowerCase()] = m[2] ?? m[3] ?? m[4] ?? '';
+  }
+  return attrs;
+}
 
-  const total = /name="Total"[^>]*\svalue="([^"]*)"/.exec(outputHtml);
-  const ext = /name="extention_install"[^>]*\svalue="([^"]*)"|value="([^"]*)"[^>]*name="extention_install"/.exec(outputHtml);
-  const letter = /<textarea[^>]*\sname="([^"]+)"/.exec(outputHtml);
+/** Все поля формы, разложенные по атрибуту name. */
+function fieldsByName(html: string): Map<string, Record<string, string>> {
+  const out = new Map<string, Record<string, string>>();
+  for (const m of html.matchAll(/<(?:input|textarea|select)\b[^>]*>/gi)) {
+    const attrs = parseTagAttrs(m[0]);
+    const name = attrs['name'];
+    if (name !== undefined && name !== '') out.set(name, attrs);
+  }
+  return out;
+}
+
+export function parseApplyForm(outputHtml: string): CareeristApplyForm | null {
+  const fields = fieldsByName(outputHtml);
+
+  const afdata = fields.get('afdata')?.['value'];
+  if (afdata === undefined || afdata === '') return null;
+
+  // Поле письма — единственная textarea формы. Ищем по тегу, а не по имени
+  // `TextRes`: имя может смениться, а смысл «сюда пишут письмо» — нет.
+  const textarea = /<textarea\b[^>]*>/i.exec(outputHtml);
+  const letterField = textarea === null ? null : (parseTagAttrs(textarea[0])['name'] ?? null);
 
   return {
-    afdata: afdata[1]!,
-    total: total === null ? '1' : total[1]!,
-    extentionInstall: ext === null ? '0' : (ext[1] ?? ext[2] ?? '0'),
-    letterField: letter === null ? null : letter[1]!,
+    afdata,
+    // `value` у Total на части вакансий отсутствует вовсе — площадка так и
+    // отдаёт. Единица здесь не догадка: именно её несут те формы, где атрибут
+    // есть, и именно её ждёт сервер.
+    total: fields.get('Total')?.['value'] ?? '1',
+    extentionInstall: fields.get('extention_install')?.['value'] ?? '0',
+    letterField: letterField === '' ? null : letterField,
   };
 }
 

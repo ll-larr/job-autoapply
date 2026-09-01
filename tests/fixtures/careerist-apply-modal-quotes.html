@@ -1,0 +1,47 @@
+<form  target='inv_frame' ENCTYPE='multipart/form-data' id='form-693403927' onsubmit='afPrepareSubmit();' method='post' action='https://careerist.ru/mson/ajaxform/post'><input type='hidden'  id='afdata-form-693403927' name='afdata' value='YTo0OntzOjExOiJmb3JtLW9iamVjdCI7czoyNToicmVzdW1lL21hdGVyaWFsLWZvcm06c2VuZCI7czoxMzoiZm9ybS1zYXZlYWJsZSI7YTo3OntzOjg6ImZvcm1OYW1lIjtzOjE0OiJmb3JtLTY5MzQwMzkyNyI7czo5OiJWYWNhbmN5SUQiO2k6ODkxMTM2NzY7czozOiJVSUQiO3M6ODoiMTExMTExMTEiO3M6MTE6InZhY0RlbGl2ZXJ5IjtpOjExMTExMTExO3M6MTA6InZhY2FudERlbW8iO2k6MDtzOjEyOiJpc1ZhY2FudERlbW8iO2I6MTtzOjE1OiJvbmx5T25lUmVzdW1lSUQiO3M6NzoiMjIyMjIyMiI7fXM6NzoidXNlci1pZCI7czozMjoiMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAiO3M6MTE6ImxpdmUtb2JqZWN0IjthOjM6e3M6Njoib2JqZWN0IjtzOjY6InJlc3VtZSI7czoyOiJpZCI7aTowO3M6NDoiaW5mbyI7YTowOnt9fX0='><div id="regform" class="modal-content">
+  <div class="modal-header">
+      <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span id="tt1" class="icon material-icons" tabindex="0">close</span>
+      </button>
+      <h4 class="modal-title">Отправить резюме</h4>
+  </div>
+
+    <input id="Total" name="Total" type="hidden">
+        <div class="modal-body">
+        <p>Компания Партнерские Вакансии принимает только отклики. Отправьте резюме и в случае заинтересованности с вами свяжутся представители компании.</p>
+                    <p>Вы откликаетесь профессиональным резюме <b>&laquo;Бизнес-аналитик&raquo;</b></p>
+            <div class="dWLineForm formLine">
+                <label>Cопроводительное письмо:</label>
+                <div class="inputCntrTextEditor"><textarea width="100%" class="texteditor simpleEditor" id="TextRes" name="TextRes" style="height: 110px !important;"><p style="font-size: 14px; font-weight: 400; color: #000000; margin: 0;">Здравствуйте!</p>
+                        <p style="font-size: 14px; font-weight: 400; color: #000000; margin: 0;">
+                            Прошу вас рассмотреть мое резюме на вакансию Системный аналитик( ФГБУ ГИВЦ Минкультуры России ).<br/>
+                            С уважением,<br/>
+                            Имя 
+                        </p></textarea></div>
+            </div>
+                
+    </div>
+    <input type="hidden" value="0" name="extention_install" id="extention_install">
+    <div class="modal-footer">
+        <a class="btn btn-grey-blue" onclick="$('.close').trigger('click');">Отменить</a>
+        <button  type="submit" class="btn btn-grey-blue active blockedModalButton" onclick="clickOnSendButton(); beforeSendResume();">Отправить</button>
+    </div>
+
+    </div>
+<script>
+window.beforeSendResume = function(){
+  if (typeof window.car === 'undefined' || window.car.isExtInstalled()) return;
+  var showInlineRes = window.car.showInlineIfCan(function(){
+      $('.close').trigger('click');
+  });
+  if (showInlineRes) {
+      $('input#extention_install').val('1');
+  }
+};
+
+window.clickOnSendButton = function() {
+  dataLayer.push({'event': 'gaEvent','eventId': '21','eventCategory': 'vacancy','eventAction': 'SendResumeAttempt','eventLabel': '','eventContext': 'controller','eventContent': 'vac-89113676'});
+  };
+
+</script>
+</form>

@@ -140,6 +140,13 @@ async function load() {
   renderPending(pendingRows);
   renderApproved(approvedRows);
   renderSkipped(skippedRows);
+
+  // Кнопка «Дописать письма» имеет смысл, только когда есть что дописывать.
+  // Считаем по обеим вкладкам сразу: пустое письмо мешает и в ожидании, и в
+  // одобренных, а кнопка одна и та же.
+  emptyLetterCount = [...pendingRows, ...approvedRows]
+    .filter((r) => r.letter.trim() === '').length;
+  updateLettersBtns();
 }
 
 function setCount(name, n) {
@@ -378,6 +385,10 @@ async function pollSearch() {
 // Кнопка есть на обеих вкладках: пустое письмо мешает и там, и там, а гонять
 // человека между вкладками ради одного действия незачем.
 let lettersPolling = null;
+/** Сколько писем осталось дописать. Считается в load() по обеим вкладкам. */
+let emptyLetterCount = 0;
+/** Умеет ли эта панель генерировать вообще (передана ли fillLetters). */
+let lettersAvailable = true;
 
 const lettersBtns = [
   document.getElementById('fillLetters'),
@@ -391,6 +402,25 @@ function setLettersBtns(disabled, text) {
     b.disabled = disabled;
     b.textContent = text;
   }
+}
+
+/**
+ * Приводит кнопки в соответствие с тем, есть ли работа.
+ *
+ * Нажатие при нуле пустых писем не ломает ничего — прогон просто ответит
+ * «Пустых писем нет», — но кнопка, которая заведомо ничего не сделает, не
+ * должна выглядеть рабочей. Заодно число на ней избавляет от необходимости
+ * пересчитывать карточки глазами.
+ *
+ * Во время генерации не вмешивается: там состоянием кнопок управляет
+ * pollLetters, и перерисовка из load() иначе стирала бы «Пишу письма...».
+ */
+function updateLettersBtns() {
+  if (lettersPolling || !lettersAvailable) return;
+  setLettersBtns(
+    emptyLetterCount === 0,
+    emptyLetterCount === 0 ? 'Письма написаны' : `Дописать письма (${emptyLetterCount})`,
+  );
 }
 
 async function startLetters() {
@@ -416,7 +446,9 @@ async function pollLetters() {
 
     clearInterval(lettersPolling);
     lettersPolling = null;
-    setLettersBtns(false, 'Дописать письма');
+    // Не «Дописать письма» безусловно: часть могла не удаться, часть удалась,
+    // и верное состояние знает только load() ниже. До него — нейтральное.
+    setLettersBtns(true, 'Дописать письма');
 
     if (st.error) {
       lettersHint.textContent = 'Дозаполнение упало: ' + st.error;
@@ -618,6 +650,7 @@ setInterval(checkProxy, 15000);
 fetchJson('/api/letters/status').then((st) => {
   if (st.running) pollLetters();
   else if (!st.canFillLetters) {
+    lettersAvailable = false;
     setLettersBtns(true, 'Дописать письма');
     lettersHint.textContent = 'Панель запущена без генерации — используй npm run letters.';
   }

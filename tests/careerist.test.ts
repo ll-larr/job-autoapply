@@ -10,6 +10,7 @@ import {
   extractBalancedDiv,
   decodeMsonResponse,
   parseApplyForm,
+  parseTagAttrs,
   extractResumeId,
   CareeristAdapter,
   ITEMS_PER_PAGE,
@@ -43,6 +44,14 @@ const nestedHtml = readFileSync('tests/fixtures/careerist-vacancy-nested.html', 
  * ничего, чем можно воспользоваться.
  */
 const applyModalHtml = readFileSync('tests/fixtures/careerist-apply-modal.html', 'utf8');
+/**
+ * То же окно отклика, но с ОДИНАРНЫМИ кавычками в атрибутах и без `value` у
+ * поля Total — так площадка отдаёт его на части вакансий. Снято с живой
+ * подачи 2026-09-01, когда отклик упал с «в ответе нет формы отклика —
+ * разметка площадки изменилась». Разметка не менялась: разбор ждал двойных
+ * кавычек и не находил ничего.
+ */
+const applyModalQuotesHtml = readFileSync('tests/fixtures/careerist-apply-modal-quotes.html', 'utf8');
 
 describe('careerist — адреса', () => {
   it('входной адрес несёт текст запроса и категорию', () => {
@@ -569,5 +578,81 @@ describe('CareeristAdapter.apply — на подставном контекст�
     const a = new CareeristAdapter({ context: ctx as never });
     await a.apply(VAC, 'письмо');
     expect(calls[0]!.url).toContain('/responds/');
+  });
+});
+
+
+describe('careerist — форма отклика в любой разметке', () => {
+  it('разбирается при ОДИНАРНЫХ кавычках в атрибутах', () => {
+    // Живой отказ 2026-09-01: та же форма, другие кавычки, и отклик не ушёл.
+    const form = parseApplyForm(applyModalQuotesHtml);
+    expect(form).not.toBeNull();
+    expect(form!.afdata.length).toBeGreaterThan(100);
+    expect(form!.letterField).toBe('TextRes');
+  });
+
+  it('Total без атрибута value не ломает разбор', () => {
+    // На этой вакансии площадка отдаёт <input id="Total" name="Total"
+    // type="hidden"> — без value вообще.
+    expect(parseApplyForm(applyModalQuotesHtml)!.total).toBe('1');
+  });
+
+  it('обе живые формы дают одинаковый набор полей', () => {
+    const a = parseApplyForm(applyModalHtml)!;
+    const b = parseApplyForm(applyModalQuotesHtml)!;
+    expect(b.letterField).toBe(a.letterField);
+    expect(b.total).toBe(a.total);
+    expect(b.extentionInstall).toBe(a.extentionInstall);
+  });
+
+  it('поле письма ищется по тегу textarea, а не по имени TextRes', () => {
+    // Имя может смениться, смысл «сюда пишут письмо» — нет.
+    const html = "<form><input name='afdata' value='AAAA'><textarea name='Letter'></textarea></form>";
+    expect(parseApplyForm(html)!.letterField).toBe('Letter');
+  });
+
+  it('без afdata — null: подавать нечем', () => {
+    expect(parseApplyForm("<form><textarea name='TextRes'></textarea></form>")).toBeNull();
+  });
+
+  it('пустой afdata тоже null, а не пустая строка в запрос', () => {
+    expect(parseApplyForm("<form><input name='afdata' value=''></form>")).toBeNull();
+  });
+});
+
+describe('careerist — parseTagAttrs', () => {
+  it('читает двойные кавычки', () => {
+    expect(parseTagAttrs('<input name="a" value="b">')).toMatchObject({ name: 'a', value: 'b' });
+  });
+
+  it('читает одинарные', () => {
+    expect(parseTagAttrs("<input name='a' value='b'>")).toMatchObject({ name: 'a', value: 'b' });
+  });
+
+  it('читает вовсе без кавычек', () => {
+    expect(parseTagAttrs('<input name=a value=b>')).toMatchObject({ name: 'a', value: 'b' });
+  });
+
+  it('имена атрибутов приводятся к нижнему регистру — ENCTYPE и enctype это одно', () => {
+    expect(parseTagAttrs("<form ENCTYPE='multipart/form-data'>")['enctype']).toBe('multipart/form-data');
+  });
+
+  it('атрибут без значения не ломает разбор соседей', () => {
+    expect(parseTagAttrs("<input disabled name='a'>")).toMatchObject({ name: 'a' });
+  });
+});
+
+describe('careerist — decodeMsonResponse и плюсы', () => {
+  it('плюс разворачивается в пробел', () => {
+    // Живая подача принесла ответ, где пробелы закодированы плюсами, и
+    // атрибуты формы приезжали склеенными.
+    const packed = encodeURIComponent(JSON.stringify({ output: '<form a="1" b="2">' })).replace(/%20/g, '+');
+    expect(decodeMsonResponse(packed).output).toBe('<form a="1" b="2">');
+  });
+
+  it('настоящий плюс в тексте не теряется', () => {
+    // В form-urlencoded буквальный плюс приезжает как %2B — и обязан вернуться.
+    const packed = encodeURIComponent(JSON.stringify({ output: 'C++ и Java' })).replace(/%20/g, '+');
+    expect(decodeMsonResponse(packed).output).toBe('C++ и Java');
   });
 });
