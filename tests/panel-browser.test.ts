@@ -263,3 +263,89 @@ describe('панель в браузере — пустое письмо у од
     expect(await page.isVisible('#fillLettersPending')).toBe(true);
   }, 30000);
 });
+
+
+describe('панель в браузере — уведомление про VPN', () => {
+  /**
+   * Панель поднимается своя, с подменённым окружением: настоящий VPN трогать
+   * нельзя, а проверка ходит в TCP-порт по адресу из HTTP_PROXY.
+   */
+  async function withPanel(env: Record<string, string | undefined>, fn: (port: number) => Promise<void>) {
+    const saved: Record<string, string | undefined> = {};
+    for (const k of Object.keys(env)) { saved[k] = process.env[k]; }
+    for (const [k, v] of Object.entries(env)) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+    const q2 = new Queue(join(mkdtempSync(join(tmpdir(), 'jaa-vpn-')), 'test.db'));
+    const p2 = await startPanel(q2, 0);
+    try {
+      await fn(p2.port);
+    } finally {
+      await p2.close();
+      q2.close();
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k]; else process.env[k] = v;
+      }
+    }
+  }
+
+  it('VPN выключен — на странице висит «требуется включить VPN»', async () => {
+    // Адрес прокси задан, читать его разрешено, но на том конце никого:
+    // ровно то, что видно, когда клиент выключили, не трогая настроек.
+    await withPanel(
+      { HTTPS_PROXY: 'http://127.0.0.1:1', HTTP_PROXY: undefined, NODE_USE_ENV_PROXY: '1' },
+      async (port) => {
+        await page.goto(`http://127.0.0.1:${port}/#pending`, { waitUntil: 'domcontentloaded' });
+        await page.waitForFunction(
+          () => {
+            const w = document.getElementById('proxyWarn');
+            return w !== null && w.style.display !== 'none' && /включить VPN/.test(w.textContent ?? '');
+          },
+          undefined, { timeout: 20000 },
+        );
+        const txt = await page.textContent('#proxyWarn');
+        // Обязана сказать и то, что НЕ ломается: паника на ровном месте хуже
+        // молчания, а поиск и отправка без прокси работают.
+        expect(txt).toMatch(/письма/i);
+        expect(txt).toMatch(/поиск/i);
+      },
+    );
+  }, 40000);
+
+  it('прокси на месте — полосы нет', async () => {
+    const net = await import('node:net');
+    const srv = net.createServer();
+    const port = await new Promise<number>((r) => srv.listen(0, '127.0.0.1',
+      () => r((srv.address() as { port: number }).port)));
+    try {
+      await withPanel(
+        { HTTPS_PROXY: `http://127.0.0.1:${port}`, HTTP_PROXY: undefined, NODE_USE_ENV_PROXY: '1' },
+        async (panelPort) => {
+          await page.goto(`http://127.0.0.1:${panelPort}/#pending`, { waitUntil: 'domcontentloaded' });
+          await page.waitForTimeout(2500);
+          expect(await page.isVisible('#proxyWarn')).toBe(false);
+        },
+      );
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
+  }, 40000);
+
+  it('адрес прокси не задан — говорит про лаунчер, а не про VPN', async () => {
+    await withPanel(
+      { HTTPS_PROXY: undefined, HTTP_PROXY: undefined, https_proxy: undefined,
+        http_proxy: undefined, NODE_USE_ENV_PROXY: '1' },
+      async (port) => {
+        await page.goto(`http://127.0.0.1:${port}/#pending`, { waitUntil: 'domcontentloaded' });
+        await page.waitForFunction(
+          () => {
+            const w = document.getElementById('proxyWarn');
+            return w !== null && w.style.display !== 'none' && (w.textContent ?? '') !== '';
+          },
+          undefined, { timeout: 20000 },
+        );
+        expect(await page.textContent('#proxyWarn')).toMatch(/Панель\.cmd/);
+      },
+    );
+  }, 40000);
+});

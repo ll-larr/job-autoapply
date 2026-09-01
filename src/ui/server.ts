@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Queue } from '../core/queue.js';
+import { checkProxyHealth, isProxyUsable } from '../core/proxy-health.js';
 import type { Config } from '../core/config.js';
 import type { Adapter } from '../adapters/types.js';
 import { Sender, clearStop, type SendReport } from '../core/sender.js';
@@ -85,6 +86,10 @@ export interface PanelDeps {
    * блокирует прямые запросы, поиск и генерация писем внешне работают, но все
    * письма выходят пустыми — 2026-09-01 это стоило прогона на 22 вакансии.
    * Панель обязана сказать об этом сама, а не надеяться на консоль.
+   *
+   * Это состояние ЗАПУСКА и оно неизменно. Живое состояние — включён ли VPN
+   * прямо сейчас — отдаёт /api/proxy/status: клиент выключают и включают, не
+   * перезапуская панель.
    */
   proxyEnabled?: boolean;
 }
@@ -174,6 +179,14 @@ export async function startPanel(
         })();
 
         return json(res, { started: true }, 202);
+      }
+
+      // Живое состояние прокси. Отдельной ручкой, а не полем в статусе
+      // отправки: VPN включают и выключают по ходу работы, и панель должна
+      // замечать это без перезапуска.
+      if (req.method === 'GET' && req.url === '/api/proxy/status') {
+        const health = await checkProxyHealth();
+        return json(res, { ...health, usable: isProxyUsable(health) });
       }
 
       if (req.method === 'GET' && req.url === '/api/letters/status') {
