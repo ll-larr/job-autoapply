@@ -32,6 +32,23 @@ const SEARCH_EXPERIENCE = '[data-qa^="vacancy-serp__vacancy-work-experience-"]';
 const SEARCH_EXPERIENCE_PREFIX = 'vacancy-serp__vacancy-work-experience-';
 const VACANCY_DESCRIPTION = '[data-qa="vacancy-description"]';
 const APPLY_BUTTON = '[data-qa="vacancy-response-link-top"]';
+/**
+ * Признаки «на эту вакансию уже откликнулись». Сняты живьём 2026-09-01
+ * сравнением двух страниц под одним и тем же залогиненным профилем: на
+ * вакансии 136781841, куда владелец подал отклик руками, и на 136227311, куда
+ * не подавал.
+ *
+ * Разница однозначная. У откликнувшейся вакансии обычной кнопки
+ * `vacancy-response-link-top` НЕТ ВООБЩЕ, вместо неё появляются эти две. У
+ * обычной — ровно наоборот.
+ *
+ * Пока этих селекторов не было, adapter жал несуществующую кнопку, ждал
+ * подтверждения, не дожидался и писал отказ. Три отказа подряд гасили
+ * предохранителем всю площадку — в бою это выглядело как «отправка стопится и
+ * ломается, если встречает вакансию, отклик по которой уже отправлен».
+ */
+const RESPONSE_LINK_VIEW_TOPIC = '[data-qa="vacancy-response-link-view-topic"]';
+const RESPONSE_LINK_AGAIN = '[data-qa="vacancy-response-link-top-again"]';
 const NEGOTIATIONS_ITEM = '[data-qa="negotiations-item"]';
 const OPEN_CHAT_BUTTON = '[data-qa="open_chat"]';
 
@@ -239,12 +256,24 @@ export async function detectCaptcha(_page: Page): Promise<boolean> {
 }
 
 /**
- * НЕ ПОДТВЕРЖДЕНО ЖИВЬЁМ — тот же случай, что и detectCaptcha. Признак «вы
- * уже откликались» на странице вакансии не встретился ни в одной снятой
- * фикстуре; дедуп полагается только на локальную БД (Queue), а не на этот
- * сигнал. Всегда возвращает false до появления снятого селектора.
+ * Уже откликались на эту вакансию?
+ *
+ * Селекторы сняты живьём (см. RESPONSE_LINK_VIEW_TOPIC выше). Достаточно
+ * любого из двух: hh.ru показывает «Перейти к отклику» и «Откликнуться ещё
+ * раз» вместо обычной кнопки.
+ *
+ * Важно, что сигнал существует НЕ ради дедупа — от повторной подачи из
+ * очереди защищает уникальный индекс в БД. Он нужен для откликов, поданных
+ * МИМО системы: руками с сайта, с телефона, из другого браузера. Про них база
+ * не знает ничего, и без этой проверки каждый такой отклик превращался в
+ * отказ, а три отказа подряд гасили площадку целиком.
  */
-export async function detectAlreadyApplied(_page: Page): Promise<boolean> {
+export async function detectAlreadyApplied(page: Page): Promise<boolean> {
+  for (const selector of [RESPONSE_LINK_VIEW_TOPIC, RESPONSE_LINK_AGAIN]) {
+    // Не waitFor: страница уже загружена, и ждать несуществующий элемент
+    // означало бы платить таймаутом на каждой обычной вакансии.
+    if (await page.locator(selector).count() > 0) return true;
+  }
   return false;
 }
 

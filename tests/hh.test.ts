@@ -622,3 +622,66 @@ describe('HhAdapter.apply — сквозной сценарий (без сети
     }
   }, 30000);
 });
+
+
+/**
+ * «Уже откликались» на hh.ru.
+ *
+ * Разметка снята живьём 2026-09-01 сравнением двух страниц под одним и тем же
+ * залогиненным профилем: вакансия 136781841, куда владелец подал отклик
+ * руками, и 136227311, куда не подавал. Страницу целиком в фикстуры не кладём
+ * — в ней полтора мегабайта и два десятка чужих телефонов; контракт здесь и
+ * так атрибуты, а не вёрстка.
+ */
+describe('detectAlreadyApplied — снято живьём', () => {
+  it('видит «Перейти к отклику» — так выглядит уже поданный отклик', async () => {
+    const page = await browser.newPage();
+    await page.setContent('<a data-qa="vacancy-response-link-view-topic">Перейти к отклику</a>');
+    expect(await detectAlreadyApplied(page)).toBe(true);
+    await page.close();
+  });
+
+  it('видит «Откликнуться ещё раз»', async () => {
+    const page = await browser.newPage();
+    await page.setContent('<a data-qa="vacancy-response-link-top-again">Откликнуться ещё раз</a>');
+    expect(await detectAlreadyApplied(page)).toBe(true);
+    await page.close();
+  });
+
+  it('на обычной вакансии — false: там обычная кнопка отклика', async () => {
+    // У откликнувшейся вакансии кнопки vacancy-response-link-top НЕТ вообще,
+    // у обычной — есть и только она. Признак различает их однозначно.
+    const page = await browser.newPage();
+    await page.setContent('<a data-qa="vacancy-response-link-top">Откликнуться</a>');
+    expect(await detectAlreadyApplied(page)).toBe(false);
+    await page.close();
+  });
+
+  it('пустая страница — false, а не исключение', async () => {
+    const page = await browser.newPage();
+    await page.setContent('<div></div>');
+    expect(await detectAlreadyApplied(page)).toBe(false);
+    await page.close();
+  });
+
+  it('отвечает быстро на обычной странице — не ждёт таймаута', async () => {
+    // Проверка идёт перед КАЖДОЙ подачей. waitFor на несуществующем элементе
+    // добавил бы таймаут к каждой обычной вакансии.
+    const page = await browser.newPage();
+    await page.setContent('<a data-qa="vacancy-response-link-top">Откликнуться</a>');
+    const t0 = Date.now();
+    await detectAlreadyApplied(page);
+    expect(Date.now() - t0).toBeLessThan(2000);
+    await page.close();
+  });
+});
+
+describe('уже поданный отклик не считается отказом', () => {
+  it('classifyApplyOutcome даёт already_applied, а не failed', () => {
+    // Это и есть починка: раньше отклик, поданный руками мимо системы,
+    // превращался в отказ, а три отказа подряд гасили площадку целиком.
+    expect(classifyApplyOutcome({
+      captcha: false, sessionLost: false, alreadyApplied: true, submitted: false,
+    })).toEqual({ status: 'already_applied' });
+  });
+});
