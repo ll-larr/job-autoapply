@@ -23,6 +23,7 @@ import { loadConfig, type Config } from './core/config.js';
 import { runSearch, type SearchReport, type SearchQuery } from './pipeline.js';
 import { loadSettings, seedSettings, enabledSpecialties, SETTINGS_PATH, type Settings } from './core/settings.js';
 import type { Specialty } from './core/specialty.js';
+import { DEFAULT_SPECIALTY } from './core/specialty-defaults.js';
 import { Sender, requestStop, clearStop, isStopRequested } from './core/sender.js';
 import type { SendReport } from './core/sender.js';
 import { startPanel } from './ui/server.js';
@@ -94,6 +95,14 @@ function defaultBaResumePdf(): string | null {
  */
 function currentSettings(config: Config): Settings {
   return loadSettings(SETTINGS_PATH, () => seedSettings(config.searchQueries, defaultBaResumePdf()));
+}
+
+/**
+ * Специальность строки очереди. Удалённая из настроек — бизнес-аналитик:
+ * письмо всё равно нужно дописать, а других сведений о ней не осталось.
+ */
+export function specialtyOf(settings: Settings, id: string): Specialty {
+  return settings.specialties.find((s) => s.id === id) ?? DEFAULT_SPECIALTY;
 }
 
 const STATUS_ORDER: readonly Status[] = ['pending', 'approved', 'sent', 'failed', 'skipped'];
@@ -317,7 +326,13 @@ export function buildAdapterMap(adapters: readonly Adapter[]): Map<string, Adapt
 export interface FillLettersDeps {
   queue: Queue;
   config: Config;
-  resume: string;
+  /** Текст резюме, по которому пишет письма специальность (core/resume.ts). */
+  resumeFor: (specialty: Specialty) => string;
+  /**
+   * Специальность строки очереди по её id. Удалённая из настроек — как БА:
+   * письмо всё равно нужно дописать, а других сведений о ней не осталось.
+   */
+  specialtyById: (id: string) => Specialty;
   generateLetterFn: typeof generateLetter;
   pickTemplateFn: typeof pickTemplate;
   readTemplate: (name: string) => string;
@@ -356,15 +371,21 @@ export async function fillEmptyLetters(deps: FillLettersDeps): Promise<FillLette
   let failure: string | undefined;
 
   for (const row of empty) {
-    const mode = pickMode(row.score, deps.config.letterFullThreshold);
-    const templateName = deps.pickTemplateFn(row.vacancy, row.matched);
+    // Та же развилка, что при поиске (pipeline.ts): скелеты и hybrid/full —
+    // только у засеянных специальностей, остальные пишут письмо целиком.
+    const specialty = deps.specialtyById(row.specialty);
+    const mode = specialty.legacyLetters ? pickMode(row.score, deps.config.letterFullThreshold) : 'full';
+    const template = specialty.legacyLetters
+      ? deps.readTemplate(deps.pickTemplateFn(row.vacancy, row.matched))
+      : '';
     const result = await deps.generateLetterFn(
       {
         vacancy: row.vacancy,
         matched: row.matched,
         mode,
-        resume: deps.resume,
-        template: deps.readTemplate(templateName),
+        template,
+        resume: deps.resumeFor(specialty),
+        role: specialty.legacyLetters ? undefined : specialty.name,
       },
       { models: deps.config.letterModels },
     );
@@ -395,7 +416,8 @@ export interface SearchCommandDeps {
    * RunSearchOptions.target). См. resolveLimit.
    */
   limit: number;
-  resume: string;
+  /** Текст резюме, по которому пишет письма специальность (core/resume.ts). */
+  resumeFor: (specialty: Specialty) => string;
   generateLetterFn: typeof generateLetter;
   pickTemplateFn: typeof pickTemplate;
   readTemplate: (name: string) => string;
@@ -426,15 +448,18 @@ export async function runSearchCommand(
     stopWords: deps.stopWords,
     target: deps.limit,
     adapters: deps.adapters,
-    generate: async (v, matched, mode) => {
-      const templateName = deps.pickTemplateFn(v, matched);
+    generate: async (v, matched, mode, specialty) => {
+      // Скелеты — только у засеянных специальностей (legacyLetters); остальным
+      // конвейер уже выставил mode 'full', и скелет модели не показывается.
+      const template = specialty.legacyLetters ? deps.readTemplate(deps.pickTemplateFn(v, matched)) : '';
       const result = await deps.generateLetterFn(
         {
           vacancy: v,
           matched,
           mode,
-          resume: deps.resume,
-          template: deps.readTemplate(templateName),
+          template,
+          resume: deps.resumeFor(specialty),
+          role: specialty.legacyLetters ? undefined : specialty.name,
         },
         { models: deps.config.letterModels },
       );
@@ -572,7 +597,8 @@ async function main(): Promise<void> {
         fillLetters: () => fillEmptyLetters({
           queue,
           config,
-          resume: readFileSync(RESUME_PATH, 'utf8'),
+          resumeFor: () => readFileSync(RESUME_PATH, 'utf8'),
+          specialtyById: (id) => specialtyOf(currentSettings(config), id),
           generateLetterFn: generateLetter,
           pickTemplateFn: pickTemplate,
           readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
@@ -588,7 +614,7 @@ async function main(): Promise<void> {
             queries: buildSearchQueries(settings, []),
             stopWords: settings.stopWords,
             limit,
-            resume: readFileSync(RESUME_PATH, 'utf8'),
+            resumeFor: () => readFileSync(RESUME_PATH, 'utf8'),
             generateLetterFn: generateLetter,
             pickTemplateFn: pickTemplate,
             readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
@@ -626,7 +652,8 @@ async function main(): Promise<void> {
       const res = await fillEmptyLetters({
         queue,
         config,
-        resume: readFileSync(RESUME_PATH, 'utf8'),
+        resumeFor: () => readFileSync(RESUME_PATH, 'utf8'),
+        specialtyById: (id) => specialtyOf(currentSettings(config), id),
         generateLetterFn: generateLetter,
         pickTemplateFn: pickTemplate,
         readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
@@ -659,7 +686,7 @@ async function main(): Promise<void> {
         settings,
         rest.filter((a, i) => a !== '--limit' && rest[i - 1] !== '--limit'),
       );
-      const resume = readFileSync(RESUME_PATH, 'utf8');
+
       const hasApiKey = Boolean(process.env['OPENROUTER_API_KEY']);
 
       const { report, emptyLetters, letterFailure } = await runSearchCommand({
@@ -669,7 +696,7 @@ async function main(): Promise<void> {
         queries,
         stopWords: settings.stopWords,
         limit,
-        resume,
+        resumeFor: () => readFileSync(RESUME_PATH, 'utf8'),
         generateLetterFn: generateLetter,
         pickTemplateFn: pickTemplate,
         readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),

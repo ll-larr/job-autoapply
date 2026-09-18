@@ -15,6 +15,7 @@ import { formatProxyReport,
   buildAdapters,
   buildAdapterMap,
   runSearchCommand,
+  specialtyOf,
 } from '../src/cli.js';
 import { Queue, type Status } from '../src/core/queue.js';
 import { normalizeVacancy } from '../src/core/vacancy.js';
@@ -22,6 +23,7 @@ import type { Adapter } from '../src/adapters/types.js';
 import type { SearchReport } from '../src/pipeline.js';
 import type { SendReport } from '../src/core/sender.js';
 import { seedSettings } from '../src/core/settings.js';
+import { DEFAULT_SPECIALTY } from '../src/core/specialty-defaults.js';
 
 const CONFIG = { minScore: 40, letterFullThreshold: 75, letterModels: ['m:free'], searchQueries: [], throttle: {} };
 
@@ -297,6 +299,32 @@ describe('runSearchCommand — связка pipeline + генерация пис
     'Проводим gap-анализ AS-IS/TO-BE, пишем регламенты бизнес-процессов, ' +
     'готовим BRD и FSD, отвечаем за постановку задач.';
 
+  it('новая специальность: её резюме и роль, письмо целиком, без скелета', async () => {
+    const PM = {
+      ...DEFAULT_SPECIALTY, id: 'pm', name: 'Менеджер продукта', legacyLetters: false,
+      titleWords: ['аналитик'],
+    };
+    const seen: Array<{ resume: string; template: string; mode: string; role?: string }> = [];
+    await runSearchCommand({
+      queue: q, config: CONFIG, adapters: [mkAdapter([PROCESS_LANGUAGE])],
+      queries: [{ query: 'pm', specialty: PM }], limit: 10,
+      resumeFor: (s) => `РЕЗЮМЕ:${s.id}`,
+      generateLetterFn: async (input) => {
+        seen.push({ resume: input.resume, template: input.template, mode: input.mode, role: input.role });
+        return { letter: 'п', mode: input.mode };
+      },
+      pickTemplateFn: () => 'fullstack-analyst',
+      readTemplate: (name) => `ШАБЛОН:${name}`,
+    });
+    expect(seen).toEqual([{ resume: 'РЕЗЮМЕ:pm', template: '', mode: 'full', role: 'Менеджер продукта' }]);
+  });
+
+  it('specialtyOf: удалённая специальность — бизнес-аналитик', () => {
+    const settings = seedSettings(undefined, null);
+    expect(specialtyOf(settings, 'system-analyst').name).toBe('Системный аналитик');
+    expect(specialtyOf(settings, 'нет-такой').id).toBe('business-analyst');
+  });
+
   it('вызывает generateLetterFn с резюме/скелетом из инъецированных зависимостей, не трогая диск и сеть', async () => {
     let receivedResume: string | undefined;
     let receivedTemplate: string | undefined;
@@ -304,7 +332,7 @@ describe('runSearchCommand — связка pipeline + генерация пис
 
     const { report, emptyLetters } = await runSearchCommand({
       queue: q, config: CONFIG, adapters: [mkAdapter([PROCESS_LANGUAGE])],
-      queries: [{ query: 'бизнес-аналитик' }], limit: 10, resume: 'ФЕЙКОВОЕ РЕЗЮМЕ',
+      queries: [{ query: 'бизнес-аналитик' }], limit: 10, resumeFor: () => 'ФЕЙКОВОЕ РЕЗЮМЕ',
       generateLetterFn: async (input, options) => {
         receivedResume = input.resume;
         receivedTemplate = input.template;
@@ -327,7 +355,7 @@ describe('runSearchCommand — связка pipeline + генерация пис
   it('считает пустые письма (mode "none"), но не прерывает поиск и не роняет queued', async () => {
     const { report, emptyLetters } = await runSearchCommand({
       queue: q, config: CONFIG, adapters: [mkAdapter([PROCESS_LANGUAGE])],
-      queries: [{ query: 'q' }], limit: 10, resume: 'r',
+      queries: [{ query: 'q' }], limit: 10, resumeFor: () => 'r',
       generateLetterFn: async () => ({ letter: '', mode: 'none' }),
       pickTemplateFn: () => 'fullstack-analyst',
       readTemplate: () => 't',
@@ -343,7 +371,7 @@ describe('runSearchCommand — связка pipeline + генерация пис
     let calls = 0;
     const { report } = await runSearchCommand({
       queue: q, config: CONFIG, adapters: [mkAdapter(['мусор без релевантных слов'])],
-      queries: [{ query: 'q' }], limit: 10, resume: 'r',
+      queries: [{ query: 'q' }], limit: 10, resumeFor: () => 'r',
       generateLetterFn: async () => { calls++; return { letter: 'x', mode: 'hybrid' }; },
       pickTemplateFn: () => 'fullstack-analyst',
       readTemplate: () => 't',

@@ -1,6 +1,10 @@
 import type { Vacancy } from './vacancy.js';
 import type { LetterMode } from './queue.js';
-import { createProxiedFetch } from './proxy.js';
+import { complete, type CompletionOptions } from './openrouter.js';
+
+// Разбор ответов HTTP переехал в openrouter.ts вместе с вызовом модели;
+// реэкспорт — чтобы вызывающие и тесты не искали его на новом месте.
+export { describeHttpFailure, isProxyBlockPage } from './openrouter.js';
 
 export type TemplateName =
   | 'fullstack-analyst' | 'ai-llm-ba' | 'product-ba' | 'english-generic';
@@ -11,30 +15,16 @@ export interface LetterInput {
   mode: LetterMode;
   resume: string;
   template: string;
+  /**
+   * Название специальности для инструкции модели. undefined — «вакансии
+   * бизнес-аналитика», как до 2026-09-18: у засеянных специальностей промпт
+   * не меняется ни на символ.
+   */
+  role?: string;
 }
 
-export interface GenerateLetterOptions {
-  /** Модели OpenRouter, в порядке попытки. Первая, что ответит успешно, и используется. */
-  models: string[];
-  /**
-   * Сколько раз пробовать одну и ту же запись, прежде чем перейти к следующей.
-   * По умолчанию 3. Имеет смысл, потому что `openrouter/free` — метамодель:
-   * она сама выбирает живую бесплатную модель, и повторный вызов может уйти
-   * на другую. Для жёстко заданной модели повтор помогает от временных 429.
-   */
-  attemptsPerModel?: number;
-  /**
-   * Потолок на одну попытку, мс. По умолчанию 90 000. Бесплатные модели умеют
-   * вставать намертво или тянуть минутами: живой прогон 2026-08-30 отдал письмо
-   * через 371 секунду. Без потолка один такой запрос стопорит весь конвейер.
-   */
-  timeoutMs?: number;
-  /**
-   * Для тестов — подмена сетевого fetch, как в src/adapters/hrge.ts. По
-   * умолчанию запрос идёт через прокси, найденный в момент запроса.
-   */
-  fetchImpl?: typeof fetch;
-}
+/** Модели, попытки, таймаут, подмена fetch — см. core/openrouter.ts. */
+export type GenerateLetterOptions = CompletionOptions;
 
 export interface PromptParts {
   messages: [
@@ -78,7 +68,15 @@ const WRITING_RULES = `Правила письма:
   или "trainee"), одним предложением прямо скажи, что на самом деле он рассматривает позиции
   уровня junior+/middle. Без извинений и без долгих объяснений — просто факт.`;
 
-const INSTRUCTION_HYBRID = `Ты помогаешь кандидату откликаться на вакансии бизнес-аналитика.
+/**
+ * Первая строка инструкции. Без роли — дословно прежняя: засеянные
+ * специальности (legacyLetters) не передают роль, и их промпт не меняется.
+ */
+const roleLine = (role?: string): string => (role === undefined
+  ? 'Ты помогаешь кандидату откликаться на вакансии бизнес-аналитика.'
+  : `Ты помогаешь кандидату откликаться на вакансии по специальности «${role}».`);
+
+const instructionHybrid = (role?: string): string => `${roleLine(role)}
 Тебе дан скелет письма с плейсхолдерами {{HOOK}} и {{FIT}}.
 Замени {{TITLE}} и {{COMPANY}} на данные вакансии.
 Вместо {{HOOK}} напиши одно-два предложения о том, что в описанных ЗАДАЧАХ
@@ -102,7 +100,7 @@ const INSTRUCTION_HYBRID = `Ты помогаешь кандидату откл�
 
 ${WRITING_RULES}`;
 
-const INSTRUCTION_FULL = `Ты помогаешь кандидату откликаться на вакансии бизнес-аналитика.
+const instructionFull = (role?: string): string => `${roleLine(role)}
 Напиши сопроводительное письмо с нуля под конкретную вакансию.
 Держи объём в 4–6 абзацев, деловой тон без канцелярита и без превосходных степеней.
 Опирайся только на факты из резюме — ничего не выдумывай.
@@ -123,7 +121,7 @@ ${WRITING_RULES}`;
  * `cache_control`, поэтому мы его не отправляем и не обещаем экономию на кеше.
  */
 export function buildPrompt(input: LetterInput): PromptParts {
-  const instruction = input.mode === 'full' ? INSTRUCTION_FULL : INSTRUCTION_HYBRID;
+  const instruction = input.mode === 'full' ? instructionFull(input.role) : instructionHybrid(input.role);
   const stable = input.mode === 'full'
     ? `${instruction}\n\n=== РЕЗЮМЕ ===\n${input.resume}`
     : `${instruction}\n\n=== РЕЗЮМЕ ===\n${input.resume}\n\n=== СКЕЛЕТ ===\n${input.template}`;
@@ -145,17 +143,6 @@ export function buildPrompt(input: LetterInput): PromptParts {
       { role: 'user', content: volatile },
     ],
   };
-}
-
-const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
-
-/** Достаёт текст ответа из тела OpenRouter chat-completions, не веря его форме. */
-function extractText(body: unknown): string | undefined {
-  const choices = (body as { choices?: unknown })?.choices;
-  if (!Array.isArray(choices) || choices.length === 0) return undefined;
-  const first = choices[0] as { message?: { content?: unknown } } | undefined;
-  const content = first?.message?.content;
-  return typeof content === 'string' && content !== '' ? content : undefined;
 }
 
 const EMPTY_RESULT = { letter: '', mode: 'none' as const };
@@ -269,130 +256,17 @@ export function isUsableLetter(text: string, input: LetterInput): boolean {
   return true;
 }
 
-/**
- * Признак блок-страницы провайдера. Ловится по телу, а не по статусу: 403
- * отдаёт и OpenRouter, когда ключ негоден, и блокировка, когда Node пошёл
- * напрямую. Тело у них разное, и только оно позволяет назвать причину верно.
- */
-export function isProxyBlockPage(body: string): boolean {
-  return /Access denied by security policy/i.test(body);
-}
-
-/**
- * Почему письмо не получилось. Человекочитаемая строка, а не код: она идёт
- * прямиком в панель и в консоль.
- *
- * Существует потому, что молчаливый провал уже стоил живого прогона:
- * 2026-08-31 поиск вернул двадцать вакансий с пустыми письмами и ни словом не
- * объяснил, почему. Причина оказалась банальной — на счету OpenRouter
- * кончились деньги, платная модель отвечала 402, бесплатные 429, — но чтобы
- * это выяснить, пришлось лезть в код и стучаться в API руками. `!res.ok`
- * здесь раньше просто отбрасывался вместе со статусом и телом ответа.
- */
-export function describeHttpFailure(status: number, body: string): string {
-  // Блок-страница провайдера, а НЕ ответ OpenRouter. Так бывает, когда прокси
-  // не нашёлся (см. src/core/proxy.ts): запрос идёт напрямую и упирается в
-  // блокировку, которая отвечает 403 с этим телом.
-  //
-  // Отличать обязательно. Первая версия этой функции звала такой ответ
-  // «ключ отвергнут», и живой прогон 2026-09-01 отправил владельца проверять
-  // совершенно исправный ключ. Различитель — тело, а не статус.
-  if (isProxyBlockPage(body)) {
-    return 'запрос ушёл МИМО прокси и упёрся в блокировку провайдера (403 «Access denied by security policy»). '
-      + 'Это не ответ OpenRouter и не проблема ключа. Включи VPN: прокси ищется на каждое письмо '
-      + 'заново, следующее уже пойдёт через него';
-  }
-  if (status === 401 || status === 403) {
-    return `ключ OpenRouter отвергнут (HTTP ${status}) — проверь OPENROUTER_API_KEY в .env`;
-  }
-  if (status === 402) {
-    return 'на счету OpenRouter кончились деньги (HTTP 402) — пополни баланс или оставь в letterModels только бесплатные модели';
-  }
-  if (status === 429) {
-    return 'лимит запросов (HTTP 429) — у бесплатных моделей он общий на всех, стоит подождать или добавить платную';
-  }
-  // Текст ошибки от OpenRouter бывает содержательным — показываем начало.
-  const hint = body.trim().slice(0, 160);
-  return `HTTP ${status}${hint === '' ? '' : ` — ${hint}`}`;
-}
-
-// Прокси нужен только письмам: OpenRouter — единственный адресат за блокировкой.
-const proxiedFetch = createProxiedFetch();
-
 export async function generateLetter(
   input: LetterInput,
   options: GenerateLetterOptions,
 ): Promise<{ letter: string; mode: LetterMode; failure?: string }> {
-  const apiKey = process.env['OPENROUTER_API_KEY'];
-  if (!apiKey) {
-    return { ...EMPTY_RESULT, failure: 'OPENROUTER_API_KEY не найден — положи ключ в .env рядом с package.json' };
-  }
-
-  // Последняя увиденная причина. Именно последняя, а не первая: цепочка идёт
-  // от бесплатных моделей к запасным, и человеку полезнее знать, обо что
-  // споткнулась ПОСЛЕДНЯЯ попытка, чем то, что первая бесплатная привычно
-  // отдала 429.
-  let failure = 'ни одна модель из letterModels не ответила пригодным письмом';
-
-  const fetchImpl = options.fetchImpl ?? proxiedFetch;
-  const prompt = buildPrompt(input);
-
-  // Одну и ту же запись пробуем несколько раз, а не единожды. Это нужно из-за
-  // `openrouter/free`: это метамодель, которая сама выбирает живую бесплатную
-  // модель под капотом, и на каждый вызов может достаться разная. Поэтому
-  // повторный запрос к той же записи — не бессмысленное повторение, а другая
-  // модель. Без повторов цепочка из одной записи отбраковала бы ответ с
-  // вырезанными плейсхолдерами и сразу вернула пустое письмо.
-  const attempts = options.attemptsPerModel ?? 3;
-  const timeoutMs = options.timeoutMs ?? 90_000;
-
-  for (const model of options.models) {
-    for (let attempt = 0; attempt < attempts; attempt++) {
-    try {
-      // Таймаут обязателен. Бесплатные модели умеют вставать намертво: живой
-      // прогон 2026-08-30 провисел больше пяти минут без единого байта ответа.
-      // Без ограничения один такой запрос застопорил бы весь конвейер, а не
-      // только одно письмо, и человек не увидел бы очередь вообще.
-      const res = await fetchImpl(OPENROUTER_URL, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ model, messages: prompt.messages }),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      if (!res.ok) {
-        failure = `${model}: ${describeHttpFailure(res.status, await res.text().catch(() => ''))}`;
-        continue;
-      }
-
-      const text = extractText(await res.json());
-      if (text === undefined) {
-        failure = `${model}: ответ без текста письма`;
-        continue;
-      }
-      // Модель может вернуть внешне правдоподобное письмо, которое на деле
-      // бесполезно: в гибридном режиме слабые модели вырезают {{HOOK}} и
-      // {{FIT}} вместо того, чтобы их заполнить, и на выходе оказывается голый
-      // скелет без единого слова про эту вакансию. Ради этих двух вставок
-      // гибридный режим и существует, поэтому такой ответ считаем неудачей и
-      // пробуем следующую модель.
-      if (!isUsableLetter(text, input)) {
-        failure = `${model}: письмо не прошло проверку (вырезаны вставки, испорчен скелет или выдуман факт)`;
-        continue;
-      }
-      return { letter: text, mode: input.mode };
-    } catch (e) {
-      // Эта попытка не удалась — пробуем ещё раз, потом следующую запись.
-      const msg = e instanceof Error ? e.message : String(e);
-      failure = `${model}: ${msg.includes('timeout') || msg.includes('aborted')
-        ? `модель не ответила за ${timeoutMs / 1000} с`
-        : msg.slice(0, 160)}`;
-      continue;
-    }
-    }
-  }
-
-  return { ...EMPTY_RESULT, failure };
+  const r = await complete(buildPrompt(input).messages, options, (text) =>
+    // Внешне правдоподобное письмо бывает бесполезным: в гибридном режиме
+    // слабые модели вырезают {{HOOK}} и {{FIT}} вместо того, чтобы их
+    // заполнить, портят скелет или выдумывают факт. Такой ответ — неудача,
+    // пробуем следующую модель (см. isUsableLetter).
+    isUsableLetter(text, input)
+      ? null
+      : 'письмо не прошло проверку (вырезаны вставки, испорчен скелет или выдуман факт)');
+  return r.ok ? { letter: r.text, mode: input.mode } : { ...EMPTY_RESULT, failure: r.failure };
 }
