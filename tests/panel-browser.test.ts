@@ -6,6 +6,7 @@ import { chromium, type Browser, type Page } from 'playwright';
 import { startPanel, type PanelDeps } from '../src/ui/server.js';
 import { Queue } from '../src/core/queue.js';
 import { normalizeVacancy } from '../src/core/vacancy.js';
+import { seedSettings, validateSettings, type Settings } from '../src/core/settings.js';
 import { clearStop } from '../src/core/sender.js';
 import type { Adapter, ApplyResult } from '../src/adapters/types.js';
 import type { Config } from '../src/core/config.js';
@@ -311,4 +312,59 @@ describe('панель в браузере — уведомление про VPN
       expect(await page.isVisible('#proxyWarn')).toBe(false);
     });
   }, 40000);
+});
+
+describe('вкладка «Настройки» в настоящем браузере', () => {
+  let stored: Settings;
+  let sp: { port: number; close(): Promise<void> };
+
+  beforeEach(async () => {
+    stored = seedSettings(undefined, null);
+    sp = await startPanel(q, 0, {
+      settings: {
+        get: () => stored,
+        save: async (raw) => { const r = validateSettings(raw); if (r.ok) stored = r.settings; return r; },
+        suggest: async () => ({
+          ok: true,
+          suggestion: { titleWords: ['менеджер продукта'], skills: [{ name: 'Роадмап', synonyms: ['роадмап'], weight: 25, core: true }] },
+        }),
+      },
+    });
+  });
+  afterEach(async () => { await sp.close(); });
+
+  it('правка веса навыка сохраняется', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    const weight = page.locator('.spec').first().locator('.skill').first().locator('[data-k="weight"]');
+    await weight.fill('30');
+    await page.click('#settingsSave');
+    await expect.poll(() => stored.specialties[0]!.skills[0]!.weight).toBe(30);
+    await expect.poll(() => page.textContent('#settingsNote')).toMatch(/Сохранено/);
+  });
+
+  it('стоп-слово добавляется через поле списка', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    await page.fill('#stopWords', '1С\nБитрикс\nBitrix\nвахта');
+    await page.click('#settingsSave');
+    await expect.poll(() => stored.stopWords).toEqual(['1С', 'Битрикс', 'Bitrix', 'вахта']);
+  });
+
+  it('новая специальность: «Предложить» заполняет, сохранение с названием', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    await page.click('#addSpec');
+    const card = page.locator('.spec').last();
+    await card.locator('[data-f="name"]').fill('Менеджер продукта');
+    await card.locator('.suggest').click();
+    await expect.poll(() => card.locator('.skill [data-k="name"]').first().inputValue()).toBe('Роадмап');
+    await page.click('#settingsSave');
+    await expect.poll(() => stored.specialties.map((s) => s.name)).toContain('Менеджер продукта');
+    expect(stored.specialties.at(-1)!.legacyLetters).toBe(false);
+  });
+
+  it('ошибка проверки показывается человеку, а не глотается', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    await page.locator('.spec').first().locator('[data-f="name"]').fill('');
+    await page.click('#settingsSave');
+    await expect.poll(() => page.textContent('#settingsNote')).toMatch(/название/);
+  });
 });

@@ -51,6 +51,23 @@
     textarea { width: 100%; min-height: 260px; font: 13px/1.5 ui-monospace, monospace; }
     button { padding: 6px 14px; cursor: pointer; }
     .empty { padding: 40px 20px; color: #666; }
+
+    .spec { background: #fff; margin: 16px 20px; padding: 16px; border: 1px solid #ddd; border-radius: 8px; }
+    .spec .row { display: grid; grid-template-columns: 170px 1fr; gap: 8px; align-items: start; margin-bottom: 8px; }
+    .spec .row > label { font-size: 13px; color: #555; padding-top: 5px; }
+    .spec input[type=text], .spec input[type=number] {
+      font: inherit; font-size: 14px; padding: 4px 6px; border: 1px solid #ccc; border-radius: 4px;
+    }
+    .spec input[data-f="titleWords"], .spec input[data-f="resumePdf"] { width: 100%; box-sizing: border-box; }
+    .spec input[data-f="experienceYears"] { width: 72px; justify-self: start; }
+    .spec textarea { min-height: 60px; font: 13px/1.4 system-ui, sans-serif; }
+    .skills { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 6px; }
+    .skills th { text-align: left; font-weight: 500; color: #666; padding: 4px; }
+    .skills td { padding: 3px 4px; vertical-align: top; }
+    .skills input[data-k="synonyms"] { width: 100%; box-sizing: border-box; }
+    .skills input[data-k="weight"] { width: 64px; }
+    .settings-block { background: #fff; margin: 16px 20px; padding: 16px; border: 1px solid #ddd; border-radius: 8px; }
+    .settings-block textarea { min-height: 110px; margin-top: 6px; font: 13px/1.4 system-ui, sans-serif; }
     [hidden] { display: none !important; }
   </style>
 </head>
@@ -71,6 +88,7 @@
       <button class="tab" role="tab" id="tab-pending"  aria-selected="true"  aria-controls="pane-pending">В ожидании<span class="n" id="n-pending">0</span></button>
       <button class="tab" role="tab" id="tab-approved" aria-selected="false" aria-controls="pane-approved">Одобрено<span class="n" id="n-approved">0</span></button>
       <button class="tab" role="tab" id="tab-skipped"  aria-selected="false" aria-controls="pane-skipped">Отменённые<span class="n" id="n-skipped">0</span></button>
+      <button class="tab" role="tab" id="tab-settings" aria-selected="false" aria-controls="pane-settings">Настройки</button>
     </nav>
   </header>
 
@@ -100,8 +118,22 @@
     <div id="skippedList"></div>
   </section>
 
+  <section id="pane-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+    <div class="actions">
+      <button id="settingsSave">Сохранить</button>
+      <button id="addSpec">Добавить специальность</button>
+      <span class="hint" id="settingsNote">Правка действует со следующего поиска.</span>
+    </div>
+    <div id="specList"></div>
+    <div class="settings-block">
+      <label for="stopWords"><strong>Стоп-слова</strong>
+        <span class="hint">по одному в строке. Отсекают вакансию, если слово в заголовке или 2+ раза в описании.</span></label>
+      <textarea id="stopWords" rows="5"></textarea>
+    </div>
+  </section>
+
 <script>
-const TABS = ['pending', 'approved', 'skipped'];
+const TABS = ['pending', 'approved', 'skipped', 'settings'];
 
 function showTab(name) {
   for (const t of TABS) {
@@ -661,6 +693,142 @@ fetchJson('/api/send/status').then((st) => {
     sendHint.textContent = 'Панель запущена без адаптеров — отправляй через npm run send.';
   }
 });
+
+// ============================================================================
+// Настройки (спека 3.8). Форма — это просто отражение data/settings.json:
+// рисуется из GET /api/settings, собирается обратно целиком и уходит одним
+// POST. Проверку делает сервер; его причина показывается как есть.
+// ============================================================================
+
+let settingsLoaded = null;
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+function lines(text) {
+  return text.split('\n').map((s) => s.trim()).filter((s) => s !== '');
+}
+
+function skillRow(k) {
+  return `<tr class="skill" data-id="${esc(k.id ?? '')}">
+    <td><input type="text" data-k="name" value="${esc(k.name)}"></td>
+    <td><input type="text" data-k="synonyms" value="${esc(k.synonyms.join(', '))}"></td>
+    <td><input type="number" data-k="weight" min="0" max="100" step="1" value="${k.weight}"></td>
+    <td><input type="checkbox" data-k="core" ${k.core ? 'checked' : ''}></td>
+    <td><button class="del-skill" title="Удалить навык">×</button></td>
+  </tr>`;
+}
+
+function specCard(s) {
+  const el = document.createElement('div');
+  el.className = 'spec';
+  el.dataset.id = s.id ?? '';
+  el.dataset.legacy = String(s.legacyLetters === true);
+  el.innerHTML = `
+    <div class="row"><label>Название</label>
+      <div><input type="text" data-f="name" value="${esc(s.name)}" size="32">
+        <label><input type="checkbox" data-f="enabled" ${s.enabled ? 'checked' : ''}> искать</label>
+        <button class="del-spec">Удалить специальность</button></div></div>
+    <div class="row"><label>Фразы поиска<br><span class="hint">по одной в строке</span></label>
+      <textarea data-f="queries">${esc(s.queries.join('\n'))}</textarea></div>
+    <div class="row"><label>Слова заголовка<br><span class="hint">через запятую</span></label>
+      <input type="text" data-f="titleWords" value="${esc(s.titleWords.join(', '))}"></div>
+    <div class="row"><label>Мой опыт, лет</label>
+      <input type="number" data-f="experienceYears" min="0" max="50" step="1" value="${s.experienceYears}"></div>
+    <div class="row"><label>Резюме (PDF)<br><span class="hint">полный путь к файлу</span></label>
+      <input type="text" data-f="resumePdf" value="${esc(s.resumePdf ?? '')}"></div>
+    <div class="row"><label>Навыки<br><span class="hint">синонимы через запятую; вес 0–100; «ядро» — без него вакансия отсекается</span></label>
+      <div>
+        <table class="skills"><thead><tr><th>Навык</th><th>Синонимы</th><th>Вес</th><th>Ядро</th><th></th></tr></thead>
+          <tbody>${s.skills.map(skillRow).join('')}</tbody></table>
+        <button class="add-skill">Добавить навык</button>
+        <button class="suggest">Предложить</button>
+        <span class="hint suggest-note"></span>
+      </div></div>`;
+
+  el.querySelector('.add-skill').onclick = () => {
+    el.querySelector('tbody').insertAdjacentHTML('beforeend', skillRow({ name: '', synonyms: [], weight: 10, core: false }));
+  };
+  el.querySelector('.del-spec').onclick = () => {
+    if (confirm('Удалить специальность «' + el.querySelector('[data-f="name"]').value + '»? Сохранение — отдельной кнопкой.')) el.remove();
+  };
+  el.addEventListener('click', (e) => {
+    if (e.target.classList.contains('del-skill')) e.target.closest('tr').remove();
+  });
+  el.querySelector('.suggest').onclick = async () => {
+    const note = el.querySelector('.suggest-note');
+    note.textContent = 'Модель думает…';
+    const res = await post('/api/settings/suggest', {
+      name: el.querySelector('[data-f="name"]').value,
+      resumePdf: el.querySelector('[data-f="resumePdf"]').value,
+    });
+    const body = await res.json();
+    if (!res.ok) { note.textContent = 'Не вышло: ' + body.error; return; }
+    el.querySelector('[data-f="titleWords"]').value = body.suggestion.titleWords.join(', ');
+    el.querySelector('tbody').innerHTML = body.suggestion.skills.map(skillRow).join('');
+    note.textContent = 'Заполнено, но не сохранено — поправь и нажми «Сохранить».';
+  };
+  return el;
+}
+
+function renderSettings(s) {
+  settingsLoaded = s;
+  const list = document.getElementById('specList');
+  list.innerHTML = '';
+  for (const spec of s.specialties) list.appendChild(specCard(spec));
+  document.getElementById('stopWords').value = s.stopWords.join('\n');
+}
+
+function collectSettings() {
+  const specialties = [...document.querySelectorAll('#specList .spec')].map((el) => {
+    const f = (name) => el.querySelector(`[data-f="${name}"]`);
+    return {
+      id: el.dataset.id || undefined,
+      name: f('name').value,
+      enabled: f('enabled').checked,
+      queries: lines(f('queries').value),
+      titleWords: f('titleWords').value.split(',').map((x) => x.trim()).filter(Boolean),
+      experienceYears: Number(f('experienceYears').value),
+      resumePdf: f('resumePdf').value.trim() || null,
+      legacyLetters: el.dataset.legacy === 'true',
+      skills: [...el.querySelectorAll('.skill')].map((tr) => ({
+        id: tr.dataset.id || undefined,
+        name: tr.querySelector('[data-k="name"]').value,
+        synonyms: tr.querySelector('[data-k="synonyms"]').value.split(',').map((x) => x.trim()).filter(Boolean),
+        weight: Number(tr.querySelector('[data-k="weight"]').value),
+        core: tr.querySelector('[data-k="core"]').checked,
+      })),
+    };
+  });
+  return { version: 1, specialties, stopWords: lines(document.getElementById('stopWords').value) };
+}
+
+async function loadSettings() {
+  const note = document.getElementById('settingsNote');
+  const res = await fetch('/api/settings');
+  const body = await res.json();
+  if (!res.ok) { note.textContent = body.error; return; }
+  renderSettings(body);
+}
+
+document.getElementById('addSpec').onclick = () => {
+  document.getElementById('specList').appendChild(specCard({
+    name: '', enabled: true, queries: [], titleWords: [], skills: [], experienceYears: 1, resumePdf: null,
+  }));
+};
+
+document.getElementById('settingsSave').onclick = async () => {
+  const note = document.getElementById('settingsNote');
+  note.textContent = 'Сохраняю…';
+  const res = await post('/api/settings', collectSettings());
+  const body = await res.json();
+  if (!res.ok) { note.textContent = 'Не сохранено: ' + body.error; return; }
+  renderSettings(body.settings);
+  note.textContent = 'Сохранено. Действует со следующего поиска.';
+};
+
+loadSettings();
 </script>
 </body>
 </html>
