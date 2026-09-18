@@ -6,3 +6,4 @@ dist/
 browser-profile/
 .playwright-profile/
 data/
+.claude/worktrees/
