@@ -5,6 +5,8 @@ import type { Queue } from '../core/queue.js';
 import type { ProxyDiscovery } from '../core/proxy.js';
 import type { Config } from '../core/config.js';
 import type { Adapter } from '../adapters/types.js';
+import type { Settings } from '../core/settings.js';
+import type { SpecialtySuggestion } from '../core/suggest.js';
 import { Sender, clearStop, type SendReport } from '../core/sender.js';
 
 /** Сколько времени отменённая вакансия остаётся во вкладке «Отменённые». */
@@ -92,6 +94,18 @@ export interface PanelDeps {
    * её поднимают тесты) ручка отвечает «не знаю», и полосы нет.
    */
   proxyStatus?: () => Promise<ProxyDiscovery>;
+  /**
+   * Вкладка «Настройки» (спека 2026-09-18, 3.8): чтение, сохранение с
+   * проверкой и «Предложить». Собирается в cli.ts: там знают путь файла,
+   * резюме и модели — панели как http-слою это знать незачем. Без неё вкладка
+   * отвечает «недоступно».
+   */
+  settings?: {
+    get(): Settings;
+    save(raw: unknown): Promise<{ ok: true; settings: Settings } | { ok: false; error: string }>;
+    suggest(name: string, resumePdf: string | null)
+      : Promise<{ ok: true; suggestion: SpecialtySuggestion } | { ok: false; error: string }>;
+  };
 }
 
 export async function startPanel(
@@ -333,6 +347,31 @@ export async function startPanel(
         }
         return json(res, { ok: true });
       }
+      if (req.url === '/api/settings' || req.url === '/api/settings/suggest') {
+        if (!deps.settings) {
+          return json(res, { error: 'Панель запущена без настроек — открой её через npm run panel.' }, 409);
+        }
+        if (req.method === 'GET' && req.url === '/api/settings') {
+          return json(res, deps.settings.get());
+        }
+        if (req.method === 'POST' && req.url === '/api/settings') {
+          // Проверку делает save (core/settings.ts#validateSettings и PDF в
+          // cli.ts); её причина уходит в панель как есть — это текст для
+          // человека, а не код ошибки.
+          const r = await deps.settings.save(await readJson(req));
+          return r.ok ? json(res, { ok: true, settings: r.settings }) : json(res, { error: r.error }, 400);
+        }
+        if (req.method === 'POST' && req.url === '/api/settings/suggest') {
+          const b = await readJson(req);
+          const name = typeof b['name'] === 'string' ? b['name'].trim() : '';
+          if (name === '') return json(res, { error: 'Сначала впиши название специальности.' }, 400);
+          const pdf = typeof b['resumePdf'] === 'string' && b['resumePdf'].trim() !== '' ? b['resumePdf'].trim() : null;
+          const r = await deps.settings.suggest(name, pdf);
+          // 502: сама панель исправна, не ответила модель за ней.
+          return r.ok ? json(res, { suggestion: r.suggestion }) : json(res, { error: r.error }, 502);
+        }
+      }
+
       if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         return res.end(readFileSync(PANEL_HTML, 'utf8'));

@@ -5,6 +5,7 @@ import { tmpdir, networkInterfaces } from 'node:os';
 import { startPanel, type PanelDeps } from '../src/ui/server.js';
 import { Queue } from '../src/core/queue.js';
 import { normalizeVacancy } from '../src/core/vacancy.js';
+import { seedSettings, validateSettings, type Settings } from '../src/core/settings.js';
 
 // Порт 0 = система выдаёт свободный. Фиксированный порт создавал гонку между
 // перезапусками панели в beforeEach: следующий тест мог не достучаться до
@@ -497,5 +498,79 @@ describe('панель — состояние прокси', () => {
   it('панель поднята не из cli — не знает и не пугает зря', async () => {
     // Так её поднимают тесты: настоящий поиск прокси тут не нужен.
     expect(await status(PORT)).toEqual({ usable: null });
+  });
+});
+
+describe('панель — настройки', () => {
+  let stored: Settings;
+  let settingsPanel: { port: number; close(): Promise<void> };
+  const suggestCalls: string[] = [];
+
+  beforeEach(async () => {
+    stored = seedSettings(undefined, null);
+    settingsPanel = await startPanel(q, 0, {
+      settings: {
+        get: () => stored,
+        save: async (raw) => {
+          const r = validateSettings(raw);
+          if (r.ok) stored = r.settings;
+          return r;
+        },
+        suggest: async (name) => {
+          suggestCalls.push(name);
+          return name === 'сбой'
+            ? { ok: false, error: 'VPN выключен' }
+            : { ok: true, suggestion: { titleWords: ['x'], skills: [{ name: 'A', synonyms: ['a'], weight: 10, core: true }] } };
+        },
+      },
+    });
+  });
+  afterEach(async () => { await settingsPanel.close(); });
+
+  const url = (p: string) => `http://127.0.0.1:${settingsPanel.port}${p}`;
+
+  it('GET /api/settings отдаёт настройки', async () => {
+    const body = await (await fetch(url('/api/settings'))).json() as Settings;
+    expect(body.specialties[0]!.name).toBe('Бизнес-аналитик');
+  });
+
+  it('POST /api/settings сохраняет правку веса', async () => {
+    const next = structuredClone(stored);
+    next.specialties[0]!.skills[0]!.weight = 30;
+    const res = await post(url('/api/settings'), next);
+    expect(res.status).toBe(200);
+    expect(stored.specialties[0]!.skills[0]!.weight).toBe(30);
+  });
+
+  it('плохие настройки — 400 с причиной, сохранённое не меняется', async () => {
+    const bad = structuredClone(stored);
+    bad.specialties[0]!.name = '';
+    const res = await post(url('/api/settings'), bad);
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toMatch(/название/);
+    expect(stored.specialties[0]!.name).toBe('Бизнес-аналитик');
+  });
+
+  it('POST /api/settings/suggest — предложение или 502 с причиной', async () => {
+    const ok = await post(url('/api/settings/suggest'), { name: 'Менеджер продукта', resumePdf: null });
+    expect(ok.status).toBe(200);
+    expect((await ok.json() as { suggestion: { titleWords: string[] } }).suggestion.titleWords).toEqual(['x']);
+    const fail = await post(url('/api/settings/suggest'), { name: 'сбой', resumePdf: null });
+    expect(fail.status).toBe(502);
+    expect((await fail.json() as { error: string }).error).toBe('VPN выключен');
+  });
+
+  it('suggest без названия — 400, модель не зовётся', async () => {
+    const before = suggestCalls.length;
+    const res = await post(url('/api/settings/suggest'), { name: '  ' });
+    expect(res.status).toBe(400);
+    expect(suggestCalls.length).toBe(before);
+  });
+});
+
+describe('панель без настроек', () => {
+  it('GET /api/settings — 409, а не падение', async () => {
+    const res = await fetch(`http://127.0.0.1:${PORT}/api/settings`);
+    expect(res.status).toBe(409);
   });
 });

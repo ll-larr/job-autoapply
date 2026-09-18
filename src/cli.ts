@@ -21,7 +21,9 @@ import { fileURLToPath } from 'node:url';
 import { Queue, type Status } from './core/queue.js';
 import { loadConfig, type Config } from './core/config.js';
 import { runSearch, type SearchReport, type SearchQuery } from './pipeline.js';
-import { loadSettings, seedSettings, enabledSpecialties, SETTINGS_PATH, type Settings } from './core/settings.js';
+import {
+  loadSettings, seedSettings, saveSettings, validateSettings, enabledSpecialties, SETTINGS_PATH, type Settings,
+} from './core/settings.js';
 import type { Specialty } from './core/specialty.js';
 import { DEFAULT_SPECIALTY } from './core/specialty-defaults.js';
 import { Sender, requestStop, clearStop, isStopRequested } from './core/sender.js';
@@ -33,7 +35,8 @@ import { CareeristAdapter } from './adapters/careerist.js';
 import { generateLetter, pickTemplate, pickMode } from './core/letter.js';
 import { proxyResolver, type ProxyDiscovery, type ProxySource } from './core/proxy.js';
 import type { Adapter } from './adapters/types.js';
-import { refreshResumeCache, resumeTextFor } from './core/resume.js';
+import { extractPdfText, refreshResumeCache, resumeTextFor, LEGACY_RESUME_MD } from './core/resume.js';
+import { suggestSpecialty } from './core/suggest.js';
 
 // 500 — число, которое пользователь выбрал 2026-08-30 сам, разобрав первую
 // живую очередь. С 2026-08-30 оно означает ЦЕЛЬ, а не потолок просмотра:
@@ -600,6 +603,33 @@ async function main(): Promise<void> {
         // Панель показывает это полосой наверху: консоль, в которую она
         // пишет предупреждение, человек не смотрит.
         proxyStatus: () => proxyResolver.get(),
+        settings: {
+          get: () => currentSettings(config),
+          save: async (raw) => {
+            const checked = validateSettings(raw);
+            if (!checked.ok) return checked;
+            // PDF проверяется до записи: сохранённая специальность с битым
+            // резюме молча писала бы письма по резюме БА (спека 3.8).
+            for (const s of checked.settings.specialties) {
+              const r = await refreshResumeCache(s);
+              if (!r.ok) return { ok: false, error: `«${s.name}»: резюме не читается — ${r.error}` };
+            }
+            try {
+              return { ok: true, settings: saveSettings(SETTINGS_PATH, checked.settings) };
+            } catch (e) {
+              return { ok: false, error: e instanceof Error ? e.message : String(e) };
+            }
+          },
+          suggest: async (name, resumePdf) => {
+            let resume: string;
+            try {
+              resume = resumePdf === null ? readFileSync(LEGACY_RESUME_MD, 'utf8') : await extractPdfText(resumePdf);
+            } catch (e) {
+              return { ok: false, error: e instanceof Error ? e.message : String(e) };
+            }
+            return suggestSpecialty(name, resume, { models: config.letterModels });
+          },
+        },
         // Та же проводка, что у команды search: панель не собирает конвейер
         // заново, а зовёт ровно то, что вызывает npm run search.
         fillLetters: () => fillEmptyLetters({
