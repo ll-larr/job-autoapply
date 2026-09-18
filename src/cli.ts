@@ -539,7 +539,7 @@ async function main(): Promise<void> {
           queue,
           config,
           adapters,
-          queries: config.searchQueries,
+          queries: config.searchQueries ?? [],
           limit,
           resume: readFileSync(RESUME_PATH, 'utf8'),
           generateLetterFn: generateLetter,
@@ -608,7 +608,7 @@ async function main(): Promise<void> {
       const limit = resolveLimit(rest);
       const queries = resolveSearchQueries(
         rest.filter((a, i) => a !== '--limit' && rest[i - 1] !== '--limit'),
-        config.searchQueries,
+        config.searchQueries ?? [],
       );
       const resume = readFileSync(RESUME_PATH, 'utf8');
       const hasApiKey = Boolean(process.env['OPENROUTER_API_KEY']);

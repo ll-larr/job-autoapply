@@ -143,17 +143,19 @@ describe('loadConfig', () => {
   });
 
   describe('searchQueries', () => {
-    it('бросает, если searchQueries отсутствует или пуст — search без аргумента не с чем запускать', () => {
+    it('searchQueries необязателен: фразы живут в data/settings.json', () => {
       const withoutQueries = withConfig({
         minScore: 40, letterFullThreshold: 75, letterModels: LETTER_MODELS, throttle: {},
       });
-      expect(() => loadConfig(withoutQueries)).toThrow('searchQueries');
+      expect(loadConfig(withoutQueries).searchQueries).toBeUndefined();
+    });
 
-      const emptyQueries = withConfig({
+    it('бросает, если searchQueries задан не списком', () => {
+      const p = withConfig({
         minScore: 40, letterFullThreshold: 75, letterModels: LETTER_MODELS,
-        searchQueries: [], throttle: {},
+        searchQueries: 'бизнес', throttle: {},
       });
-      expect(() => loadConfig(emptyQueries)).toThrow('searchQueries');
+      expect(() => loadConfig(p)).toThrow('searchQueries');
     });
 
     it('бросает на записи без непустого query', () => {

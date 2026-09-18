@@ -30,7 +30,9 @@ export interface SearchQueryConfig {
   query: string;
   constraints?: {
     /**
-     * Реализовано через core/screening.ts#isJuniorExperience (переиспользует
+     * С 2026-09-18 — только для засева: такая фраза становится специальностью
+     * «Системный аналитик» с опытом 0 (core/settings.ts). Раньше реализовано через
+     * core/screening.ts#isJuniorExperience (переиспользует
      * существующий примитив опыта, а не отдельную заголовочную эвристику
      * "junior/middle/senior") — см. wiring в src/pipeline.ts.
      */
@@ -48,12 +50,12 @@ export interface Config {
    */
   letterModels: string[];
   /**
-   * Список запросов для `npm run search` без явного аргумента (см.
-   * src/cli.ts#resolveSearchQueries). Непустой список обязателен по тем же
-   * причинам, что и letterModels — без него дефолтный прогон search не с
-   * чем запускать.
+   * Фразы поиска до 2026-09-18. С тех пор фразы живут в специальностях
+   * data/settings.json, а это поле читается один раз — при засеве настроек
+   * (core/settings.ts#seedSettings): фразы с juniorOnly становятся
+   * «Системным аналитиком», остальные — «Бизнес-аналитиком». Необязательно.
    */
-  searchQueries: SearchQueryConfig[];
+  searchQueries?: SearchQueryConfig[];
   throttle: Record<string, ThrottleRule | undefined>;
   /**
    * Сколько отказов подряд по одной площадке считать поломкой и останавливать
@@ -82,10 +84,10 @@ export function loadConfig(path = 'config.json'): Config {
   ) {
     throw new Error('loadConfig: letterModels обязателен и должен быть непустым списком строк');
   }
-  if (!Array.isArray(parsed.searchQueries) || parsed.searchQueries.length === 0) {
-    throw new Error('loadConfig: searchQueries обязателен и должен быть непустым списком');
+  if (parsed.searchQueries !== undefined && !Array.isArray(parsed.searchQueries)) {
+    throw new Error('loadConfig: searchQueries, если задан, должен быть списком');
   }
-  for (const [i, qc] of parsed.searchQueries.entries()) {
+  for (const [i, qc] of (parsed.searchQueries ?? []).entries()) {
     if (qc === null || typeof qc !== 'object' || typeof qc.query !== 'string' || qc.query.trim() === '') {
       throw new Error(`loadConfig: searchQueries[${i}].query обязателен и должен быть непустой строкой`);
     }
