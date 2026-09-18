@@ -40,6 +40,14 @@ export interface SearchFilters {
    * the run would stall rather than break. Both current adapters honour it.
    */
   skip?: number;
+  /**
+   * «Мой опыт, лет» специальности, по которой идёт этот запрос (спека
+   * 2026-09-18, 3.4). Адаптер, который отсеивает по опыту до дочитки описания
+   * (hh.ru), обязан брать порог отсюда, а не из общего значения: иначе запрос
+   * системного аналитика (опыт 0) пропускал бы «1–3 года». undefined — порог по
+   * умолчанию, DEFAULT_EXPERIENCE_YEARS.
+   */
+  experienceYears?: number;
 }
 
 export type ApplyResult =

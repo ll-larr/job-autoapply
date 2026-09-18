@@ -2,7 +2,7 @@ import type { Queue, LetterMode } from './core/queue.js';
 import type { Config, SearchQueryConfig } from './core/config.js';
 import type { Adapter } from './adapters/types.js';
 import { scoreVacancy } from './core/scorer.js';
-import { screenVacancy, isJuniorExperience, isAboveJuniorTitle } from './core/screening.js';
+import { screenVacancy, isExperienceWithin, isAboveJuniorTitle } from './core/screening.js';
 import { pickMode } from './core/letter.js';
 import { vacancyKey, type Vacancy } from './core/vacancy.js';
 
@@ -322,7 +322,7 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
       // вообще, isJuniorExperience(null) пропустил, и вакансия дошла до
       // очереди. Владелец её отменил — системный аналитик он максимум младший.
       if (task.qc.constraints?.juniorOnly === true
-        && (!isJuniorExperience(v.experience) || isAboveJuniorTitle(v.title))) {
+        && (!isExperienceWithin(v.experience, 0) || isAboveJuniorTitle(v.title))) {
         report.rejectedJuniorOnly++;
         continue;
       }
@@ -336,7 +336,7 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
         // где 1С никто не упоминал.
         if (screen.reason === 'experience') report.rejectedExperience++;
         else if (screen.reason === 'grade') report.rejectedGrade++;
-        else if (screen.reason === 'not_analyst') report.rejectedNotAnalyst++;
+        else if (screen.reason === 'not_title') report.rejectedNotAnalyst++;
         else if (screen.reason === 'internship') report.rejectedInternship++;
         else report.rejectedPlatform++;
         continue;

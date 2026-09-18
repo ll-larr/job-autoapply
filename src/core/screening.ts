@@ -1,80 +1,81 @@
 import type { ExperienceLevel, Vacancy } from './vacancy.js';
+import { countInNormalized, hasInNormalized, normalizeForMatch } from './matching.js';
+import { BA_TITLE_WORDS, DEFAULT_EXPERIENCE_YEARS, DEFAULT_STOP_WORDS } from './specialty-defaults.js';
 
 /**
- * Три жёстких фильтра-исключения, добавленных 2026-08-30 по прямому разбору
- * пользователем первой живой очереди. В отличие от scorer.ts (который
- * ранжирует и мягко отсеивает по порогу) эти три причины — не про скор:
- * вакансия, споткнувшаяся об один из них, не должна доходить до генерации
- * письма вообще, потому что письмо стоит денег (вызов LLM), а чтение
- * письма — время пользователя. См. wiring в src/pipeline.ts — screenVacancy
- * вызывается до scoreVacancy и до generate().
+ * Жёсткие фильтры-исключения. В отличие от scorer.ts (который ранжирует и
+ * мягко отсеивает по порогу) они не про скор: вакансия, споткнувшаяся об один
+ * из них, не должна доходить до генерации письма вообще, потому что письмо
+ * стоит денег (вызов LLM), а чтение письма — время пользователя. См. wiring в
+ * src/pipeline.ts — screenVacancy вызывается до scoreVacancy и до generate().
+ *
+ * С 2026-09-18 параметры отсева — стаж, слова заголовка, стоп-слова — берутся
+ * из специальности и настроек (спека 2026-09-18, разделы 3.4–3.6). В коде
+ * остались только стажировки и грейд lead/head/ведущий.
  *
  * Регулярки на кириллице ниже сознательно НЕ используют \b и \w — оба в JS
- * определены через ASCII word-class и не видят кириллицу вовсе (уже ловили
- * этот баг в scorer.ts, см. комментарий там). Где нужна граница слова на
- * кириллице, она собирается явным классом [а-яё] или лукэраундом
- * (?<![а-яёА-ЯЁ]) / (?![а-яёА-ЯЁ]) — та же техника, что и в scorer.ts у
- * паттерна ТЗ.
+ * определены через ASCII word-class и не видят кириллицу вовсе. Совпадение
+ * слов из настроек — core/matching.ts.
  */
 
 export type ScreenReason =
   | 'experience'
   | 'grade'
-  /** Заголовок — не про аналитика вообще. */
-  | 'not_analyst'
-  /** Стажировка. */
+  /** Стоп-слово из настроек (спека 3.5). Раньше — 'platform' для 1С и Битрикса. */
+  | 'stopword'
   | 'internship'
-  /** Вакансия построена вокруг платформы, которой владелец не владеет (1С, Битрикс24). */
-  | 'platform';
+  /** В заголовке нет ни одного слова заголовка специальности. Раньше — 'not_analyst'. */
+  | 'not_title';
 
 export type ScreenResult =
   | { passed: true }
-  | { passed: false; reason: ScreenReason; detail: string };
+  | { passed: false; reason: ScreenReason; detail: string; stopWord?: string };
+
+/** Что отсев берёт из специальности и настроек. */
+export interface ScreeningProfile {
+  titleWords: readonly string[];
+  experienceYears: number;
+  stopWords: readonly string[];
+  /**
+   * Не проверять заголовок. Для постов Telegram: слова заголовка там ищутся по
+   * всему посту ещё до конвейера, а заголовок из запасного правила может их
+   * не содержать (спека 4.6).
+   */
+  skipTitleGate?: boolean;
+}
+
+export const DEFAULT_SCREENING: ScreeningProfile = {
+  titleWords: BA_TITLE_WORDS,
+  experienceYears: DEFAULT_EXPERIENCE_YEARS,
+  stopWords: DEFAULT_STOP_WORDS,
+};
 
 // ============================================================================
-// 1. Опыт — "1–3 года или меньше". Больше — не подходит.
+// 1. Опыт — минимум бакета против «мой опыт» специальности.
 // ============================================================================
 
-const ACCEPTABLE_EXPERIENCE: ReadonlySet<ExperienceLevel> = new Set([
-  'noExperience',
-  'between1And3',
-]);
+/**
+ * Минимум лет, который требует бакет. Вакансия проходит, если этот минимум не
+ * выше «мой опыт» специальности (спека 3.4). «1–3 года» требует минимум 1,
+ * поэтому при опыте 2 проходит, а «3–6 лет» — нет: ровно прежний
+ * ACCEPTABLE_EXPERIENCE. При опыте 0 проходит только «без опыта» — прежний
+ * juniorOnly.
+ */
+const MIN_YEARS: Readonly<Record<ExperienceLevel, number>> = {
+  noExperience: 0,
+  between1And3: 1,
+  between3And6: 3,
+  moreThan6: 6,
+};
 
 /**
  * null (сигнал отсутствует и структурно, и текстом) обязан пройти — иначе
- * гейт тихо вырезал бы любую вакансию, не заявившую требование к опыту
- * явно, а таких на реальном hh.ru большинство описаний без карточного
- * маркера. См. self-review в задании.
- *
- * Второй параметр — переопределяемый набор допустимых бакетов, по умолчанию
- * общий ACCEPTABLE_EXPERIENCE. Добавлен 2026-08-30 для per-query
- * ограничения "только junior" (см. JUNIOR_EXPERIENCE ниже и wiring в
- * src/pipeline.ts) — это тот самый переиспользуемый примитив, а не вторая,
- * расходящаяся с этой функцией трактовка грейда.
+ * гейт тихо вырезал бы любую вакансию, не заявившую требование к опыту явно,
+ * а таких на реальном hh.ru большинство описаний без карточного маркера.
  */
-export function isExperienceAcceptable(
-  level: ExperienceLevel | null,
-  acceptable: ReadonlySet<ExperienceLevel> = ACCEPTABLE_EXPERIENCE,
-): boolean {
+export function isExperienceWithin(level: ExperienceLevel | null, years: number): boolean {
   if (level === null) return true;
-  return acceptable.has(level);
-}
-
-/**
- * "Junior only" — используется как необязательное per-query ограничение
- * (config.json → searchQueries[].constraints.juniorOnly, добавлено
- * 2026-08-30 по прямому указанию пользователя для запроса "системный
- * аналитик"). Строже общего ACCEPTABLE_EXPERIENCE: between1And3 ("от 1 до
- * 3 лет") туда входит, а сюда — нет, это осознанно уже, не расширение
- * общего гейта. noExperience покрывает и стажировки: на hh.ru стажировка
- * структурно всегда размечена как noExperience, так что "Internships must
- * pass this constraint" выполняется автоматически, без отдельной проверки
- * на слово "стажёр".
- */
-export const JUNIOR_EXPERIENCE: ReadonlySet<ExperienceLevel> = new Set(['noExperience']);
-
-export function isJuniorExperience(level: ExperienceLevel | null): boolean {
-  return isExperienceAcceptable(level, JUNIOR_EXPERIENCE);
+  return MIN_YEARS[level] <= years;
 }
 
 const NO_EXPERIENCE_RE = /без\s+опыта|опыт[а-яё]*\s+не\s+требуется|не\s+требует[а-яё]*\s+опыт/i;
@@ -107,7 +108,7 @@ function yearsToLevel(years: number): ExperienceLevel {
  * Фолбэк на случай, когда структурного сигнала нет (hr.ge всегда, hh —
  * теоретически, если разметка карточки когда-нибудь изменится). Разбирает
  * русские формулировки требуемого стажа. Ничего не найдено → null
- * ("неизвестно"), а не жёсткий отказ — см. isExperienceAcceptable.
+ * ("неизвестно"), а не жёсткий отказ — см. isExperienceWithin.
  */
 export function parseExperienceFromText(text: string): ExperienceLevel | null {
   const years: number[] = [];
@@ -127,11 +128,6 @@ export function parseExperienceFromText(text: string): ExperienceLevel | null {
   if (years.length > 0) return yearsToLevel(Math.max(...years));
   if (NO_EXPERIENCE_RE.test(text)) return 'noExperience';
   return null;
-}
-
-function checkExperience(v: Vacancy): boolean {
-  const level = v.experience ?? parseExperienceFromText(v.description);
-  return isExperienceAcceptable(level);
 }
 
 // ============================================================================
@@ -164,101 +160,46 @@ export function isSeniorTitle(title: string): boolean {
 }
 
 // ============================================================================
-// 3. 1С — только когда это подлежащее, а не одна из систем в списке.
+// 3. Стоп-слова — платформы и прочее, что владельцу не подходит.
 // ============================================================================
 
 /**
- * "1С" в русских объявлениях почти всегда набрана кириллической "С"
- * (визуально неотличима от латинской C), но встречается и латиница —
- * матчим оба алфавита явно, без учёта регистра.
+ * Одно правило на все стоп-слова (спека 3.5, выбор владельца 2026-09-18):
+ * слово в заголовке — отсев сразу; в описании — если встретилось 2 раза и
+ * больше. Одно упоминание — это обычно пункт в списке систем («Jira, 1С,
+ * ELMA»), и резать за него значит терять нормальные вакансии.
  *
- * Лукэраунды вместо \b (кириллица не входит в \w, см. шапку файла):
- * (?<!\d) исключает случайное совпадение внутри числа вроде "21С";
- * (?![a-zа-яёA-ZА-ЯЁ0-9]) не даёт "1С" собраться как случайная подстрока
- * "1 сотрудник" ("1 " + первая буква "с" совпала бы без этой проверки —
- * дальше идёт "отрудник", буква, лукэраунд блокирует). После "1С" разрешены
- * небуквенные символы (":", "-") — "1С:Предприятие", "1С-Битрикс" всё ещё
- * считаются.
+ * Для 1С это строже прежнего порога 3 — осознанно.
  */
-const ONE_C_TOKEN_RE = /(?<!\d)1\s?[CcСс](?![a-zа-яёA-ZА-ЯЁ0-9])/g;
+export const STOPWORD_DESCRIPTION_THRESHOLD = 2;
 
-/**
- * Порог для описания подобран по реальным данным фикстуры
- * (tests/fixtures/hh-search.html): вакансия, где 1С — один пункт в списке
- * систем ("TOS.Solvo, 1С, ELMA..."), даёт 1 упоминание; вакансия "Аналитик
- * 1С", где 1С — предмет работы, даёт 4 упоминания даже в урезанном
- * сниппете карточки (в полном описании вакансии их обычно ещё больше —
- * конфигурации, продуктовая линейка, модули). 3 — граница, которая
- * пропускает единичное/двойное упоминание в списке стека и отсекает
- * вакансию, где 1С реально everywhere.
- */
-const ONE_C_DESCRIPTION_THRESHOLD = 3;
-
-/**
- * Битрикс24 — та же история, что и 1С: платформа, вокруг которой строится вся
- * вакансия, и которой владелец не владеет («аналитик битрикс — я его не
- * знаю», 2026-09-01). Отменены «Системный аналитик Bitrix24» и
- * «Интегратор/аналитик Битрикс24».
- *
- * Порог здесь ниже, чем у 1С, и по делу: «1С» мелькает в перечислениях систем
- * у половины корпоративных вакансий, а Битрикс в таких списках почти не
- * встречается — если он назван дважды, вакансия про него. Заголовок считается
- * отдельно и решает сразу: «аналитик Битрикс24» дальше можно не читать.
- */
-const BITRIX_TOKEN_RE = /битрикс|bitrix/gi;
-const BITRIX_DESCRIPTION_THRESHOLD = 2;
-
-function countBitrixMentions(text: string): number {
-  return [...text.matchAll(BITRIX_TOKEN_RE)].length;
-}
-
-export function isBitrixCentric(v: Vacancy): boolean {
-  if (BITRIX_TOKEN_RE.test(v.title)) {
-    BITRIX_TOKEN_RE.lastIndex = 0;
-    return true;
+/** Первое сработавшее стоп-слово в порядке списка, либо null. */
+export function findStopWord(
+  v: Pick<Vacancy, 'title' | 'description'>,
+  stopWords: readonly string[],
+): string | null {
+  const title = normalizeForMatch(v.title);
+  const description = normalizeForMatch(v.description);
+  for (const word of stopWords) {
+    if (hasInNormalized(title, word)) return word;
+    if (countInNormalized(description, word) >= STOPWORD_DESCRIPTION_THRESHOLD) return word;
   }
-  BITRIX_TOKEN_RE.lastIndex = 0;
-  return countBitrixMentions(v.description) >= BITRIX_DESCRIPTION_THRESHOLD;
+  return null;
 }
-
-function count1cMentions(text: string): number {
-  return [...text.matchAll(ONE_C_TOKEN_RE)].length;
-}
-
-/** main product, не любое упоминание — passing mention среди систем не считается. */
-export function is1cCentric(v: Pick<Vacancy, 'title' | 'description'>): boolean {
-  if (count1cMentions(v.title) > 0) return true;
-  return count1cMentions(v.description) >= ONE_C_DESCRIPTION_THRESHOLD;
-}
-
 
 // ============================================================================
-// 4. Заголовок обязан называть аналитика.
+// 4. Заголовок обязан называть специальность.
 // ============================================================================
 
 /**
- * Роль в заголовке. Разбор очереди 2026-09-01: в предложенное попали
- * «Менеджер по операционному консалтингу», «Менеджер по повышению
- * эффективности бизнеса», «Управляющий директор по развитию эффективности
- * сегментов». Все три набрали проходной скор — лексика процессов и требований
- * в описании у них честно есть, — и все три владелец отменил. Скор говорит,
- * ЧЕМ занимаются; кем при этом зовут — отдельный вопрос, и на него отвечает
- * заголовок.
- *
- * Гейт намеренно строгий: пропускает только то, что названо аналитиком. Он
- * отсеет и «Специалиста по бизнес-процессам», если такой попадётся, — это
- * известная плата, снимается добавлением слова сюда.
+ * Скор говорит, ЧЕМ занимаются; заголовок — кем зовут. 2026-09-01 владелец
+ * отменил «Менеджера по операционному консалтингу» и подобных: лексика
+ * процессов в описании у них честно была, а роль — не его. Слова берутся из
+ * специальности (у БА — «аналитик», «analyst», «BA», «SA»).
  */
-const ANALYST_TITLE_PATTERNS: readonly RegExp[] = [
-  /аналитик/i,
-  // Латиница: \b здесь работает, кириллицы в паттерне нет.
-  /\banalyst\b/i,
-  /\bba\b/i,
-  /\bsa\b/i,
-];
-
-export function isAnalystTitle(title: string): boolean {
-  return ANALYST_TITLE_PATTERNS.some((re) => re.test(title));
+export function hasTitleWord(title: string, titleWords: readonly string[]): boolean {
+  const normalized = normalizeForMatch(title);
+  return titleWords.some((w) => hasInNormalized(normalized, w));
 }
 
 // ============================================================================
@@ -284,7 +225,7 @@ export function isInternshipTitle(title: string): boolean {
 }
 
 // ============================================================================
-// 6. Грейд выше junior — для запросов с ограничением juniorOnly.
+// 6. Грейд выше junior — для специальностей с опытом 0.
 // ============================================================================
 
 /**
@@ -293,8 +234,8 @@ export function isInternshipTitle(title: string): boolean {
  * Отдельно от SENIOR_TITLE_PATTERNS и намеренно: «старший» там нет и быть не
  * должно. Владелец отправил отклик на «Старший ИТ аналитик» и в тот же день
  * отменил «Старший системный аналитик», объяснив: системный аналитик он
- * максимум младший. То есть «старший» отсекается не везде, а только там, где
- * запрос помечен juniorOnly — сейчас это «системный аналитик» в config.json.
+ * максимум младший. То есть «старший» отсекается не везде, а только у
+ * специальности с опытом 0 — сейчас это «Системный аналитик» (прежний juniorOnly).
  */
 const ABOVE_JUNIOR_TITLE_RE = /старш[а-яё]*|\bsenior\b|\bмиддл\b|\bmiddle\b/i;
 
@@ -308,16 +249,16 @@ export function isAboveJuniorTitle(title: string): boolean {
 
 /**
  * Чистая функция: без сети, БД, часов. Порядок проверок (опыт → грейд →
- * 1С) определяет, какая причина попадёт в отчёт, если вакансия нарушает
- * сразу несколько условий — на практике такое редко (см. task-screening-
- * report.md), порядок выбран произвольно, менять не нужно без причины.
+ * стоп-слова → стажировка → заголовок) определяет, какая причина попадёт в
+ * отчёт, если вакансия нарушает сразу несколько условий.
  */
-export function screenVacancy(v: Vacancy): ScreenResult {
-  if (!checkExperience(v)) {
+export function screenVacancy(v: Vacancy, profile: ScreeningProfile = DEFAULT_SCREENING): ScreenResult {
+  const level = v.experience ?? parseExperienceFromText(v.description);
+  if (!isExperienceWithin(level, profile.experienceYears)) {
     return {
       passed: false,
       reason: 'experience',
-      detail: `требуемый опыт вне диапазона 1–3 года (структурно: ${v.experience ?? 'нет'})`,
+      detail: `требуемый опыт выше заданных ${profile.experienceYears} лет (структурно: ${v.experience ?? 'нет'})`,
     };
   }
   if (isSeniorTitle(v.title)) {
@@ -327,28 +268,25 @@ export function screenVacancy(v: Vacancy): ScreenResult {
       detail: 'заголовок содержит маркер грейда выше начального/среднего уровня',
     };
   }
-  if (is1cCentric(v)) {
+  if (profile.experienceYears < 1 && isAboveJuniorTitle(v.title)) {
     return {
       passed: false,
-      reason: 'platform',
-      detail: '1С — основной продукт автоматизации в этой вакансии, не одна из систем в списке',
+      reason: 'grade',
+      detail: 'при опыте 0 отсекаются «старший», senior и middle в заголовке',
     };
   }
-  if (isBitrixCentric(v)) {
-    return {
-      passed: false,
-      reason: 'platform',
-      detail: 'вакансия построена вокруг Битрикс24 — платформы, которой владелец не владеет',
-    };
+  const stopWord = findStopWord(v, profile.stopWords);
+  if (stopWord !== null) {
+    return { passed: false, reason: 'stopword', detail: `стоп-слово: ${stopWord}`, stopWord };
   }
   if (isInternshipTitle(v.title)) {
     return { passed: false, reason: 'internship', detail: 'стажировка' };
   }
-  if (!isAnalystTitle(v.title)) {
+  if (profile.skipTitleGate !== true && !hasTitleWord(v.title, profile.titleWords)) {
     return {
       passed: false,
-      reason: 'not_analyst',
-      detail: 'заголовок не называет вакансию аналитической, каким бы ни был скор описания',
+      reason: 'not_title',
+      detail: 'заголовок не называет специальность, каким бы ни был скор описания',
     };
   }
   return { passed: true };
