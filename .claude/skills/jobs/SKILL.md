@@ -38,11 +38,11 @@ $env:OPENROUTER_API_KEY = [Environment]::GetEnvironmentVariable("OPENROUTER_API_
 
 Без ключа прогон не падает: вакансии попадут в очередь с пустыми письмами.
 
-**Прокси.** Node не ходит через `HTTP_PROXY` сам. Без этого запросы к OpenRouter и
-hr.ge возвращают `403 "Access denied by security policy"` — это блок-страница
-провайдера, **не ошибка API и не проблема ключа**. Отличить легко: `curl` к тому же
-адресу проходит, Node нет. В npm-скриптах уже стоит `tsx --use-env-proxy`; прокси
-(xray) должен слушать на `127.0.0.1:10801`.
+**Прокси.** Без него запросы к OpenRouter возвращают `403 "Access denied by security
+policy"` — это блок-страница провайдера, **не ошибка API и не проблема ключа**.
+Настраивать ничего не нужно: программа ищет прокси сама, в момент запроса
+(`src/core/proxy.ts`), и при старте печатает, что нашла. Если VPN выключен, в
+панели висит полоса «включи VPN»; перезапуск после включения не нужен.
 
 **Залипший браузер.** `launchPersistentContext` держит каталог профиля эксклюзивно.
 Прерванный прогон оставляет Chromium висеть, и следующий падает с «профиль занят»:
@@ -83,7 +83,7 @@ Get-Process chrome | Where-Object { $_.Path -like "*ms-playwright*" } | Stop-Pro
 Для быстрой сводки без панели:
 
 ```powershell
-node --use-env-proxy -e "const{DatabaseSync}=require('node:sqlite');const d=new DatabaseSync('data/queue.db');for(const r of d.prepare('select id,status,score,length(letter) ll,vacancy_json from applications order by score desc').all()){const v=JSON.parse(r.vacancy_json);console.log(`#${r.id} [${r.status}] скор=${r.score} письмо=${r.ll} :: ${v.title.slice(0,55)}`)}"
+node -e "const{DatabaseSync}=require('node:sqlite');const d=new DatabaseSync('data/queue.db');for(const r of d.prepare('select id,status,score,length(letter) ll,vacancy_json from applications order by score desc').all()){const v=JSON.parse(r.vacancy_json);console.log(`#${r.id} [${r.status}] скор=${r.score} письмо=${r.ll} :: ${v.title.slice(0,55)}`)}"
 ```
 
 ## Прокси: раздельная маршрутизация
@@ -100,14 +100,22 @@ node --use-env-proxy -e "const{DatabaseSync}=require('node:sqlite');const d=new 
 То есть **ни «всё через прокси», ни «всё напрямую» не работает.** Прокси нужен
 ровно одному адресату — OpenRouter; площадкам он ломает связь.
 
-Решение — `NO_PROXY` со списком площадок плюс `HTTP_PROXY`/`HTTPS_PROXY`. С этой
-парой все четыре отвечают 200 одновременно. Переменные задают лаунчеры
-(`scripts/panel.ps1`, `run.ps1`, `send.ps1`): в User- и Machine-области их нет,
-а двойной клик по `.cmd` не наследует окружение терминала.
+Поэтому через прокси идёт ровно один запрос — письмо (`generateLetter` по
+умолчанию берёт `createProxiedFetch`), а всё остальное напрямую. Переменные
+окружения, `NO_PROXY` и `--use-env-proxy` больше не используются: до
+2026-09-18 их задавали лаунчеры, один раз и с зашитым портом `10801`, и когда
+VPN-клиент переехал на `10809`, письма встали.
 
-Node не читает их без `--use-env-proxy` — флаг стоит в npm-скриптах. Выставить
-его или переменные из кода поздно: undici читает конфигурацию один раз при
-старте процесса.
+Где ищется прокси, по порядку (`discoverProxy`):
+1. `HTTPS_PROXY`/`HTTP_PROXY`, если заданы;
+2. `ProxyServer` из настроек Windows — туда порт пишет сам VPN-клиент;
+3. порты, которые слушают процессы xray/v2ray/sing-box/clash/mihomo
+   (`netstat` + `tasklist`) — на случай, если в реестре старый порт;
+4. запасной `10801`.
+
+Каждый кандидат проверяется `CONNECT openrouter.ai:443`: открытого порта мало,
+рядом с HTTP-портом у клиента обычно слушает SOCKS. Результат живёт 10 секунд;
+если прокси подвёл посреди работы, следующий запрос ищет заново.
 
 **Браузер — отдельная история.** Chromium берёт прокси из НАСТРОЕК WINDOWS, а
 не из переменных окружения, и у владельца там постоянно включён VPN-клиент
@@ -118,8 +126,8 @@ src/browser.ts): браузер ходит только на площадки, �
 никогда. `proxy: { server: 'direct://' }` для этого НЕ годится — Playwright
 его принимает, Chromium отвечает `ERR_PROXY_CONNECTION_FAILED`.
 
-Итого граница проходит по «браузер против fetch»: браузер всегда напрямую,
-fetch — через прокси, кроме площадок в `NO_PROXY`.
+Итого: браузер всегда напрямую, fetch тоже напрямую, кроме запроса письма —
+только он идёт через найденный прокси.
 
 **Короткий ответ на «работает ли без прокси»:** работает всё, кроме генерации
 писем. Поиск, скоринг, фильтры, панель и подача — не трогают OpenRouter.

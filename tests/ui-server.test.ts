@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir, networkInterfaces } from 'node:os';
-import { startPanel } from '../src/ui/server.js';
+import { startPanel, type PanelDeps } from '../src/ui/server.js';
 import { Queue } from '../src/core/queue.js';
 import { normalizeVacancy } from '../src/core/vacancy.js';
 
@@ -445,32 +445,57 @@ describe('панель — close() освобождает адаптеры (find
 
 
 describe('панель — состояние прокси', () => {
-  it('сообщает, что прокси выключен, чтобы страница могла предупредить', async () => {
-    // Без прокси панель ищет и «пишет» письма как обычно, только все они
-    // выходят пустыми. Консоль, куда cli печатает предупреждение, человек не
-    // смотрит — значит сказать обязана сама страница.
+  /**
+   * Без прокси панель ищет и «пишет» письма как обычно, только все они
+   * выходят пустыми. Консоль человек не смотрит — сказать обязана страница.
+   * Состояние живое: прокси ищется на каждый запрос, VPN включают и
+   * выключают, не перезапуская панель.
+   */
+  async function withStatus(
+    proxyStatus: NonNullable<PanelDeps['proxyStatus']>,
+    fn: (port: number) => Promise<void>,
+  ): Promise<void> {
     const q2 = new Queue(join(mkdtempSync(join(tmpdir(), 'jaa-px-')), 'test.db'));
-    const p2 = await startPanel(q2, 0, { proxyEnabled: false });
-    try {
-      const st = await (await fetch(`http://127.0.0.1:${p2.port}/api/letters/status`)).json() as
-        { proxyEnabled?: boolean };
-      expect(st.proxyEnabled).toBe(false);
-    } finally {
-      await p2.close();
-      q2.close();
-    }
+    const p2 = await startPanel(q2, 0, { proxyStatus });
+    try { await fn(p2.port); } finally { await p2.close(); q2.close(); }
+  }
+
+  async function status(port: number): Promise<{ usable: boolean | null; address?: string | null; checked?: string[] }> {
+    return await (await fetch(`http://127.0.0.1:${port}/api/proxy/status`)).json() as
+      { usable: boolean | null; address?: string | null; checked?: string[] };
+  }
+
+  it('прокси найден — годен, и называет адрес', async () => {
+    await withStatus(async () => ({
+      found: { host: '127.0.0.1', port: 10809, source: 'windows' }, checked: ['127.0.0.1:10809'],
+    }), async (port) => {
+      expect(await status(port)).toMatchObject({ usable: true, address: '127.0.0.1:10809' });
+    });
   });
 
-  it('когда прокси включён — панель не пугает зря', async () => {
-    const q2 = new Queue(join(mkdtempSync(join(tmpdir(), 'jaa-px2-')), 'test.db'));
-    const p2 = await startPanel(q2, 0, { proxyEnabled: true });
-    try {
-      const st = await (await fetch(`http://127.0.0.1:${p2.port}/api/letters/status`)).json() as
-        { proxyEnabled?: boolean };
-      expect(st.proxyEnabled).toBe(true);
-    } finally {
-      await p2.close();
-      q2.close();
-    }
+  it('прокси не найден — не годен, и говорит, где искал', async () => {
+    await withStatus(async () => ({ found: null, checked: ['127.0.0.1:10809', '127.0.0.1:10801'] }),
+      async (port) => {
+        expect(await status(port)).toEqual({
+          usable: false, address: null, checked: ['127.0.0.1:10809', '127.0.0.1:10801'],
+        });
+      });
+  });
+
+  it('VPN включили при открытой панели — ручка это видит без перезапуска', async () => {
+    let on = false;
+    await withStatus(async () => (on
+      ? { found: { host: '127.0.0.1', port: 10809, source: 'vpn-process' }, checked: ['127.0.0.1:10809'] }
+      : { found: null, checked: ['127.0.0.1:10809'] }),
+    async (port) => {
+      expect((await status(port)).usable).toBe(false);
+      on = true;
+      expect((await status(port)).usable).toBe(true);
+    });
+  });
+
+  it('панель поднята не из cli — не знает и не пугает зря', async () => {
+    // Так её поднимают тесты: настоящий поиск прокси тут не нужен.
+    expect(await status(PORT)).toEqual({ usable: null });
   });
 });

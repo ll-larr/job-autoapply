@@ -1,29 +1,17 @@
 /**
  * Точка входа. Пять команд: search, panel, send, stop, status — см. main().
  *
- * === Прокси и Node fetch ===
+ * === Прокси ===
  *
- * Эта программа делает исходящие запросы из-под провайдерского прокси, который
- * без явного включения блокирует прямые обращения к OpenRouter и hr.ge —
- * ответ выглядит как `403 "Access denied by security policy"`, это страница
- * блокировки самого прокси, а не ошибка API, и её легко принять за то, что
- * сломался OpenRouter или hr.ge.
+ * Провайдер блокирует прямые запросы к OpenRouter: ответ выглядит как
+ * `403 "Access denied by security policy"`, это страница блокировки, а не
+ * ошибка API. Поэтому письма идут через VPN-прокси, а всё остальное напрямую:
+ * площадкам прокси, наоборот, ломает связь.
  *
- * Включить это изнутри уже запущенного процесса нельзя: и флаг
- * `--use-env-proxy`, и переменная `NODE_USE_ENV_PROXY` читаются нативным
- * бутстрапом Node до того, как выполнится первая строка пользовательского JS.
- * Поэтому `process.env.NODE_USE_ENV_PROXY = '1'` первой строкой этого файла
- * не даёт ничего.
- *
- * Работают оба способа, если задать их СНАРУЖИ процесса (измерено на
- * Node v24.14.0, запрос к openrouter.ai):
- *   без ничего                          -> HTTP 403 (блок-страница)
- *   NODE_USE_ENV_PROXY=1 в окружении    -> HTTP 200
- *   node --use-env-proxy                -> HTTP 200
- *
- * В npm-скриптах выбран флаг (`tsx --use-env-proxy src/cli.ts ...`): он не
- * зависит от того, экспортирована ли переменная в конкретной оболочке.
- * Ниже — диагностика на случай прямого запуска в обход npm-скриптов.
+ * Прокси не задаётся снаружи, а ищется в момент запроса (src/core/proxy.ts).
+ * Раньше его задавал лаунчер через HTTP_PROXY и `--use-env-proxy`, один раз и
+ * с зашитым портом. 2026-09-18 VPN-клиент сменил порт, и письма встали.
+ * Здесь, при старте команды, только печатается, что нашлось.
  */
 
 import { readFileSync } from 'node:fs';
@@ -39,6 +27,7 @@ import { HhAdapter } from './adapters/hh.js';
 import { HrGeAdapter } from './adapters/hrge.js';
 import { CareeristAdapter } from './adapters/careerist.js';
 import { generateLetter, pickTemplate, pickMode } from './core/letter.js';
+import { proxyResolver, type ProxyDiscovery, type ProxySource } from './core/proxy.js';
 import type { Adapter } from './adapters/types.js';
 
 // 500 — число, которое пользователь выбрал 2026-08-30 сам, разобрав первую
@@ -417,55 +406,37 @@ export async function runSearchCommand(
   return { report, emptyLetters, letterFailure };
 }
 
+const PROXY_SOURCE_LABEL: Record<ProxySource, string> = {
+  env: 'из HTTPS_PROXY/HTTP_PROXY',
+  windows: 'из настроек Windows',
+  'vpn-process': 'по порту процесса VPN-клиента',
+  fallback: 'запасной порт',
+};
+
 /**
- * Диагностика на случай прямого запуска в обход npm-скриптов (см. блок
- * комментариев в начале файла) — сама ничего не включает, только объясняет
- * заранее, почему сетевые запросы этой команды могут упасть с чужой
- * блокировкой прокси, а не с настоящей ошибкой API.
+ * Что сказать в консоли про прокси для писем.
+ *
+ * Прокси ищется на каждое письмо заново (src/core/proxy.ts), поэтому здесь
+ * только отчёт о том, что нашлось при старте, а не условие работы. Совет
+ * перезапустить сюда не пишется нарочно: включил VPN — следующее письмо само
+ * пойдёт через него.
  */
-/**
- * Реально ли fetch этого процесса пойдёт через прокси.
- *
- * Условий ДВА, и второе стоило отдельного разбирательства 2026-09-01. Флаг
- * `--use-env-proxy` (или `NODE_USE_ENV_PROXY=1`) лишь разрешает Node читать
- * переменные окружения; сами переменные при этом могут быть не заданы. У
- * пользователя так и оказалось: панель запускалась с флагом, `proxyEnabled`
- * честно отвечал `true`, а `HTTP_PROXY` не был задан ни в User-, ни в
- * Machine-области — читать было нечего, запросы уходили напрямую и упирались
- * в блок-страницу провайдера.
- *
- * Поэтому проверяется и разрешение, и наличие адреса. Флаг сам по себе не
- * доказывает ничего.
- *
- * Выставить переменные из кода уже поздно: undici читает их один раз при
- * старте процесса (проверено — `process.env[...] = ...` в main() не меняет
- * ничего). Их задают лаунчеры в scripts/*.ps1.
- */
-export function isEnvProxyEnabled(): boolean {
-  const allowed = process.execArgv.includes('--use-env-proxy')
-    || process.env['NODE_USE_ENV_PROXY'] === '1';
-  const configured = (process.env['HTTPS_PROXY'] ?? process.env['https_proxy']
-    ?? process.env['HTTP_PROXY'] ?? process.env['http_proxy'] ?? '').trim() !== '';
-  return allowed && configured;
+export function formatProxyReport(d: ProxyDiscovery): string[] {
+  if (d.found !== null) {
+    return [`Прокси для писем: ${d.found.host}:${d.found.port} (${PROXY_SOURCE_LABEL[d.found.source]}).`];
+  }
+  return [
+    'ВНИМАНИЕ: прокси для писем не найден — похоже, VPN выключен. Пока его нет, письма писаться '
+      + 'не будут: запросы к OpenRouter упрутся в блокировку провайдера ("403 Access denied by '
+      + 'security policy"). Поиск, одобрение и отправка работают.',
+    `Проверены: ${d.checked.join(', ')}. Включи VPN — прокси найдётся сам.`,
+  ];
 }
 
-function warnIfProxyFlagMissing(): void {
-  if (isEnvProxyEnabled()) return;
-
-  const allowed = process.execArgv.includes('--use-env-proxy')
-    || process.env['NODE_USE_ENV_PROXY'] === '1';
-  console.error(
-    allowed
-      // Разрешение есть, адреса нет — ровно тот случай, который выглядел как
-      // «всё настроено», пока не полез в переменные окружения.
-      ? 'ВНИМАНИЕ: --use-env-proxy стоит, но HTTP_PROXY/HTTPS_PROXY не заданы — читать нечего, '
-        + 'запросы уйдут напрямую и упрутся в блок-страницу провайдера ("403 Access denied by '
-        + 'security policy"). Запускай через Панель.cmd / npm run panel: лаунчер задаёт их сам.'
-      : 'ВНИМАНИЕ: процесс запущен без --use-env-proxy и без NODE_USE_ENV_PROXY=1. Если провайдер '
-        + 'блокирует прямые запросы к OpenRouter/hr.ge, они упадут с "403 Access denied by '
-        + 'security policy" — это блок-страница провайдера, а не ответ API. '
-        + 'Используй npm run panel / npm run search вместо прямого tsx src/cli.ts.',
-  );
+async function reportProxy(): Promise<void> {
+  const d = await proxyResolver.get();
+  const lines = formatProxyReport(d);
+  for (const line of lines) (d.found === null ? console.error : console.log)(line);
 }
 
 // ============================================================================
@@ -532,7 +503,7 @@ async function main(): Promise<void> {
     // Панель — основной вход, и молчать здесь дороже всего: без прокси она
     // ищет и пишет письма ровно так же, только все письма выходят пустыми, а
     // причина не названа нигде.
-    warnIfProxyFlagMissing();
+    await reportProxy();
     // Конфиг нужен панели ради кнопки «Отправить всё»: отправка идёт через тот
     // же Sender, что и npm run send, с теми же лимитами и предохранителями.
     const config = loadConfig();
@@ -553,7 +524,7 @@ async function main(): Promise<void> {
         config,
         // Панель показывает это полосой наверху: консоль, в которую она
         // пишет предупреждение, человек не смотрит.
-        proxyEnabled: isEnvProxyEnabled(),
+        proxyStatus: () => proxyResolver.get(),
         // Та же проводка, что у команды search: панель не собирает конвейер
         // заново, а зовёт ровно то, что вызывает npm run search.
         fillLetters: () => fillEmptyLetters({
@@ -592,7 +563,7 @@ async function main(): Promise<void> {
   }
 
   if (cmd === 'letters') {
-    warnIfProxyFlagMissing();
+    await reportProxy();
     const config = loadConfig();
     const queue = new Queue(DB_PATH);
     try {
@@ -630,7 +601,7 @@ async function main(): Promise<void> {
   }
 
   if (cmd === 'search') {
-    warnIfProxyFlagMissing();
+    await reportProxy();
     const config = loadConfig();
     const queue = new Queue(DB_PATH);
     try {

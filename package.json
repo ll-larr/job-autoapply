@@ -10,16 +10,16 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "cli": "tsx --use-env-proxy src/cli.ts",
-    "search": "tsx --use-env-proxy src/cli.ts search",
-    "panel": "tsx --use-env-proxy src/cli.ts panel",
-    "send": "tsx --use-env-proxy src/cli.ts send",
-    "stop": "tsx --use-env-proxy src/cli.ts stop",
-    "status": "tsx --use-env-proxy src/cli.ts status",
+    "cli": "tsx src/cli.ts",
+    "search": "tsx src/cli.ts search",
+    "panel": "tsx src/cli.ts panel",
+    "send": "tsx src/cli.ts send",
+    "stop": "tsx src/cli.ts stop",
+    "status": "tsx src/cli.ts status",
     "go": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1",
     "panel:go": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/panel.ps1",
     "login": "tsx scripts/login.ts",
-    "letters": "tsx --use-env-proxy src/cli.ts letters"
+    "letters": "tsx src/cli.ts letters"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
@@ -28,6 +28,7 @@
     "vitest": "^3.2.7"
   },
   "dependencies": {
-    "playwright": "^1.56.0"
+    "playwright": "^1.56.0",
+    "undici": "^8.10.2"
   }
 }

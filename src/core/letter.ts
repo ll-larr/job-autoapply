@@ -1,5 +1,6 @@
 import type { Vacancy } from './vacancy.js';
 import type { LetterMode } from './queue.js';
+import { createProxiedFetch } from './proxy.js';
 
 export type TemplateName =
   | 'fullstack-analyst' | 'ai-llm-ba' | 'product-ba' | 'english-generic';
@@ -28,7 +29,10 @@ export interface GenerateLetterOptions {
    * через 371 секунду. Без потолка один такой запрос стопорит весь конвейер.
    */
   timeoutMs?: number;
-  /** Для тестов — подмена сетевого fetch, как в src/adapters/hrge.ts. */
+  /**
+   * Для тестов — подмена сетевого fetch, как в src/adapters/hrge.ts. По
+   * умолчанию запрос идёт через прокси, найденный в момент запроса.
+   */
   fetchImpl?: typeof fetch;
 }
 
@@ -286,20 +290,17 @@ export function isProxyBlockPage(body: string): boolean {
  * здесь раньше просто отбрасывался вместе со статусом и телом ответа.
  */
 export function describeHttpFailure(status: number, body: string): string {
-  // Блок-страница провайдера, а НЕ ответ OpenRouter. Node не ходит через
-  // HTTP_PROXY сам: без `--use-env-proxy` (или NODE_USE_ENV_PROXY=1, заданной
-  // ДО старта процесса — из кода её выставить поздно, undici читает её один
-  // раз) запрос идёт напрямую и упирается в блокировку, которая отвечает
-  // 403 с этим телом.
+  // Блок-страница провайдера, а НЕ ответ OpenRouter. Так бывает, когда прокси
+  // не нашёлся (см. src/core/proxy.ts): запрос идёт напрямую и упирается в
+  // блокировку, которая отвечает 403 с этим телом.
   //
   // Отличать обязательно. Первая версия этой функции звала такой ответ
   // «ключ отвергнут», и живой прогон 2026-09-01 отправил владельца проверять
-  // совершенно исправный ключ вместо того, чтобы перезапустить панель с
-  // флагом. Различитель — тело, а не статус.
+  // совершенно исправный ключ. Различитель — тело, а не статус.
   if (isProxyBlockPage(body)) {
     return 'запрос ушёл МИМО прокси и упёрся в блокировку провайдера (403 «Access denied by security policy»). '
-      + 'Это не ответ OpenRouter и не проблема ключа. Перезапусти через npm run panel '
-      + '(там стоит --use-env-proxy) или задай NODE_USE_ENV_PROXY=1 до запуска';
+      + 'Это не ответ OpenRouter и не проблема ключа. Включи VPN: прокси ищется на каждое письмо '
+      + 'заново, следующее уже пойдёт через него';
   }
   if (status === 401 || status === 403) {
     return `ключ OpenRouter отвергнут (HTTP ${status}) — проверь OPENROUTER_API_KEY в .env`;
@@ -314,6 +315,9 @@ export function describeHttpFailure(status: number, body: string): string {
   const hint = body.trim().slice(0, 160);
   return `HTTP ${status}${hint === '' ? '' : ` — ${hint}`}`;
 }
+
+// Прокси нужен только письмам: OpenRouter — единственный адресат за блокировкой.
+const proxiedFetch = createProxiedFetch();
 
 export async function generateLetter(
   input: LetterInput,
@@ -330,7 +334,7 @@ export async function generateLetter(
   // отдала 429.
   let failure = 'ни одна модель из letterModels не ответила пригодным письмом';
 
-  const fetchImpl = options.fetchImpl ?? fetch;
+  const fetchImpl = options.fetchImpl ?? proxiedFetch;
   const prompt = buildPrompt(input);
 
   // Одну и ту же запись пробуем несколько раз, а не единожды. Это нужно из-за

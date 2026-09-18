@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Queue } from '../core/queue.js';
-import { checkProxyHealth, isProxyUsable } from '../core/proxy-health.js';
+import type { ProxyDiscovery } from '../core/proxy.js';
 import type { Config } from '../core/config.js';
 import type { Adapter } from '../adapters/types.js';
 import { Sender, clearStop, type SendReport } from '../core/sender.js';
@@ -82,16 +82,16 @@ export interface PanelDeps {
    */
   fillLetters?: () => Promise<{ found: number; filled: number; failure?: string }>;
   /**
-   * Ходит ли fetch этого процесса через прокси. Если нет и провайдер
-   * блокирует прямые запросы, поиск и генерация писем внешне работают, но все
-   * письма выходят пустыми — 2026-09-01 это стоило прогона на 22 вакансии.
-   * Панель обязана сказать об этом сама, а не надеяться на консоль.
+   * Где сейчас прокси для писем. Если его нет, поиск и генерация писем внешне
+   * работают, но все письма выходят пустыми — 2026-09-01 это стоило прогона
+   * на 22 вакансии. Панель обязана сказать об этом сама, а не надеяться на
+   * консоль.
    *
-   * Это состояние ЗАПУСКА и оно неизменно. Живое состояние — включён ли VPN
-   * прямо сейчас — отдаёт /api/proxy/status: клиент выключают и включают, не
-   * перезапуская панель.
+   * Зовётся на каждый опрос /api/proxy/status: VPN включают и выключают, не
+   * перезапуская панель. Без этой зависимости (панель поднята не из cli, так
+   * её поднимают тесты) ручка отвечает «не знаю», и полосы нет.
    */
-  proxyEnabled?: boolean;
+  proxyStatus?: () => Promise<ProxyDiscovery>;
 }
 
 export async function startPanel(
@@ -185,17 +185,19 @@ export async function startPanel(
       // отправки: VPN включают и выключают по ходу работы, и панель должна
       // замечать это без перезапуска.
       if (req.method === 'GET' && req.url === '/api/proxy/status') {
-        const health = await checkProxyHealth();
-        return json(res, { ...health, usable: isProxyUsable(health) });
+        if (!deps.proxyStatus) return json(res, { usable: null });
+        const { found, checked } = await deps.proxyStatus();
+        return json(res, {
+          usable: found !== null,
+          address: found === null ? null : `${found.host}:${found.port}`,
+          checked,
+        });
       }
 
       if (req.method === 'GET' && req.url === '/api/letters/status') {
         return json(res, {
           running: letters.running,
           canFillLetters,
-          // undefined означает «панель поднята не из cli и не знает» — тогда
-          // полосу не показываем, чтобы не пугать зря (так её поднимают тесты).
-          proxyEnabled: deps.proxyEnabled,
           result: letters.result,
           error: letters.error,
           startedAt: letters.startedAt,

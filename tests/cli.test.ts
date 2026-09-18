@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { isEnvProxyEnabled,
+import { formatProxyReport,
   resolveLimit,
   resolveSearchQueries,
   formatQueryLabel,
@@ -362,54 +362,29 @@ describe('resolveLimit', () => {
 });
 
 
-describe('isEnvProxyEnabled — флаг без адреса прокси не считается', () => {
-  const saved = { ...process.env };
-  afterEach(() => {
-    for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'NODE_USE_ENV_PROXY']) {
-      if (saved[k] === undefined) delete process.env[k];
-      else process.env[k] = saved[k];
-    }
+describe('formatProxyReport — что сказать в консоли про прокси', () => {
+  it('нашёлся — называет адрес и откуда он взялся', () => {
+    const text = formatProxyReport({
+      found: { host: '127.0.0.1', port: 10809, source: 'windows' }, checked: ['127.0.0.1:10809'],
+    }).join(' ');
+    expect(text).toMatch(/127\.0\.0\.1:10809/);
+    expect(text).toMatch(/настроек Windows/);
   });
 
-  function clearProxy(): void {
-    for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']) delete process.env[k];
-  }
-
-  it('разрешение есть, адреса нет — НЕ проксировано', () => {
-    // Ровно то, что случилось 2026-09-01: панель шла с --use-env-proxy,
-    // отвечала proxyEnabled:true, а HTTP_PROXY не был задан ни в User-, ни в
-    // Machine-области. Читать было нечего, 22 письма ушли в блок-страницу.
-    process.env['NODE_USE_ENV_PROXY'] = '1';
-    clearProxy();
-    expect(isEnvProxyEnabled()).toBe(false);
+  it('нашёлся по процессу VPN-клиента — так и говорит', () => {
+    const text = formatProxyReport({
+      found: { host: '127.0.0.1', port: 10808, source: 'vpn-process' }, checked: ['127.0.0.1:10808'],
+    }).join(' ');
+    expect(text).toMatch(/VPN-клиент/);
   });
 
-  it('адрес есть, разрешения нет — тоже НЕ проксировано', () => {
-    delete process.env['NODE_USE_ENV_PROXY'];
-    clearProxy();
-    process.env['HTTP_PROXY'] = 'http://127.0.0.1:10801';
-    // execArgv в тестовом процессе флага не несёт, так что это чистый случай.
-    expect(isEnvProxyEnabled()).toBe(false);
-  });
-
-  it('есть и то, и другое — проксировано', () => {
-    process.env['NODE_USE_ENV_PROXY'] = '1';
-    clearProxy();
-    process.env['HTTPS_PROXY'] = 'http://127.0.0.1:10801';
-    expect(isEnvProxyEnabled()).toBe(true);
-  });
-
-  it('пустая строка адресом не считается', () => {
-    process.env['NODE_USE_ENV_PROXY'] = '1';
-    clearProxy();
-    process.env['HTTP_PROXY'] = '   ';
-    expect(isEnvProxyEnabled()).toBe(false);
-  });
-
-  it('строчные имена переменных тоже читаются', () => {
-    process.env['NODE_USE_ENV_PROXY'] = '1';
-    clearProxy();
-    process.env['https_proxy'] = 'http://127.0.0.1:10801';
-    expect(isEnvProxyEnabled()).toBe(true);
+  it('не нашёлся — предупреждает, называет проверенное и НЕ гонит перезапускать', () => {
+    // Прокси ищется на каждое письмо заново: включил VPN — следующее письмо
+    // пойдёт через него. Совет перезапустить был бы лишним шагом.
+    const text = formatProxyReport({ found: null, checked: ['127.0.0.1:10809', '127.0.0.1:10801'] }).join(' ');
+    expect(text).toMatch(/ВНИМАНИЕ/);
+    expect(text).toMatch(/включи VPN/i);
+    expect(text).toMatch(/127\.0\.0\.1:10809, 127\.0\.0\.1:10801/);
+    expect(text).not.toMatch(/перезапус|Ctrl\+C|use-env-proxy/i);
   });
 });
