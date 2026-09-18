@@ -33,6 +33,7 @@ import { CareeristAdapter } from './adapters/careerist.js';
 import { generateLetter, pickTemplate, pickMode } from './core/letter.js';
 import { proxyResolver, type ProxyDiscovery, type ProxySource } from './core/proxy.js';
 import type { Adapter } from './adapters/types.js';
+import { refreshResumeCache, resumeTextFor } from './core/resume.js';
 
 // 500 — число, которое пользователь выбрал 2026-08-30 сам, разобрав первую
 // живую очередь. С 2026-08-30 оно означает ЦЕЛЬ, а не потолок просмотра:
@@ -73,12 +74,19 @@ function loadDotEnv(): void {
 
 const DEFAULT_LIMIT = 500;
 const DB_PATH = 'data/queue.db';
-// Единственный постоянный источник резюме — файл в корне репозитория,
-// который пользователь положил и поддерживает сам (см. задание к этой
-// задаче и scripts/try-letter.ts, откуда взята эта же строка). Не рабочий
-// стол, не DOCX, не _generator/.
-const RESUME_PATH = 'CV кандидат Бизнес-аналитик.md';
 const PANEL_PORT = 4321;
+
+/**
+ * Обновляет кеш текста резюме у включённых специальностей перед поиском (см.
+ * core/resume.ts). Не извлёкся — письма этой специальности пойдут по резюме
+ * БА, и об этом надо сказать, а не молчать.
+ */
+async function refreshResumes(settings: Settings, log: (line: string) => void): Promise<void> {
+  for (const s of enabledSpecialties(settings)) {
+    const r = await refreshResumeCache(s);
+    if (!r.ok) log(`Резюме «${s.name}» не извлеклось (${r.error}) — письма пойдут по резюме БА.`);
+  }
+}
 
 /**
  * PDF резюме БА для засева настроек (спека 2026-09-18, 3.7). Путь владельца;
@@ -597,7 +605,7 @@ async function main(): Promise<void> {
         fillLetters: () => fillEmptyLetters({
           queue,
           config,
-          resumeFor: () => readFileSync(RESUME_PATH, 'utf8'),
+          resumeFor: (s) => resumeTextFor(s),
           specialtyById: (id) => specialtyOf(currentSettings(config), id),
           generateLetterFn: generateLetter,
           pickTemplateFn: pickTemplate,
@@ -605,8 +613,9 @@ async function main(): Promise<void> {
         }),
         // Настройки читаются на каждый запуск: правка во вкладке «Настройки»
         // действует со следующего поиска без перезапуска панели.
-        startSearch: (limit) => {
+        startSearch: async (limit) => {
           const settings = currentSettings(config);
+          await refreshResumes(settings, (line) => console.error(line));
           return runSearchCommand({
             queue,
             config,
@@ -614,7 +623,7 @@ async function main(): Promise<void> {
             queries: buildSearchQueries(settings, []),
             stopWords: settings.stopWords,
             limit,
-            resumeFor: () => readFileSync(RESUME_PATH, 'utf8'),
+            resumeFor: (s) => resumeTextFor(s),
             generateLetterFn: generateLetter,
             pickTemplateFn: pickTemplate,
             readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
@@ -652,7 +661,7 @@ async function main(): Promise<void> {
       const res = await fillEmptyLetters({
         queue,
         config,
-        resumeFor: () => readFileSync(RESUME_PATH, 'utf8'),
+        resumeFor: (s) => resumeTextFor(s),
         specialtyById: (id) => specialtyOf(currentSettings(config), id),
         generateLetterFn: generateLetter,
         pickTemplateFn: pickTemplate,
@@ -686,7 +695,7 @@ async function main(): Promise<void> {
         settings,
         rest.filter((a, i) => a !== '--limit' && rest[i - 1] !== '--limit'),
       );
-
+      await refreshResumes(settings, (line) => console.error(line));
       const hasApiKey = Boolean(process.env['OPENROUTER_API_KEY']);
 
       const { report, emptyLetters, letterFailure } = await runSearchCommand({
@@ -696,7 +705,7 @@ async function main(): Promise<void> {
         queries,
         stopWords: settings.stopWords,
         limit,
-        resumeFor: () => readFileSync(RESUME_PATH, 'utf8'),
+        resumeFor: (s) => resumeTextFor(s),
         generateLetterFn: generateLetter,
         pickTemplateFn: pickTemplate,
         readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
