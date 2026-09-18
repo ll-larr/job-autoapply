@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Vacancy } from './vacancy.js';
+import { BA_SPECIALTY_ID } from './specialty-defaults.js';
 
 export type Status = 'pending' | 'approved' | 'skipped' | 'sent' | 'failed';
 /**
@@ -26,12 +27,14 @@ export interface QueueRow {
   letterMode: LetterMode;
   status: Status;
   error: string | null;
+  /** id специальности из data/settings.json. У строк до 2026-09-18 — бизнес-аналитик. */
+  specialty: string;
 }
 
 interface DbRow {
   id: number; source: string; source_id: string; vacancy_json: string;
   score: number; matched_json: string; letter: string; letter_mode: string;
-  status: string; error: string | null;
+  status: string; error: string | null; specialty: string | null;
 }
 
 export class Queue {
@@ -70,19 +73,27 @@ export class Queue {
     } catch {
       // колонка уже есть
     }
+    // Специальность строки (спека 2026-09-18, раздел 6): по ней дописываются
+    // письма и выбирается резюме. Та же схема миграции, что выше.
+    try {
+      this.db.exec('ALTER TABLE applications ADD COLUMN specialty TEXT');
+    } catch {
+      // колонка уже есть
+    }
   }
 
   insertPending(
     v: Vacancy, score: number, matched: string[], letter: string, letterMode: LetterMode,
+    specialty: string = BA_SPECIALTY_ID,
   ): boolean {
     if (this.has(v)) return false;
     this.db.prepare(`
       INSERT INTO applications
-        (source, source_id, vacancy_json, score, matched_json, letter, letter_mode, status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+        (source, source_id, vacancy_json, score, matched_json, letter, letter_mode, status, created_at, specialty)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
     `).run(
       v.source, v.sourceId, JSON.stringify(v), score,
-      JSON.stringify(matched), letter, letterMode, Date.now(),
+      JSON.stringify(matched), letter, letterMode, Date.now(), specialty,
     );
     return true;
   }
@@ -304,6 +315,7 @@ export class Queue {
       letterMode: r.letter_mode as LetterMode,
       status: r.status as Status,
       error: r.error,
+      specialty: r.specialty ?? BA_SPECIALTY_ID,
     };
   };
 }

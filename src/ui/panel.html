@@ -370,9 +370,10 @@ async function pollSearch() {
       if (r.belowThreshold) parts.push(`ниже порога ${r.belowThreshold}`);
       if (r.noCoreMatch) parts.push(`не по профилю ${r.noCoreMatch}`);
       const rejected = (r.rejectedExperience ?? 0) + (r.rejectedGrade ?? 0)
-        + (r.rejectedPlatform ?? 0) + (r.rejectedNotAnalyst ?? 0)
-        + (r.rejectedInternship ?? 0) + (r.rejectedJuniorOnly ?? 0);
+        + (r.rejectedStopword ?? 0) + (r.rejectedTitle ?? 0) + (r.rejectedInternship ?? 0);
       if (rejected) parts.push(`отсеяно фильтрами ${rejected}`);
+      const hits = Object.entries(r.stopwordHits ?? {}).map(([w, n]) => `${w} ${n}`).join(', ');
+      if (hits) parts.push(`стоп-слова: ${hits}`);
       if (st.result.emptyLetters) parts.push(`БЕЗ ПИСЬМА ${st.result.emptyLetters}`);
       searchNote.textContent = parts.join(' · ');
     }

@@ -14,12 +14,15 @@
  * Здесь, при старте команды, только печатается, что нашлось.
  */
 
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { Queue, type Status } from './core/queue.js';
-import { loadConfig, type Config, type SearchQueryConfig } from './core/config.js';
-import { runSearch, type SearchReport } from './pipeline.js';
+import { loadConfig, type Config } from './core/config.js';
+import { runSearch, type SearchReport, type SearchQuery } from './pipeline.js';
+import { loadSettings, seedSettings, enabledSpecialties, SETTINGS_PATH, type Settings } from './core/settings.js';
+import type { Specialty } from './core/specialty.js';
 import { Sender, requestStop, clearStop, isStopRequested } from './core/sender.js';
 import type { SendReport } from './core/sender.js';
 import { startPanel } from './ui/server.js';
@@ -76,6 +79,23 @@ const DB_PATH = 'data/queue.db';
 const RESUME_PATH = 'CV кандидат Бизнес-аналитик.md';
 const PANEL_PORT = 4321;
 
+/**
+ * PDF резюме БА для засева настроек (спека 2026-09-18, 3.7). Путь владельца;
+ * если файла нет — null, и в панели поле останется пустым.
+ */
+function defaultBaResumePdf(): string | null {
+  const p = join(homedir(), 'OneDrive', 'Рабочий стол', 'Резюме', 'CV_кандидат_Бизнес-аналитик.pdf');
+  return existsSync(p) ? p : null;
+}
+
+/**
+ * Настройки поиска на момент вызова (снимок на старте прогона, спека 3.1).
+ * Первый вызов засевает data/settings.json из config.json.
+ */
+function currentSettings(config: Config): Settings {
+  return loadSettings(SETTINGS_PATH, () => seedSettings(config.searchQueries, defaultBaResumePdf()));
+}
+
 const STATUS_ORDER: readonly Status[] = ['pending', 'approved', 'sent', 'failed', 'skipped'];
 
 // ============================================================================
@@ -85,22 +105,40 @@ const STATUS_ORDER: readonly Status[] = ['pending', 'approved', 'sent', 'failed'
 // ============================================================================
 
 /**
- * Явный аргумент командной строки — это одна формулировка запроса, которая
- * целиком перекрывает список из config.json#searchQueries (удобно для
- * быстрой проверки одной фразы без per-query ограничений вроде juniorOnly —
- * см. задание к этой задаче). Без аргумента — настроенный пользователем
- * список формулировок как есть, constraints каждой формулировки сохраняются.
+ * Фразы поиска из настроек (спека 2026-09-18, раздел 3.2). Без аргументов —
+ * фразы всех включённых специальностей, каждая со своей специальностью. С
+ * аргументами — одна фраза для быстрой проверки; от чьего имени она ищет,
+ * задаёт `--specialty "<название>"`, иначе первая включённая.
  */
-export function resolveSearchQueries(
-  args: readonly string[],
-  configured: readonly SearchQueryConfig[],
-): SearchQueryConfig[] {
-  const q = args.join(' ').trim();
-  return q === '' ? [...configured] : [{ query: q }];
+export function buildSearchQueries(settings: Settings, args: readonly string[]): SearchQuery[] {
+  const enabled = enabledSpecialties(settings);
+  if (enabled.length === 0) {
+    throw new Error('Нет включённых специальностей — включи хотя бы одну во вкладке «Настройки».');
+  }
+
+  const i = args.indexOf('--specialty');
+  const wanted = i === -1 ? undefined : args[i + 1];
+  const words = args.filter((_, j) => i === -1 || (j !== i && j !== i + 1));
+  const text = words.join(' ').trim();
+
+  let specialty: Specialty = enabled[0]!;
+  if (wanted !== undefined) {
+    const found = settings.specialties.find((s) => s.name.toLowerCase() === wanted.trim().toLowerCase());
+    if (found === undefined) {
+      throw new Error(`Специальность «${wanted}» не найдена. Есть: ${settings.specialties.map((s) => s.name).join(', ')}`);
+    }
+    specialty = found;
+  }
+
+  if (text === '') {
+    const from = wanted === undefined ? enabled : [specialty];
+    return from.flatMap((s) => s.queries.map((query) => ({ query, specialty: s })));
+  }
+  return [{ query: text, specialty }];
 }
 
 /** Человекочитаемая метка списка запросов для заголовка отчёта — не про логику поиска. */
-export function formatQueryLabel(queries: readonly SearchQueryConfig[]): string {
+export function formatQueryLabel(queries: readonly SearchQuery[]): string {
   return queries.map((q) => q.query).join(' | ');
 }
 
@@ -148,8 +186,9 @@ export function formatSearchReport(
   lines.push(`Отсеяно (core-гейт):     ${report.noCoreMatch}`);
   lines.push(`Отсеяно (опыт):          ${report.rejectedExperience}`);
   lines.push(`Отсеяно (грейд):         ${report.rejectedGrade}`);
-  lines.push(`Отсеяно (платформа):     ${report.rejectedPlatform}`);
-  lines.push(`Отсеяно (не аналитик):   ${report.rejectedNotAnalyst}`);
+  const hits = Object.entries(report.stopwordHits).map(([w, n]) => `${w}: ${n}`).join(', ');
+  lines.push(`Отсеяно (стоп-слова):   ${report.rejectedStopword}${hits === '' ? '' : ` (${hits})`}`);
+  lines.push(`Отсеяно (заголовок):    ${report.rejectedTitle}`);
   lines.push(`Отсеяно (стажировка):    ${report.rejectedInternship}`);
   if (emptyLetters > 0 && letterFailure !== undefined) {
     lines.push(`Почему письма пустые:    ${letterFailure}`);
@@ -346,8 +385,10 @@ export interface SearchCommandDeps {
   queue: Queue;
   config: Config;
   adapters: Adapter[];
-  /** Формулировки запроса. Разные фразы находят разные вакансии. */
-  queries: SearchQueryConfig[];
+  /** Формулировки запроса, каждая со своей специальностью (см. buildSearchQueries). */
+  queries: SearchQuery[];
+  /** Стоп-слова из настроек. undefined — прежние 1С и Битрикс. */
+  stopWords?: readonly string[];
   /**
    * Сколько вакансий должно ЛЕЧЬ В ОЧЕРЕДЬ за прогон — цель, а не потолок
    * просмотра: прогон сам решает, сколько для этого прочитать (см.
@@ -382,6 +423,7 @@ export async function runSearchCommand(
     queue: deps.queue,
     config: deps.config,
     queries: deps.queries,
+    stopWords: deps.stopWords,
     target: deps.limit,
     adapters: deps.adapters,
     generate: async (v, matched, mode) => {
@@ -535,17 +577,23 @@ async function main(): Promise<void> {
           pickTemplateFn: pickTemplate,
           readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
         }),
-        startSearch: (limit) => runSearchCommand({
-          queue,
-          config,
-          adapters,
-          queries: config.searchQueries ?? [],
-          limit,
-          resume: readFileSync(RESUME_PATH, 'utf8'),
-          generateLetterFn: generateLetter,
-          pickTemplateFn: pickTemplate,
-          readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
-        }),
+        // Настройки читаются на каждый запуск: правка во вкладке «Настройки»
+        // действует со следующего поиска без перезапуска панели.
+        startSearch: (limit) => {
+          const settings = currentSettings(config);
+          return runSearchCommand({
+            queue,
+            config,
+            adapters,
+            queries: buildSearchQueries(settings, []),
+            stopWords: settings.stopWords,
+            limit,
+            resume: readFileSync(RESUME_PATH, 'utf8'),
+            generateLetterFn: generateLetter,
+            pickTemplateFn: pickTemplate,
+            readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
+          });
+        },
       });
     } catch (e) {
       // Занятый порт и подобное — обычная бытовая ситуация, а не сбой,
@@ -606,9 +654,10 @@ async function main(): Promise<void> {
     const queue = new Queue(DB_PATH);
     try {
       const limit = resolveLimit(rest);
-      const queries = resolveSearchQueries(
+      const settings = currentSettings(config);
+      const queries = buildSearchQueries(
+        settings,
         rest.filter((a, i) => a !== '--limit' && rest[i - 1] !== '--limit'),
-        config.searchQueries ?? [],
       );
       const resume = readFileSync(RESUME_PATH, 'utf8');
       const hasApiKey = Boolean(process.env['OPENROUTER_API_KEY']);
@@ -618,6 +667,7 @@ async function main(): Promise<void> {
         config,
         adapters: buildAdapters(),
         queries,
+        stopWords: settings.stopWords,
         limit,
         resume,
         generateLetterFn: generateLetter,
@@ -656,7 +706,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.error('Команды: search [запрос] | panel | send | stop | status');
+  console.error('Команды: search [запрос] [--specialty "название"] | panel | send | stop | status');
   process.exitCode = 1;
 }
 

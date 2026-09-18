@@ -7,6 +7,8 @@ import { Queue } from '../src/core/queue.js';
 import { normalizeVacancy } from '../src/core/vacancy.js';
 import type { Vacancy } from '../src/core/vacancy.js';
 import type { Adapter, SearchFilters } from '../src/adapters/types.js';
+import { DEFAULT_SPECIALTY } from '../src/core/specialty-defaults.js';
+import type { Specialty } from '../src/core/specialty.js';
 
 const CONFIG = {
   minScore: 40, letterFullThreshold: 75, letterModels: ['m:free'],
@@ -140,7 +142,7 @@ describe('runSearch', () => {
       expect(rep.queued).toBe(0);
       expect(rep.rejectedExperience).toBe(1);
       expect(rep.rejectedGrade).toBe(0);
-      expect(rep.rejectedPlatform).toBe(0);
+      expect(rep.rejectedStopword).toBe(0);
       expect(rep.belowThreshold).toBe(0);
       expect(rep.noCoreMatch).toBe(0);
       expect(letterCalls).toBe(0);
@@ -172,7 +174,7 @@ describe('runSearch', () => {
         generate: async () => { letterCalls++; return { letter: 'письмо', mode: 'hybrid' as const }; },
       });
       expect(rep.queued).toBe(0);
-      expect(rep.rejectedPlatform).toBe(1);
+      expect(rep.rejectedStopword).toBe(1);
       expect(letterCalls).toBe(0);
     });
 
@@ -186,7 +188,7 @@ describe('runSearch', () => {
         })],
         generate: async () => ({ letter: 'письмо', mode: 'hybrid' as const }),
       });
-      expect(rep.rejectedPlatform).toBe(0);
+      expect(rep.rejectedStopword).toBe(0);
       expect(rep.queued).toBe(1);
     });
 
@@ -202,7 +204,7 @@ describe('runSearch', () => {
       });
       expect(rep.rejectedExperience).toBe(0);
       expect(rep.rejectedGrade).toBe(0);
-      expect(rep.rejectedPlatform).toBe(0);
+      expect(rep.rejectedStopword).toBe(0);
       expect(rep.queued).toBe(1);
     });
   });
@@ -304,7 +306,9 @@ describe('runSearch', () => {
       expect(rep.queued).toBe(5);
     });
 
-    describe('per-query ограничение juniorOnly (config.json#searchQueries[].constraints)', () => {
+    describe('специальность с опытом 0 — прежний juniorOnly', () => {
+      const SA = { ...DEFAULT_SPECIALTY, id: 'system-analyst', name: 'Системный аналитик', experienceYears: 0 };
+
       function mkExperienceVacancy(sourceId: string, experience: Vacancy['experience'], title = 'Системный аналитик') {
         return normalizeVacancy({
           source: 'hh', sourceId, title, company: 'C', url: 'u',
@@ -313,41 +317,49 @@ describe('runSearch', () => {
         });
       }
 
-      it('отклоняет between1And3 под juniorOnly, хотя это проходит общий гейт опыта', async () => {
+      it('отклоняет between1And3 при опыте 0, хотя при опыте 2 он проходит', async () => {
         const rep = await runSearch({
           queue: q, config: CONFIG,
-          queries: [{ query: 'системный аналитик', constraints: { juniorOnly: true } }],
+          queries: [{ query: 'системный аналитик', specialty: SA }],
           adapters: [mkQueryAwareAdapter(() => [mkExperienceVacancy('1', 'between1And3')])],
           generate: async () => ({ letter: 'письмо', mode: 'hybrid' as const }),
         });
-        expect(rep.rejectedJuniorOnly).toBe(1);
+        expect(rep.rejectedExperience).toBe(1);
         expect(rep.queued).toBe(0);
-        // Гейт срабатывает ДО дорогих проверок — ни одна из них не должна была
-        // успеть отклонить/пропустить вакансию первой.
-        expect(rep.rejectedExperience).toBe(0);
       });
 
-      it('noExperience под juniorOnly проходит гейт опыта', async () => {
+      it('«Старший системный аналитик» без маркера опыта при опыте 0 — отсев по грейду', async () => {
+        // Пришёл с careerist без опыта вообще; владелец его отменил — системный
+        // аналитик он максимум младший.
         const rep = await runSearch({
           queue: q, config: CONFIG,
-          queries: [{ query: 'системный аналитик', constraints: { juniorOnly: true } }],
+          queries: [{ query: 'системный аналитик', specialty: SA }],
+          adapters: [mkQueryAwareAdapter(() => [mkExperienceVacancy('1', null, 'Старший системный аналитик')])],
+          generate: async () => ({ letter: 'письмо', mode: 'hybrid' as const }),
+        });
+        expect(rep.rejectedGrade).toBe(1);
+        expect(rep.queued).toBe(0);
+      });
+
+      it('noExperience при опыте 0 проходит', async () => {
+        const rep = await runSearch({
+          queue: q, config: CONFIG,
+          queries: [{ query: 'системный аналитик', specialty: SA }],
           adapters: [mkQueryAwareAdapter(() => [
             mkExperienceVacancy('1', 'noExperience', 'Системный аналитик'),
           ])],
           generate: async () => ({ letter: 'письмо', mode: 'hybrid' as const }),
         });
-        expect(rep.rejectedJuniorOnly).toBe(0);
+        expect(rep.rejectedExperience).toBe(0);
         expect(rep.queued).toBe(1);
       });
 
       it('но стажировка отсекается — она не по профилю', async () => {
-        // Прежде тест утверждал обратное. Владелец 2026-09-01 отменил
-        // «Аналитик внедрения-стажер» словами «стажерская вакансия не по
-        // профилю», и это отменяет прежнее правило письма про junior+/middle:
-        // откликаться на стажировки больше не будем вовсе.
+        // Владелец 2026-09-01 отменил «Аналитик внедрения-стажер» словами
+        // «стажерская вакансия не по профилю».
         const rep = await runSearch({
           queue: q, config: CONFIG,
-          queries: [{ query: 'системный аналитик', constraints: { juniorOnly: true } }],
+          queries: [{ query: 'системный аналитик', specialty: SA }],
           adapters: [mkQueryAwareAdapter(() => [
             mkExperienceVacancy('1', 'noExperience', 'Стажёр — системный аналитик'),
           ])],
@@ -357,33 +369,29 @@ describe('runSearch', () => {
         expect(rep.rejectedInternship).toBe(1);
       });
 
-      it('без constraints тот же between1And3 проходит как обычно', async () => {
+      it('без специальности (бизнес-аналитик, опыт 2) тот же between1And3 проходит', async () => {
         const rep = await runSearch({
           queue: q, config: CONFIG,
-          queries: [{ query: 'системный аналитик' }], // без juniorOnly
+          queries: [{ query: 'системный аналитик' }],
           adapters: [mkQueryAwareAdapter(() => [mkExperienceVacancy('1', 'between1And3')])],
           generate: async () => ({ letter: 'письмо', mode: 'hybrid' as const }),
         });
-        expect(rep.rejectedJuniorOnly).toBe(0);
+        expect(rep.rejectedExperience).toBe(0);
         expect(rep.queued).toBe(1);
       });
 
-      it('juniorOnly — свойство конкретной формулировки: другая формулировка без constraints её не наследует', async () => {
-        // Та же вакансия (between1And3), но найдена ДРУГОЙ, нестеснённой
-        // формулировкой раньше в списке — juniorOnly к ней не применяется,
-        // потому что дедуп в пределах прогона видит её впервые под этой,
-        // первой формулировкой (см. отчёт задачи, "конкурирующие constraints").
+      it('опыт — свойство специальности фразы: вакансию, найденную раньше другой специальностью, он не трогает', async () => {
         const shared = mkExperienceVacancy('1', 'between1And3', 'Бизнес-аналитик');
         const rep = await runSearch({
           queue: q, config: CONFIG,
           queries: [
-            { query: 'бизнес аналитик' }, // без constraints, идёт первой
-            { query: 'системный аналитик', constraints: { juniorOnly: true } },
+            { query: 'бизнес аналитик' },
+            { query: 'системный аналитик', specialty: SA },
           ],
           adapters: [mkQueryAwareAdapter(() => [shared])],
           generate: async () => ({ letter: 'письмо', mode: 'hybrid' as const }),
         });
-        expect(rep.rejectedJuniorOnly).toBe(0);
+        expect(rep.rejectedExperience).toBe(0);
         expect(rep.duplicates).toBe(1); // второе появление под 'системный аналитик'
         expect(rep.queued).toBe(1);
       });
@@ -734,5 +742,68 @@ describe('runSearch — заказ считается по ДОСТАВЛЕНН�
     });
     expect(a.calls).toHaveLength(1);
     expect(a.calls[0]!.maxResults).toBe(20);
+  });
+});
+
+describe('runSearch — специальности', () => {
+  const PM: Specialty = {
+    ...DEFAULT_SPECIALTY,
+    id: 'product-manager', name: 'Менеджер продукта', legacyLetters: false,
+    titleWords: ['менеджер продукта', 'product manager'],
+    skills: [{ id: 'roadmap', name: 'Роадмап', synonyms: ['роадмап'], weight: 30, core: true }],
+  };
+
+  function titled(title: string, description: string): Adapter {
+    return {
+      name: 'hh',
+      async search() {
+        return [normalizeVacancy({
+          source: 'hh', sourceId: title, title, company: 'C', url: 'u', description,
+          geo: 'Москва', postedAt: '2026-08-20T00:00:00Z',
+        })];
+      },
+      async apply() { return { status: 'sent' }; },
+    };
+  }
+
+  it('вакансию оценивает специальность её фразы: навыки, слова заголовка, id в очереди', async () => {
+    const seen: string[] = [];
+    const rep = await runSearch({
+      queue: q, config: CONFIG, queries: [{ query: 'product manager', specialty: PM }],
+      adapters: [titled('Менеджер продукта', 'Ведём роадмап')],
+      generate: async (_v, matched, mode, specialty) => {
+        seen.push(`${specialty.id}:${matched.join()}:${mode}`);
+        return { letter: 'письмо', mode };
+      },
+    });
+    expect(rep.queued).toBe(1);
+    // не legacyLetters — письмо всегда целиком (спека 3.7)
+    expect(seen).toEqual(['product-manager:roadmap:full']);
+    expect(q.listByStatus('pending')[0]!.specialty).toBe('product-manager');
+  });
+
+  it('стоп-слова из опций, причина считается по слову', async () => {
+    const rep = await runSearch({
+      queue: q, config: CONFIG, queries: [{ query: 'аналитик' }], stopWords: ['вахта'],
+      adapters: [titled('Бизнес-аналитик, вахта', PROCESS_LANGUAGE)],
+      generate: async () => ({ letter: 'п', mode: 'hybrid' as const }),
+    });
+    expect(rep.rejectedStopword).toBe(1);
+    expect(rep.stopwordHits).toEqual({ вахта: 1 });
+  });
+
+  it('адаптер получает стаж специальности в experienceYears', async () => {
+    let got: number | undefined;
+    const spy: Adapter = {
+      name: 'hh',
+      async search(f: SearchFilters) { got = f.experienceYears; return []; },
+      async apply() { return { status: 'sent' }; },
+    };
+    await runSearch({
+      queue: q, config: CONFIG,
+      queries: [{ query: 'системный аналитик', specialty: { ...DEFAULT_SPECIALTY, experienceYears: 0 } }],
+      adapters: [spy], generate: async () => ({ letter: '', mode: 'none' as const }),
+    });
+    expect(got).toBe(0);
   });
 });

@@ -1,10 +1,22 @@
 import type { Queue, LetterMode } from './core/queue.js';
-import type { Config, SearchQueryConfig } from './core/config.js';
+import type { Config } from './core/config.js';
 import type { Adapter } from './adapters/types.js';
+import type { Specialty } from './core/specialty.js';
 import { scoreVacancy } from './core/scorer.js';
-import { screenVacancy, isExperienceWithin, isAboveJuniorTitle } from './core/screening.js';
+import { screenVacancy } from './core/screening.js';
 import { pickMode } from './core/letter.js';
+import { DEFAULT_SPECIALTY, DEFAULT_STOP_WORDS } from './core/specialty-defaults.js';
 import { vacancyKey, type Vacancy } from './core/vacancy.js';
+
+/**
+ * Одна фраза поиска и специальность, от имени которой она ищет. Специальность
+ * решает, как вакансию оценивать: навыки и веса, слова заголовка, стаж
+ * (спека 2026-09-18, раздел 3.2). Без неё — бизнес-аналитик, как до этой даты.
+ */
+export interface SearchQuery {
+  query: string;
+  specialty?: Specialty;
+}
 
 /**
  * Необязательная статистика, которую адаптер МОЖЕТ выставить на себе после
@@ -65,36 +77,29 @@ export interface SearchReport {
    */
   noCoreMatch: number;
   /**
-   * Три жёстких фильтра-исключения (см. src/core/screening.ts), добавленных
-   * по разбору пользователем первой живой очереди — 2026-08-30. В отличие
-   * от noCoreMatch/belowThreshold выше, это не про скор: вакансия,
-   * споткнувшаяся об один из них, отбрасывается сразу, до scoreVacancy и до
-   * generate(), деньги на письмо не тратятся ни разу.
+   * Жёсткие фильтры-исключения (см. src/core/screening.ts). В отличие от
+   * noCoreMatch/belowThreshold выше, это не про скор: вакансия, споткнувшаяся
+   * об один из них, отбрасывается сразу, до scoreVacancy и до generate(),
+   * деньги на письмо не тратятся ни разу.
+   *
+   * С 2026-09-18 сюда же попадает то, что раньше считалось rejectedJuniorOnly:
+   * это теперь «опыт 0» у специальности — опыт или «старший» в заголовке.
    */
   rejectedExperience: number;
   rejectedGrade: number;
+  /** Сработало стоп-слово из настроек (спека 3.5). Раньше — rejectedPlatform для 1С/Битрикса. */
+  rejectedStopword: number;
+  /** Какое стоп-слово сколько раз сработало — отчёт называет слово, а не «платформу». */
+  stopwordHits: Record<string, number>;
   /**
-   * Вакансия построена вокруг платформы, которой владелец не владеет — 1С или
-   * Битрикс24. Поле звалось rejected1c, пока платформа была одна.
+   * Заголовок не называет специальность (слова заголовка). Раньше —
+   * rejectedNotAnalyst: 2026-09-01 «Менеджер по операционному консалтингу» и
+   * подобные набирали проходной скор описанием, но владелец их отменял — скор
+   * говорит, чем занимаются, а заголовок отвечает, кем при этом зовут.
    */
-  rejectedPlatform: number;
-  /**
-   * Заголовок не называет вакансию аналитической. Добавлено 2026-09-01 по
-   * разбору очереди: «Менеджер по операционному консалтингу» и подобные
-   * набирали проходной скор описанием, но владелец их отменял — скор говорит,
-   * чем занимаются, а заголовок отвечает, кем при этом зовут.
-   */
-  rejectedNotAnalyst: number;
+  rejectedTitle: number;
   /** Стажировки. */
   rejectedInternship: number;
-  /**
-   * Per-query ограничение "только junior" (config.json →
-   * searchQueries[].constraints.juniorOnly, добавлено 2026-08-30 для
-   * запроса "системный аналитик"). Считается и отбрасывается ДО
-   * screenVacancy/scoreVacancy/generate() — та же экономия, что и у трёх
-   * жёстких фильтров выше. См. core/screening.ts#isJuniorExperience.
-   */
-  rejectedJuniorOnly: number;
   adapterErrors: Array<{ adapter: string; message: string }>;
   /**
    * Почему прогон остановился. Нужно панели: «нашли 12 из 20» само по себе
@@ -113,13 +118,15 @@ export interface RunSearchOptions {
   config: Config;
   /**
    * Список формулировок запроса — разные фразы находят разные вакансии на
-   * одной и той же площадке (см. config.json#searchQueries и
-   * cli.ts#resolveSearchQueries). Каждая формулировка прогоняется через
+   * одной и той же площадке (см. cli.ts#buildSearchQueries: фразы берутся из
+   * специальностей data/settings.json). Каждая формулировка прогоняется через
    * каждый адаптер по очереди; результаты сливаются и дедуплицируются В
    * ПРЕДЕЛАХ этого прогона ДО screening — см. комментарий у seenThisRun
    * ниже.
    */
-  queries: SearchQueryConfig[];
+  queries: SearchQuery[];
+  /** Стоп-слова из настроек. undefined — прежние 1С и Битрикс. */
+  stopWords?: readonly string[];
   /**
    * Сколько вакансий должно ЛЕЧЬ В ОЧЕРЕДЬ по итогам прогона. Это то число,
    * которое человек вводит в панели: попросил 20 — получил 20 карточек на
@@ -167,29 +174,30 @@ export interface RunSearchOptions {
    */
   batchSize?: number;
   adapters: Adapter[];
-  generate: (v: Vacancy, matched: string[], mode: LetterMode)
+  generate: (v: Vacancy, matched: string[], mode: LetterMode, specialty: Specialty)
     => Promise<{ letter: string; mode: LetterMode }>;
 }
 
 /**
  * Собирает вакансии со всех адаптеров по каждой формулировке запроса,
  * отсеивает дубли (и в пределах прогона, и по сравнению с прошлыми
- * прогонами через Queue), per-query ограничение "только junior", три
- * жёстких screening-фильтра (опыт/грейд/1С — см. core/screening.ts), мусор
+ * прогонами через Queue), жёсткие фильтры по профилю специальности фразы
+ * (опыт/грейд/стоп-слова/стажировка/заголовок — см. core/screening.ts), мусор
  * ниже minScore и вакансии без core-совпадения, генерирует письма только
  * для того, что прошло все фильтры, и складывает результат в очередь.
- * Порядок фильтров — от дешёвого к дорогому: дедуп → per-query junior-гейт
- * → screening → scoring → generate() — чем раньше вакансия выбывает, тем
+ * Порядок фильтров — от дешёвого к дорогому: дедуп → screening по профилю
+ * специальности → scoring навыками специальности → generate() — чем раньше вакансия выбывает, тем
  * меньше на неё потрачено. Падение одного адаптера не останавливает
  * остальные — частичный результат остаётся валидным результатом.
  */
 export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
   const report: SearchReport = {
     found: 0, queued: 0, duplicates: 0, belowThreshold: 0, noCoreMatch: 0,
-    rejectedExperience: 0, rejectedGrade: 0, rejectedPlatform: 0,
-    rejectedNotAnalyst: 0, rejectedInternship: 0, rejectedJuniorOnly: 0,
+    rejectedExperience: 0, rejectedGrade: 0, rejectedStopword: 0, stopwordHits: {},
+    rejectedTitle: 0, rejectedInternship: 0,
     adapterErrors: [], stoppedBecause: 'exhausted',
   };
+  const stopWords = opts.stopWords ?? DEFAULT_STOP_WORDS;
 
   // Дедуп В ПРЕДЕЛАХ этого прогона: разные формулировки запроса находят одну
   // и ту же вакансию по нескольку раз. Queue.has() ниже ловит дубли МЕЖДУ
@@ -211,7 +219,7 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
   const seenThisRun = new Set<string>();
 
   interface Task {
-    qc: SearchQueryConfig;
+    qc: SearchQuery;
     adapter: Adapter;
     /** Индекс формулировки в opts.queries — по нему считается равномерность. */
     queryIndex: number;
@@ -271,6 +279,7 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
     try {
       vacancies = await task.adapter.search({
         query: task.qc.query,
+        experienceYears: (task.qc.specialty ?? DEFAULT_SPECIALTY).experienceYears,
         maxResults: budget,
         skip: task.skip,
         seenThisRun,
@@ -317,39 +326,45 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
       if (seenThisRun.has(key)) { report.duplicates++; continue; }
       seenThisRun.add(key);
 
-      // juniorOnly смотрит и на структурный опыт, и на ЗАГОЛОВОК. Опыт есть не
-      // везде: «Старший системный аналитик» пришёл с careerist без него
-      // вообще, isJuniorExperience(null) пропустил, и вакансия дошла до
-      // очереди. Владелец её отменил — системный аналитик он максимум младший.
-      if (task.qc.constraints?.juniorOnly === true
-        && (!isExperienceWithin(v.experience, 0) || isAboveJuniorTitle(v.title))) {
-        report.rejectedJuniorOnly++;
-        continue;
-      }
-
       if (opts.queue.has(v)) { report.duplicates++; continue; }
 
-      const screen = screenVacancy(v);
+      // Специальность фразы решает всё дальнейшее: стаж, слова заголовка,
+      // навыки и веса. Опыт 0 (прежний juniorOnly) смотрит и на ЗАГОЛОВОК:
+      // «Старший системный аналитик» пришёл с careerist без маркера опыта
+      // вообще, и владелец его отменил — системный аналитик он максимум младший.
+      const specialty = task.qc.specialty ?? DEFAULT_SPECIALTY;
+      const screen = screenVacancy(v, {
+        titleWords: specialty.titleWords,
+        experienceYears: specialty.experienceYears,
+        stopWords,
+      });
       if (!screen.passed) {
         // Каждая причина считается своей строкой. Ссыпать их в одну кучу
         // значило бы врать в отчёте: «отсеяно по 1С: 9» при девяти вакансиях,
         // где 1С никто не упоминал.
         if (screen.reason === 'experience') report.rejectedExperience++;
         else if (screen.reason === 'grade') report.rejectedGrade++;
-        else if (screen.reason === 'not_title') report.rejectedNotAnalyst++;
+        else if (screen.reason === 'not_title') report.rejectedTitle++;
         else if (screen.reason === 'internship') report.rejectedInternship++;
-        else report.rejectedPlatform++;
+        else {
+          report.rejectedStopword++;
+          const word = screen.stopWord ?? '?';
+          report.stopwordHits[word] = (report.stopwordHits[word] ?? 0) + 1;
+        }
         continue;
       }
 
-      const { score, matched, hasCoreMatch } = scoreVacancy(v);
+      const { score, matched, hasCoreMatch } = scoreVacancy(v, specialty.skills);
       if (score < opts.config.minScore) { report.belowThreshold++; continue; }
       if (!hasCoreMatch) { report.noCoreMatch++; continue; }
 
-      const mode = pickMode(score, opts.config.letterFullThreshold);
-      const { letter, mode: usedMode } = await opts.generate(v, matched, mode);
+      // Скелеты писем и выбор hybrid/full — только у засеянных специальностей
+      // (legacyLetters). У остальных скелетов нет, письмо пишется целиком
+      // (спека 3.7).
+      const mode = specialty.legacyLetters ? pickMode(score, opts.config.letterFullThreshold) : 'full';
+      const { letter, mode: usedMode } = await opts.generate(v, matched, mode, specialty);
 
-      if (opts.queue.insertPending(v, score, matched, letter, usedMode)) {
+      if (opts.queue.insertPending(v, score, matched, letter, usedMode, specialty.id)) {
         report.queued++;
         deliveredByQuery[task.queryIndex]!++;
       } else {

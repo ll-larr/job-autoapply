@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { formatProxyReport,
   resolveLimit,
-  resolveSearchQueries,
+  buildSearchQueries,
   formatQueryLabel,
   groupBySource,
   formatSearchReport,
@@ -21,36 +21,46 @@ import { normalizeVacancy } from '../src/core/vacancy.js';
 import type { Adapter } from '../src/adapters/types.js';
 import type { SearchReport } from '../src/pipeline.js';
 import type { SendReport } from '../src/core/sender.js';
+import { seedSettings } from '../src/core/settings.js';
 
 const CONFIG = { minScore: 40, letterFullThreshold: 75, letterModels: ['m:free'], searchQueries: [], throttle: {} };
 
-describe('resolveSearchQueries', () => {
-  const CONFIGURED = [
-    { query: 'аналитик бизнес-процессов' },
+describe('buildSearchQueries', () => {
+  const settings = seedSettings([
     { query: 'бизнес-аналитик' },
     { query: 'системный аналитик', constraints: { juniorOnly: true } },
-  ];
+  ], null);
 
-  it('без аргументов берёт весь список из конфига', () => {
-    // Разные формулировки находят разные вакансии на одной площадке, поэтому
-    // прогон по умолчанию идёт по всем, а не по одной «главной».
-    expect(resolveSearchQueries([], CONFIGURED)).toEqual(CONFIGURED);
+  it('без аргументов — фразы всех включённых специальностей, каждая со своей специальностью', () => {
+    const qs = buildSearchQueries(settings, []);
+    expect(qs.map((q) => `${q.specialty!.id}:${q.query}`)).toEqual([
+      'business-analyst:бизнес-аналитик', 'system-analyst:системный аналитик',
+    ]);
   });
 
-  it('явный запрос перекрывает конфиг и ищет только его', () => {
-    expect(resolveSearchQueries(['продуктовый', 'аналитик'], CONFIGURED))
-      .toEqual([{ query: 'продуктовый аналитик' }]);
+  it('выключенная специальность не ищет', () => {
+    const s = structuredClone(settings);
+    s.specialties[1]!.enabled = false;
+    expect(buildSearchQueries(s, []).map((q) => q.query)).toEqual(['бизнес-аналитик']);
   });
 
-  it('пробельный аргумент считается отсутствующим — берётся конфиг', () => {
-    expect(resolveSearchQueries(['   '], CONFIGURED)).toEqual(CONFIGURED);
+  it('явная фраза — от первой включённой специальности', () => {
+    const [q] = buildSearchQueries(settings, ['аналитик', 'данных']);
+    expect(q).toMatchObject({ query: 'аналитик данных' });
+    expect(q!.specialty!.id).toBe('business-analyst');
   });
 
-  it('не тащит ограничения конфига на введённый руками запрос', () => {
-    // juniorOnly принадлежит «системному аналитику», а не всему поиску.
-    const r = resolveSearchQueries(['бизнес-аналитик'], CONFIGURED);
-    expect(r).toHaveLength(1);
-    expect(r[0]?.constraints).toBeUndefined();
+  it('--specialty выбирает специальность по названию без учёта регистра', () => {
+    const [q] = buildSearchQueries(settings, ['sa', '--specialty', 'системный АНАЛИТИК']);
+    expect(q!.query).toBe('sa');
+    expect(q!.specialty!.id).toBe('system-analyst');
+  });
+
+  it('неизвестная специальность и «нет включённых» — ошибки с объяснением', () => {
+    expect(() => buildSearchQueries(settings, ['x', '--specialty', 'повар'])).toThrow(/повар/);
+    const off = structuredClone(settings);
+    for (const s of off.specialties) s.enabled = false;
+    expect(() => buildSearchQueries(off, [])).toThrow(/включ/);
   });
 });
 
@@ -75,9 +85,8 @@ describe('groupBySource', () => {
 describe('formatSearchReport', () => {
   const BASE_REPORT: SearchReport = {
     found: 10, queued: 4, duplicates: 2, belowThreshold: 3, noCoreMatch: 1,
-    rejectedExperience: 0, rejectedGrade: 0, rejectedPlatform: 0,
-    rejectedNotAnalyst: 0, rejectedInternship: 0,
-      rejectedJuniorOnly: 0, adapterErrors: [], stoppedBecause: 'target',
+    rejectedExperience: 0, rejectedGrade: 0, rejectedStopword: 0, stopwordHits: {},
+    rejectedTitle: 0, rejectedInternship: 0, adapterErrors: [], stoppedBecause: 'target',
   };
 
   it('содержит все пункты отчёта, требуемые заданием', () => {
@@ -93,14 +102,15 @@ describe('formatSearchReport', () => {
     // Поимённо и по отдельности: ссыпать их в одну строку значило бы врать —
     // «отсеяно по 1С: 9» при девяти вакансиях, где 1С никто не упоминал.
     const report: SearchReport = {
-      ...BASE_REPORT, rejectedExperience: 5, rejectedGrade: 2, rejectedPlatform: 1,
-      rejectedNotAnalyst: 4, rejectedInternship: 3,
+      ...BASE_REPORT, rejectedExperience: 5, rejectedGrade: 2,
+      rejectedStopword: 2, stopwordHits: { '1С': 1, 'Битрикс': 1 },
+      rejectedTitle: 4, rejectedInternship: 3,
     };
     const lines = formatSearchReport('q', report, 0, true).join('\n');
     expect(lines).toContain('Отсеяно (опыт):          5');
     expect(lines).toContain('Отсеяно (грейд):         2');
-    expect(lines).toContain('Отсеяно (платформа):     1');
-    expect(lines).toContain('Отсеяно (не аналитик):   4');
+    expect(lines).toContain('Отсеяно (стоп-слова):   2 (1С: 1, Битрикс: 1)');
+    expect(lines).toContain('Отсеяно (заголовок):    4');
     expect(lines).toContain('Отсеяно (стажировка):    3');
   });
 

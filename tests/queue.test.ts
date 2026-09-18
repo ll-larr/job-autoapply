@@ -415,3 +415,30 @@ describe('Queue.setLetter — дозаполнение одобренных с �
     expect(() => q.setLetter(id, 'поздно', 'hybrid')).toThrow(/illegal transition/);
   });
 });
+
+describe('Queue — специальность строки', () => {
+  it('insertPending пишет специальность, по умолчанию — бизнес-аналитик', () => {
+    q.insertPending(mkVacancy('1'), 50, [], 'п', 'hybrid');
+    q.insertPending(mkVacancy('2'), 50, [], 'п', 'full', 'product-manager');
+    const rows = q.listByStatus('pending');
+    expect(rows.find((r) => r.sourceId === '1')!.specialty).toBe('business-analyst');
+    expect(rows.find((r) => r.sourceId === '2')!.specialty).toBe('product-manager');
+  });
+
+  it('база до 2026-09-18 без колонки specialty открывается, старые строки — бизнес-аналитик', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'jaa-q-old-')), 'old.db');
+    const db = new DatabaseSync(path);
+    db.exec(`CREATE TABLE applications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, source_id TEXT NOT NULL,
+      vacancy_json TEXT NOT NULL, score INTEGER NOT NULL, matched_json TEXT NOT NULL,
+      letter TEXT NOT NULL, letter_mode TEXT NOT NULL, status TEXT NOT NULL, error TEXT,
+      created_at INTEGER NOT NULL, decided_at INTEGER, sent_at INTEGER)`);
+    db.prepare(`INSERT INTO applications (source, source_id, vacancy_json, score, matched_json, letter,
+      letter_mode, status, created_at) VALUES ('hh', '9', ?, 50, '[]', 'п', 'hybrid', 'pending', 1)`)
+      .run(JSON.stringify(mkVacancy('9')));
+    db.close();
+    const old = new Queue(path);
+    expect(old.listByStatus('pending')[0]!.specialty).toBe('business-analyst');
+    old.close();
+  });
+});
