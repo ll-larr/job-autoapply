@@ -1,7 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { Queue } from '../core/queue.js';
+import type { Queue, QueueRow } from '../core/queue.js';
+import type { TgChat } from '../telegram/types.js';
 import type { ProxyDiscovery } from '../core/proxy.js';
 import type { Config } from '../core/config.js';
 import type { Adapter } from '../adapters/types.js';
@@ -106,6 +107,36 @@ export interface PanelDeps {
     suggest(name: string, resumePdf: string | null)
       : Promise<{ ok: true; suggestion: SpecialtySuggestion } | { ok: false; error: string }>;
   };
+  /**
+   * Выбор чатов Telegram во вкладке «Настройки» (спека 4.4): «Выбрать из моих
+   * чатов» и «Добавить по @имени». Только чтение — отправлять отсюда нечего.
+   */
+  telegram?: {
+    dialogs(): Promise<{ ok: true; chats: TgChat[] } | { ok: false; error: string }>;
+    resolve(ref: string): Promise<{ ok: true; chat: TgChat } | { ok: false; error: string }>;
+  };
+}
+
+/**
+ * Предупреждение карточки (спека 5.5): этому рекрутёру уже писали или он уже
+ * в очереди по другой вакансии. Сама строка — тоже «строка с контактом», её
+ * не считаем.
+ */
+function contactWarning(queue: Queue, row: QueueRow, now: number = Date.now()): string | null {
+  if (row.contact === null) return null;
+  const sent = queue.lastSentTo(row.contact);
+  if (sent !== null) {
+    const days = Math.floor((now - sent.at) / 86_400_000);
+    const when = days === 0 ? 'сегодня' : `${days} дн. назад`;
+    return `ты писал @${row.contact} ${when} по вакансии «${sent.title}»`;
+  }
+  const other = queue.listByStatus('pending').concat(queue.listByStatus('approved'))
+    .find((r) => r.id !== row.id && r.contact === row.contact);
+  return other === undefined ? null : `@${row.contact} уже в очереди по вакансии «${other.vacancy.title}»`;
+}
+
+function withContactWarnings(queue: Queue, rows: QueueRow[]): Array<QueueRow & { contactWarning: string | null }> {
+  return rows.map((row) => ({ ...row, contactWarning: contactWarning(queue, row) }));
 }
 
 export async function startPanel(
@@ -121,10 +152,27 @@ export async function startPanel(
   const server = createServer(async (req, res) => {
     try {
       if (req.method === 'GET' && req.url === '/api/pending') {
-        return json(res, queue.listByStatus('pending'));
+        return json(res, withContactWarnings(queue, queue.listByStatus('pending')));
       }
       if (req.method === 'GET' && req.url === '/api/approved') {
-        return json(res, queue.listByStatus('approved'));
+        return json(res, withContactWarnings(queue, queue.listByStatus('approved')));
+      }
+
+      if (req.url === '/api/telegram/dialogs' || req.url === '/api/telegram/resolve') {
+        if (!deps.telegram) {
+          return json(res, { error: 'Панель запущена без Telegram — открой её через npm run panel.' }, 409);
+        }
+        if (req.method === 'GET' && req.url === '/api/telegram/dialogs') {
+          const r = await deps.telegram.dialogs();
+          return r.ok ? json(res, { chats: r.chats }) : json(res, { error: r.error }, 502);
+        }
+        if (req.method === 'POST' && req.url === '/api/telegram/resolve') {
+          const b = await readJson(req);
+          const ref = typeof b['ref'] === 'string' ? b['ref'].trim() : '';
+          if (ref === '') return json(res, { error: 'Впиши @имя канала или ссылку t.me.' }, 400);
+          const r = await deps.telegram.resolve(ref);
+          return r.ok ? json(res, { chat: r.chat }) : json(res, { error: r.error }, 502);
+        }
       }
       if (req.method === 'POST' && req.url === '/api/approve') {
         const b = await readJson(req);

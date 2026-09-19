@@ -38,6 +38,10 @@ import { proxyResolver, type ProxyDiscovery, type ProxySource } from './core/pro
 import type { Adapter } from './adapters/types.js';
 import { extractPdfText, refreshResumeCache, resumeTextFor, LEGACY_RESUME_MD } from './core/resume.js';
 import { suggestSpecialty } from './core/suggest.js';
+import { TelegramAdapter } from './adapters/telegram.js';
+import { openTelegram, type OpenResult } from './telegram/gramjs.js';
+import { classifyTgError, describeTgFailure } from './telegram/errors.js';
+import type { TgReader, TgSender } from './telegram/types.js';
 
 // 500 — число, которое пользователь выбрал 2026-08-30 сам, разобрав первую
 // живую очередь. С 2026-08-30 оно означает ЦЕЛЬ, а не потолок просмотра:
@@ -342,12 +346,69 @@ export function formatStatusReport(
 // функции — чистая логика поверх переданных зависимостей.
 // ============================================================================
 
-export function buildAdapters(): Adapter[] {
+/** Telegram для команд: чтение и отправка через одну сессию на процесс. */
+export interface TelegramSession {
+  reader(): Promise<TgReader | { error: string }>;
+  sender(): Promise<TgSender | { error: string }>;
+  close(): Promise<void>;
+}
+
+/**
+ * Сессия Telegram поднимается только по первому обращению: поиск без чатов
+ * в настройках и отправка без Telegram-строк её не трогают вовсе. Неудача
+ * (VPN выключен, сессия протухла) не запоминается — следующее обращение
+ * пробует снова: VPN включают, не перезапуская панель.
+ */
+export function lazyTelegram(open: () => Promise<OpenResult> = () => openTelegram()): TelegramSession {
+  let pending: Promise<OpenResult> | null = null;
+  const get = (): Promise<OpenResult> => {
+    pending ??= open().then((r) => {
+      if (!r.ok) pending = null;
+      return r;
+    });
+    return pending;
+  };
+  return {
+    async reader() { const r = await get(); return r.ok ? r.reader : { error: r.message }; },
+    async sender() { const r = await get(); return r.ok ? r.sender : { error: r.message }; },
+    async close() {
+      const p = pending;
+      pending = null;
+      if (p === null) return;
+      const r = await p;
+      if (r.ok) await r.close();
+    },
+  };
+}
+
+/** Что нужно адаптеру Telegram от команды: очередь (курсоры чатов), настройки, сессия. */
+export interface TelegramWiring {
+  queue: Queue;
+  settings: () => Settings;
+  session: TelegramSession;
+}
+
+export function buildAdapters(tg?: TelegramWiring): Adapter[] {
   // careerist.ru пока умеет только искать: отклик там требует регистрации, и
   // её adapter.apply честно объявляет `auth_required` (см. adapters/careerist.ts).
   // В очередь вакансии попадают наравне с остальными, а отправка обходит их
   // стороной, не задевая hh.ru — Sender останавливает площадку, а не прогон.
-  return [new HhAdapter(), new HrGeAdapter(), new CareeristAdapter()];
+  const adapters: Adapter[] = [new HhAdapter(), new HrGeAdapter(), new CareeristAdapter()];
+  if (tg !== undefined) {
+    // Настройки читаются на каждое обращение: выбор чатов в панели действует
+    // со следующего поиска без перезапуска.
+    adapters.push(new TelegramAdapter({
+      reader: () => tg.session.reader(),
+      sender: () => tg.session.sender(),
+      close: () => tg.session.close(),
+      queue: tg.queue,
+      chats: () => tg.settings().telegram.chats,
+      firstReadDays: () => tg.settings().telegram.firstReadDays,
+      titleWords: () => enabledSpecialties(tg.settings()).flatMap((s) => s.titleWords),
+      resumePdf: (id) => specialtyOf(tg.settings(), id).resumePdf,
+    }));
+  }
+  return adapters;
 }
 
 export function buildAdapterMap(adapters: readonly Adapter[]): Map<string, Adapter> {
@@ -448,6 +509,8 @@ export interface SearchCommandDeps {
   queries: SearchQuery[];
   /** Стоп-слова из настроек. undefined — прежние 1С и Битрикс. */
   stopWords?: readonly string[];
+  /** Включённые специальности — ими оцениваются посты Telegram (pipeline.ts). */
+  specialties?: Specialty[];
   /**
    * Сколько вакансий должно ЛЕЧЬ В ОЧЕРЕДЬ за прогон — цель, а не потолок
    * просмотра: прогон сам решает, сколько для этого прочитать (см.
@@ -486,6 +549,7 @@ export async function runSearchCommand(
     config: deps.config,
     queries: deps.queries,
     stopWords: deps.stopWords,
+    specialties: deps.specialties,
     target: deps.limit,
     adapters: deps.adapters,
     generate: async (v, matched, mode, specialty) => {
@@ -631,11 +695,34 @@ async function main(): Promise<void> {
     // заново на каждый клик «Найти», и второй поиск подряд в одной и той же
     // панели гарантированно падал; теперь один и тот же адаптер просто
     // переиспользует уже открытый браузер (см. HhAdapter.getContext).
-    const adapters = buildAdapters();
+    // Telegram — одна сессия на всю жизнь панели, поднимается по первому
+    // обращению (поиск с чатами, выбор чатов, отправка Telegram-строк).
+    const tg = lazyTelegram();
+    const adapters = buildAdapters({ queue, settings: () => currentSettings(config), session: tg });
     try {
       await startPanel(queue, PANEL_PORT, {
         adapters,
         config,
+        telegram: {
+          dialogs: async () => {
+            const reader = await tg.reader();
+            if ('error' in reader) return { ok: false, error: reader.error };
+            try {
+              return { ok: true, chats: await reader.dialogs() };
+            } catch (e) {
+              return { ok: false, error: describeTgFailure(classifyTgError(e)) };
+            }
+          },
+          resolve: async (ref) => {
+            const reader = await tg.reader();
+            if ('error' in reader) return { ok: false, error: reader.error };
+            try {
+              return { ok: true, chat: await reader.resolveChat(ref) };
+            } catch (e) {
+              return { ok: false, error: describeTgFailure(classifyTgError(e)) };
+            }
+          },
+        },
         // Панель показывает это полосой наверху: консоль, в которую она
         // пишет предупреждение, человек не смотрит.
         proxyStatus: () => proxyResolver.get(),
@@ -689,6 +776,7 @@ async function main(): Promise<void> {
             adapters,
             queries: buildSearchQueries(settings, []),
             stopWords: settings.stopWords,
+            specialties: enabledSpecialties(settings),
             limit,
             resumeFor: (s) => resumeTextFor(s),
             generateLetterFn: generateLetter,
@@ -757,6 +845,7 @@ async function main(): Promise<void> {
     await reportProxy();
     const config = loadConfig();
     const queue = new Queue(DB_PATH);
+    const tg = lazyTelegram();
     try {
       const limit = resolveLimit(rest);
       const settings = currentSettings(config);
@@ -770,9 +859,10 @@ async function main(): Promise<void> {
       const { report, emptyLetters, letterFailure } = await runSearchCommand({
         queue,
         config,
-        adapters: buildAdapters(),
+        adapters: buildAdapters({ queue, settings: () => settings, session: tg }),
         queries,
         stopWords: settings.stopWords,
+        specialties: enabledSpecialties(settings),
         limit,
         resumeFor: (s) => resumeTextFor(s),
         generateLetterFn: generateLetter,
@@ -785,6 +875,8 @@ async function main(): Promise<void> {
         console.log(line);
       }
     } finally {
+      // Без закрытия GramJS держит процесс живым своими соединениями.
+      await tg.close();
       queue.close();
     }
     return;
@@ -793,6 +885,7 @@ async function main(): Promise<void> {
   if (cmd === 'send') {
     const config = loadConfig();
     const queue = new Queue(DB_PATH);
+    const tg = lazyTelegram();
     try {
       // "До того, как что-либо сделать" — значит до clearStop() и до
       // Sender.run(), а не просто до подачи первой заявки.
@@ -800,13 +893,14 @@ async function main(): Promise<void> {
       for (const line of formatSendPreflight(approvedRows)) console.log(line);
 
       clearStop(); // прошлый kill switch не должен блокировать новый прогон
-      const adapterMap = buildAdapterMap(buildAdapters());
+      const adapterMap = buildAdapterMap(buildAdapters({ queue, settings: () => currentSettings(config), session: tg }));
       const report = await new Sender(queue, adapterMap, config).run();
 
       const { lines, exitCode } = formatSendResult(report);
       for (const line of lines) console.log(line);
       process.exitCode = exitCode;
     } finally {
+      await tg.close();
       queue.close();
     }
     return;

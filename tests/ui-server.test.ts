@@ -573,4 +573,53 @@ describe('панель без настроек', () => {
     const res = await fetch(`http://127.0.0.1:${PORT}/api/settings`);
     expect(res.status).toBe(409);
   });
+
+  it('Telegram-ручки без зависимости — 409', async () => {
+    expect((await fetch(`http://127.0.0.1:${PORT}/api/telegram/dialogs`)).status).toBe(409);
+    expect((await post(`http://127.0.0.1:${PORT}/api/telegram/resolve`, { ref: '@x' })).status).toBe(409);
+  });
+});
+
+describe('панель — Telegram', () => {
+  const CHAT = { id: '-1001', title: 'Работа в ИТ', username: 'workayte', kind: 'channel' as const };
+  let tgPanel: { port: number; close(): Promise<void> };
+  beforeEach(async () => {
+    tgPanel = await startPanel(q, 0, {
+      telegram: {
+        dialogs: async () => ({ ok: true, chats: [CHAT] }),
+        resolve: async (ref) => (ref === 'bad' ? { ok: false, error: 'не найден' } : { ok: true, chat: CHAT }),
+      },
+    });
+  });
+  afterEach(async () => { await tgPanel.close(); });
+  const url = (p: string) => `http://127.0.0.1:${tgPanel.port}${p}`;
+
+  it('dialogs и resolve отдаются; ошибка — 502 с причиной', async () => {
+    expect(await (await fetch(url('/api/telegram/dialogs'))).json()).toEqual({ chats: [CHAT] });
+    expect(await (await post(url('/api/telegram/resolve'), { ref: '@workayte' })).json()).toEqual({ chat: CHAT });
+    const bad = await post(url('/api/telegram/resolve'), { ref: 'bad' });
+    expect(bad.status).toBe(502);
+    expect((await bad.json() as { error: string }).error).toBe('не найден');
+  });
+
+  it('строка с контактом, которому уже писали, приходит с предупреждением; первая — без', async () => {
+    function tg(id: string, title: string) {
+      return normalizeVacancy({
+        source: 'tg', sourceId: `-1001:${id}`, title, company: '', url: `https://t.me/workayte/${id}`,
+        description: 'd', geo: '', postedAt: '2026-09-19T00:00:00Z', contact: 'hr_a', channel: 'Работа в ИТ',
+      });
+    }
+    q.insertPending(tg('1', 'Первая'), 60, [], 'п', 'dm');
+    const first = q.listByStatus('pending').find((r) => r.sourceId === '-1001:1')!;
+    q.approve(first.id);
+    q.markSent(first.id);
+    q.insertPending(tg('2', 'Вторая'), 60, [], 'п', 'dm');
+
+    const rows = await (await fetch(url('/api/pending'))).json() as Array<{ sourceId: string; contactWarning: string | null }>;
+    const second = rows.find((r) => r.sourceId === '-1001:2')!;
+    expect(second.contactWarning).toMatch(/@hr_a/);
+    expect(second.contactWarning).toMatch(/«Первая»/);
+    // Строки без контакта (hh) — без предупреждения.
+    expect(rows.find((r) => r.sourceId === '1')!.contactWarning).toBeNull();
+  });
 });

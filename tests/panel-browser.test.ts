@@ -368,3 +368,55 @@ describe('вкладка «Настройки» в настоящем брауз
     await expect.poll(() => page.textContent('#settingsNote')).toMatch(/название/);
   });
 });
+
+describe('Telegram во вкладке «Настройки»', () => {
+  const CHATS = [
+    { id: '-1001', title: 'Работа в ИТ', username: 'workayte', kind: 'channel' as const },
+    { id: '-1002', title: 'Закрытый чат аналитиков', username: null, kind: 'group' as const },
+  ];
+  let stored: Settings;
+  let tp: { port: number; close(): Promise<void> };
+
+  beforeEach(async () => {
+    stored = seedSettings(undefined, null);
+    stored.autoApply = { enabled: true, minScore: 60 };
+    tp = await startPanel(q, 0, {
+      settings: {
+        get: () => stored,
+        save: async (raw) => { const r = validateSettings(raw); if (r.ok) stored = r.settings; return r; },
+        suggest: async () => ({ ok: false, error: 'не нужен' }),
+      },
+      telegram: {
+        dialogs: async () => ({ ok: true, chats: CHATS }),
+        resolve: async (ref) => (ref === '@нет' ? { ok: false, error: 'канал не найден' } : { ok: true, chat: CHATS[0]! }),
+      },
+    });
+  });
+  afterEach(async () => { await tp.close(); });
+
+  it('«Выбрать из моих чатов» добавляет отмеченное, сохранение кладёт чаты в настройки', async () => {
+    await page.goto(`http://127.0.0.1:${tp.port}/#settings`);
+    await page.click('#tgPick');
+    await page.locator('#tgPicker input[data-i="1"]').check();
+    await page.click('#tgPickAdd');
+    await page.fill('#tgDays', '7');
+    await page.click('#settingsSave');
+    await expect.poll(() => stored.telegram.chats.map((c) => c.id)).toEqual(['-1002']);
+    expect(stored.telegram.firstReadDays).toBe(7);
+  });
+
+  it('ошибка «Добавить» показывается человеку', async () => {
+    await page.goto(`http://127.0.0.1:${tp.port}/#settings`);
+    await page.fill('#tgRef', '@нет');
+    await page.click('#tgAdd');
+    await expect.poll(() => page.textContent('#tgNote')).toMatch(/канал не найден/);
+  });
+
+  it('сохранение специальностей не трогает автоотклик', async () => {
+    await page.goto(`http://127.0.0.1:${tp.port}/#settings`);
+    await page.locator('.spec').first().locator('.skill').first().locator('[data-k="weight"]').fill('29');
+    await page.click('#settingsSave');
+    await expect.poll(() => stored.specialties[0]!.skills[0]!.weight).toBe(29);
+    expect(stored.autoApply).toEqual({ enabled: true, minScore: 60 });
+  });
+});

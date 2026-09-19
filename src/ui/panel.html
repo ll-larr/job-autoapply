@@ -68,6 +68,10 @@
     .skills input[data-k="weight"] { width: 64px; }
     .settings-block { background: #fff; margin: 16px 20px; padding: 16px; border: 1px solid #ddd; border-radius: 8px; }
     .settings-block textarea { min-height: 110px; margin-top: 6px; font: 13px/1.4 system-ui, sans-serif; }
+    .contact-warn { margin: 6px 0; padding: 6px 10px; background: #fff3cd; border: 1px solid #e0c068;
+                    border-radius: 4px; font-size: 13px; color: #5a4500; }
+    .tg-chat { display: flex; gap: 8px; align-items: center; font-size: 14px; margin: 4px 0; }
+    #tgPicker label { display: block; font-size: 14px; margin: 2px 0; }
     [hidden] { display: none !important; }
   </style>
 </head>
@@ -130,6 +134,20 @@
         <span class="hint">по одному в строке. Отсекают вакансию, если слово в заголовке или 2+ раза в описании.</span></label>
       <textarea id="stopWords" rows="5"></textarea>
     </div>
+    <div class="settings-block" id="tgBlock">
+      <strong>Telegram</strong>
+      <span class="hint">каналы и группы, где искать вакансии. Нужен VPN и вход: npm run tg:login.</span>
+      <div id="tgChats"></div>
+      <div class="actions" style="padding-left:0; flex-wrap:wrap;">
+        <input type="text" id="tgRef" placeholder="@канал или ссылка t.me" size="28">
+        <button id="tgAdd">Добавить</button>
+        <button id="tgPick">Выбрать из моих чатов</button>
+        <label class="hint">Глубина первого чтения, дней
+          <input type="number" id="tgDays" min="1" max="90" step="1" style="width:64px;"></label>
+      </div>
+      <div id="tgPicker"></div>
+      <span class="hint" id="tgNote"></span>
+    </div>
   </section>
 
 <script>
@@ -185,6 +203,20 @@ function setCount(name, n) {
   document.getElementById('n-' + name).textContent = n;
 }
 
+/**
+ * Строка Telegram в карточке: кому уйдёт сообщение, из какого чата пост, и
+ * предупреждение, если этому рекрутёру уже писали (спека 5.2, 5.5). У вакансий
+ * площадок контакта нет — строки нет.
+ */
+function tgMeta(r) {
+  if (!r.contact) return '';
+  const warn = r.contactWarning
+    ? `<div class="contact-warn">${esc(r.contactWarning)}</div>`
+    : '';
+  return `<div class="meta">Telegram: @${esc(r.contact)}${r.vacancy.channel ? ' · ' + esc(r.vacancy.channel) : ''}
+    · справа — сообщение рекрутёру, к нему приложится PDF резюме</div>${warn}`;
+}
+
 function renderPending(rows) {
   setCount('pending', rows.length);
   const list = document.getElementById('list');
@@ -206,6 +238,7 @@ function renderPending(rows) {
         <div class="meta">${r.vacancy.company} · ${r.vacancy.geo} · ${r.source}</div>
         <div class="meta">скор <span class="score">${r.score}</span> ·
              ${r.matched.join(', ') || 'без совпадений'} · режим ${r.letterMode}</div>
+        ${tgMeta(r)}
         <div class="desc"></div>
       </div>
       <div>
@@ -252,6 +285,7 @@ function renderApproved(rows) {
         <div><a href="${r.vacancy.url}" target="_blank" rel="noopener">${r.vacancy.title}</a></div>
         <div class="meta">${r.vacancy.company} · ${r.vacancy.geo} · ${r.source}</div>
         <div class="meta">скор <span class="score">${r.score}</span> · одобрено, ждёт отправки</div>
+        ${tgMeta(r)}
         <div class="desc"></div>
       </div>
       <div>
@@ -786,7 +820,79 @@ function renderSettings(s) {
   list.innerHTML = '';
   for (const spec of s.specialties) list.appendChild(specCard(spec));
   document.getElementById('stopWords').value = s.stopWords.join('\n');
+  const tg = s.telegram ?? { chats: [], firstReadDays: 14 };
+  document.getElementById('tgChats').innerHTML = '';
+  for (const c of tg.chats) addChatRow(c);
+  document.getElementById('tgDays').value = tg.firstReadDays;
 }
+
+// ----------------------------------------------------------------------------
+// Telegram: чаты, где искать (спека 4.4). Строка чата несёт всё, что нужно
+// сохранить, в data-*; чекбокс — «искать здесь или нет».
+// ----------------------------------------------------------------------------
+
+function addChatRow(c) {
+  const box = document.getElementById('tgChats');
+  if (box.querySelector(`[data-chat-id="${CSS.escape(c.id)}"]`)) return;
+  const row = document.createElement('div');
+  row.className = 'tg-chat';
+  row.dataset.chatId = c.id;
+  row.dataset.title = c.title;
+  row.dataset.username = c.username ?? '';
+  row.dataset.kind = c.kind;
+  const who = c.username ? ` (@${esc(c.username)})` : ' (закрытый)';
+  row.innerHTML = `<label><input type="checkbox" ${c.enabled === false ? '' : 'checked'}>
+    ${esc(c.title)}${who}, ${c.kind === 'channel' ? 'канал' : 'группа'}</label>
+    <button class="del-chat" title="Убрать чат">×</button>`;
+  row.querySelector('.del-chat').onclick = () => row.remove();
+  box.appendChild(row);
+}
+
+function collectChats() {
+  return [...document.querySelectorAll('#tgChats .tg-chat')].map((row) => ({
+    id: row.dataset.chatId,
+    title: row.dataset.title,
+    username: row.dataset.username || null,
+    kind: row.dataset.kind,
+    enabled: row.querySelector('input[type=checkbox]').checked,
+  }));
+}
+
+document.getElementById('tgAdd').onclick = async () => {
+  const note = document.getElementById('tgNote');
+  const ref = document.getElementById('tgRef').value.trim();
+  if (ref === '') { note.textContent = 'Впиши @имя канала или ссылку t.me.'; return; }
+  note.textContent = 'Ищу чат…';
+  const res = await post('/api/telegram/resolve', { ref });
+  const body = await res.json();
+  if (!res.ok) { note.textContent = 'Не вышло: ' + body.error; return; }
+  addChatRow({ ...body.chat, enabled: true });
+  document.getElementById('tgRef').value = '';
+  note.textContent = 'Добавлен. Сохранение — кнопкой «Сохранить».';
+};
+
+document.getElementById('tgPick').onclick = async () => {
+  const note = document.getElementById('tgNote');
+  const picker = document.getElementById('tgPicker');
+  note.textContent = 'Читаю список чатов…';
+  const res = await fetch('/api/telegram/dialogs');
+  const body = await res.json();
+  if (!res.ok) { note.textContent = 'Не вышло: ' + body.error; return; }
+  note.textContent = '';
+  const have = new Set(collectChats().map((c) => c.id));
+  const fresh = body.chats.filter((c) => !have.has(c.id));
+  if (fresh.length === 0) { picker.innerHTML = '<span class="hint">Все твои каналы и группы уже в списке.</span>'; return; }
+  picker.innerHTML = fresh.map((c, i) => `<label><input type="checkbox" data-i="${i}">
+    ${esc(c.title)}${c.username ? ` (@${esc(c.username)})` : ''}, ${c.kind === 'channel' ? 'канал' : 'группа'}</label>`).join('')
+    + '<button id="tgPickAdd">Добавить отмеченные</button>';
+  document.getElementById('tgPickAdd').onclick = () => {
+    for (const box of picker.querySelectorAll('input[type=checkbox]:checked')) {
+      addChatRow({ ...fresh[Number(box.dataset.i)], enabled: true });
+    }
+    picker.innerHTML = '';
+    note.textContent = 'Добавлены. Сохранение — кнопкой «Сохранить».';
+  };
+};
 
 function collectSettings() {
   const specialties = [...document.querySelectorAll('#specList .spec')].map((el) => {
@@ -809,7 +915,15 @@ function collectSettings() {
       })),
     };
   });
-  return { version: 1, specialties, stopWords: lines(document.getElementById('stopWords').value) };
+  return {
+    version: 1,
+    specialties,
+    stopWords: lines(document.getElementById('stopWords').value),
+    telegram: { chats: collectChats(), firstReadDays: Number(document.getElementById('tgDays').value) },
+    // Автоотклик правится своим блоком (он появится ниже); здесь — как загружен,
+    // чтобы сохранение специальностей не выключало его молча.
+    autoApply: settingsLoaded?.autoApply ?? { enabled: false, minScore: null },
+  };
 }
 
 async function loadSettings() {

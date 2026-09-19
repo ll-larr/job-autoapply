@@ -15,6 +15,7 @@ import { formatProxyReport,
   buildAdapters,
   buildAdapterMap,
   runSearchCommand,
+  lazyTelegram,
   specialtyOf,
 } from '../src/cli.js';
 import { Queue, type Status } from '../src/core/queue.js';
@@ -279,7 +280,59 @@ describe('formatStatusReport', () => {
   });
 });
 
+describe('lazyTelegram — одна сессия на процесс, по первому обращению', () => {
+  function fakeOpen(results: Array<'ok' | 'fail'>) {
+    let opened = 0;
+    let closed = 0;
+    const open = async () => {
+      const r = results[Math.min(opened++, results.length - 1)];
+      return r === 'ok'
+        ? { ok: true as const, reader: { tag: 'reader' } as never, sender: { tag: 'sender' } as never, close: async () => { closed++; } }
+        : { ok: false as const, reason: 'no_proxy' as const, message: 'VPN выключен, Telegram пропущен' };
+    };
+    return { open, opened: () => opened, closed: () => closed };
+  }
+
+  it('не открывается, пока не спросили; открывается один раз на reader и sender', async () => {
+    const f = fakeOpen(['ok']);
+    const tg = lazyTelegram(f.open);
+    expect(f.opened()).toBe(0);
+    await tg.reader();
+    await tg.sender();
+    expect(f.opened()).toBe(1);
+    await tg.close();
+    expect(f.closed()).toBe(1);
+  });
+
+  it('неудача — причина вместо обёртки, и следующее обращение пробует снова (VPN включили позже)', async () => {
+    const f = fakeOpen(['fail', 'ok']);
+    const tg = lazyTelegram(f.open);
+    expect(await tg.reader()).toEqual({ error: 'VPN выключен, Telegram пропущен' });
+    expect(await tg.reader()).toEqual({ tag: 'reader' });
+    expect(f.opened()).toBe(2);
+  });
+
+  it('close без открытия — ничего не делает', async () => {
+    const f = fakeOpen(['ok']);
+    await lazyTelegram(f.open).close();
+    expect(f.opened()).toBe(0);
+  });
+});
+
 describe('buildAdapters / buildAdapterMap — сборка адаптеров без обращения к сети', () => {
+  it('с проводкой Telegram — ещё и tg, и у него есть запись в config.throttle', () => {
+    const settings = seedSettings(undefined, null);
+    const queue = new Queue(join(mkdtempSync(join(tmpdir(), 'jaa-cli-tg-')), 't.db'));
+    const adapters = buildAdapters({
+      queue, settings: () => settings,
+      session: { reader: async () => ({ error: 'x' }), sender: async () => ({ error: 'x' }), close: async () => {} },
+    });
+    expect(adapters.map((a) => a.name).sort()).toEqual(['careerist', 'hh', 'hrge', 'tg']);
+    const config = JSON.parse(readFileSync('config.json', 'utf8')) as { throttle: Record<string, unknown> };
+    expect(config.throttle['tg']).toBeDefined();
+    queue.close();
+  });
+
   it('buildAdapters даёт все площадки с ожидаемыми именами', () => {
     const adapters = buildAdapters();
     expect(adapters.map((a) => a.name).sort()).toEqual(['careerist', 'hh', 'hrge']);

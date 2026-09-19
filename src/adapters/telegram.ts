@@ -33,6 +33,8 @@ export interface TelegramAdapterOptions {
   sender?: () => Promise<TgSender | { error: string }>;
   /** PDF резюме специальности по её id; null — у специальности его нет. */
   resumePdf?: (specialtyId: string) => string | null;
+  /** Закрыть сессию Telegram, если она поднималась (панель зовёт close у адаптеров при выходе). */
+  close?: () => Promise<void>;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   random?: () => number;
@@ -143,6 +145,10 @@ export class TelegramAdapter implements Adapter {
     const file = await this.attempt(() => sender.sendFile(username, pdf));
     if (!file.ok) return { status: 'sent', warning: `резюме не приложилось: ${describeTgFailure(file.failure)}` };
     return { status: 'sent' };
+  }
+
+  async close(): Promise<void> {
+    await this.opts.close?.();
   }
 
   /** Вызов с одним повтором после короткого FloodWait; любой сбой — TgFailure, а не исключение. */
