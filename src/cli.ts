@@ -214,6 +214,12 @@ export function formatSearchReport(
   lines.push(`Отсеяно (стоп-слова):   ${report.rejectedStopword}${hits === '' ? '' : ` (${hits})`}`);
   lines.push(`Отсеяно (заголовок):    ${report.rejectedTitle}`);
   lines.push(`Отсеяно (стажировка):    ${report.rejectedInternship}`);
+  if (report.tgNotVacancy + report.tgNoContact + report.textDuplicates > 0) {
+    lines.push(
+      `Telegram: не вакансия ${report.tgNotVacancy}, без контакта ${report.tgNoContact}, репостов ${report.textDuplicates}`,
+    );
+  }
+  for (const c of report.tgSkippedChats) lines.push(`  Telegram, «${c.title}» пропущен: ${c.why}`);
   if (emptyLetters > 0 && letterFailure !== undefined) {
     lines.push(`Почему письма пустые:    ${letterFailure}`);
   }

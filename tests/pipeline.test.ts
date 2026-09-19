@@ -807,3 +807,90 @@ describe('runSearch — специальности', () => {
     expect(got).toBe(0);
   });
 });
+
+describe('runSearch — бесфразовый адаптер (Telegram)', () => {
+  const PM: Specialty = {
+    ...DEFAULT_SPECIALTY, id: 'pm', name: 'Менеджер продукта', legacyLetters: false,
+    titleWords: ['продакт', 'product manager'],
+    skills: [{ id: 'roadmap', name: 'Роадмап', synonyms: ['роадмап'], weight: 30, core: true }],
+  };
+
+  function tgAdapter(posts: Array<{ id: string; title: string; text: string; contact?: string; hash?: string }>): Adapter & { calls: number } {
+    const a = {
+      name: 'tg', queryless: true, calls: 0,
+      async search(f: SearchFilters) {
+        a.calls++;
+        if ((f.skip ?? 0) > 0) return [];
+        return posts.map((p) => normalizeVacancy({
+          source: 'tg', sourceId: p.id, title: p.title, company: '', url: `https://t.me/x/${p.id}`,
+          description: p.text, geo: '', postedAt: '2026-09-19T00:00:00Z',
+          contact: p.contact ?? 'hr', contentHash: p.hash ?? p.id, channel: 'Работа в ИТ',
+        }));
+      },
+      async apply() { return { status: 'sent' as const }; },
+    };
+    return a;
+  }
+
+  it('вызывается один раз, сколько бы фраз ни было', async () => {
+    const tg = tgAdapter([]);
+    await runSearch({
+      queue: q, config: CONFIG, queries: [{ query: 'а' }, { query: 'б' }, { query: 'в' }],
+      specialties: [DEFAULT_SPECIALTY], adapters: [tg], target: 10,
+      generate: async () => ({ letter: 'п', mode: 'dm' as const }),
+    });
+    expect(tg.calls).toBe(1);
+  });
+
+  it('специальность — та, чьи слова заголовка есть в посте; при нескольких — лучший скор', async () => {
+    const seen: string[] = [];
+    const rep = await runSearch({
+      queue: q, config: CONFIG, queries: [{ query: 'x' }], specialties: [DEFAULT_SPECIALTY, PM],
+      adapters: [tgAdapter([
+        { id: '1', title: 'Бизнес-аналитик', text: `Бизнес-аналитик. ${PROCESS_LANGUAGE}` },
+        { id: '2', title: 'Product manager', text: 'Product manager, ведём роадмап продукта и не только.' },
+        { id: '3', title: 'Повар', text: 'Повар на кухню, опыт от года.' },
+      ])],
+      generate: async (_v, _m, mode, s) => { seen.push(s.id); return { letter: 'п', mode }; },
+    });
+    expect(seen.sort()).toEqual(['business-analyst', 'pm']);
+    expect(rep.rejectedTitle).toBe(1); // повар — ни одна специальность
+    expect(q.listByStatus('pending').map((r) => r.specialty).sort()).toEqual(['business-analyst', 'pm']);
+  });
+
+  it('гейт заголовка не повторяется: заголовок поста может не содержать слов', async () => {
+    const rep = await runSearch({
+      queue: q, config: CONFIG, queries: [{ query: 'x' }], specialties: [DEFAULT_SPECIALTY],
+      adapters: [tgAdapter([{ id: '1', title: 'Ищем в команду банка', text: `Системный аналитик. ${PROCESS_LANGUAGE}` }])],
+      generate: async () => ({ letter: 'п', mode: 'dm' as const }),
+    });
+    expect(rep.queued).toBe(1);
+  });
+
+  it('репост с тем же текстом — дубль по хэшу, и в прогоне, и между прогонами', async () => {
+    const posts = [
+      { id: '1', title: 'Бизнес-аналитик', text: `Бизнес-аналитик. ${PROCESS_LANGUAGE}`, hash: 'H' },
+      { id: '2', title: 'Бизнес-аналитик', text: `Бизнес-аналитик. ${PROCESS_LANGUAGE}`, hash: 'H' },
+    ];
+    const opts = {
+      queue: q, config: CONFIG, queries: [{ query: 'x' }], specialties: [DEFAULT_SPECIALTY],
+      generate: async () => ({ letter: 'п', mode: 'dm' as const }),
+    };
+    const first = await runSearch({ ...opts, adapters: [tgAdapter(posts)] });
+    expect(first.queued).toBe(1);
+    expect(first.textDuplicates).toBe(1);
+    const second = await runSearch({ ...opts, adapters: [tgAdapter([{ ...posts[0]!, id: '3' }])] });
+    expect(second.queued).toBe(0);
+    expect(second.textDuplicates).toBe(1);
+  });
+
+  it('статистика адаптера — в отчёте', async () => {
+    const tg = tgAdapter([]) as Adapter & { lastSearchStats?: unknown };
+    tg.lastSearchStats = { read: 5, notVacancy: 3, noContact: 2, skippedChats: [{ title: 'X', why: 'чат недоступен' }] };
+    const rep = await runSearch({
+      queue: q, config: CONFIG, queries: [{ query: 'x' }], specialties: [DEFAULT_SPECIALTY], adapters: [tg],
+      generate: async () => ({ letter: 'п', mode: 'dm' as const }),
+    });
+    expect(rep).toMatchObject({ found: 5, tgNotVacancy: 3, tgNoContact: 2, tgSkippedChats: [{ title: 'X', why: 'чат недоступен' }] });
+  });
+});

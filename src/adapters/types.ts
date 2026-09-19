@@ -59,6 +59,12 @@ export type ApplyResult =
 
 export interface Adapter {
   readonly name: string;
+  /**
+   * Адаптер не ищет по фразам: Telegram читает ленту выбранных чатов целиком.
+   * Конвейер вызывает такой адаптер один раз за прогон со `skip: 0`; при
+   * `skip > 0` search обязан вернуть пустой список.
+   */
+  readonly queryless?: boolean;
   search(filters: SearchFilters): Promise<Vacancy[]>;
   apply(vacancy: Vacancy, letter: string): Promise<ApplyResult>;
 }

@@ -406,6 +406,9 @@ async function pollSearch() {
       if (rejected) parts.push(`отсеяно фильтрами ${rejected}`);
       const hits = Object.entries(r.stopwordHits ?? {}).map(([w, n]) => `${w} ${n}`).join(', ');
       if (hits) parts.push(`стоп-слова: ${hits}`);
+      if (r.tgNoContact) parts.push(`tg без контакта ${r.tgNoContact}`);
+      if (r.textDuplicates) parts.push(`репостов ${r.textDuplicates}`);
+      for (const c of r.tgSkippedChats ?? []) parts.push(`«${c.title}»: ${c.why}`);
       if (st.result.emptyLetters) parts.push(`БЕЗ ПИСЬМА ${st.result.emptyLetters}`);
       searchNote.textContent = parts.join(' · ');
     }

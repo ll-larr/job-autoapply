@@ -3,7 +3,7 @@ import type { Config } from './core/config.js';
 import type { Adapter } from './adapters/types.js';
 import type { Specialty } from './core/specialty.js';
 import { scoreVacancy } from './core/scorer.js';
-import { screenVacancy } from './core/screening.js';
+import { screenVacancy, hasTitleWord, type ScreenResult } from './core/screening.js';
 import { pickMode } from './core/letter.js';
 import { DEFAULT_SPECIALTY, DEFAULT_STOP_WORDS } from './core/specialty-defaults.js';
 import { vacancyKey, type Vacancy } from './core/vacancy.js';
@@ -31,9 +31,15 @@ export interface SearchQuery {
  */
 interface AdapterSearchStats {
   read: number;
-  rejectedExperience: number;
-  rejectedGrade: number;
+  rejectedExperience?: number;
+  rejectedGrade?: number;
   duplicatesSkipped?: number;
+  /** Telegram (adapters/telegram.ts): пост не похож на вакансию. */
+  notVacancy?: number;
+  /** Telegram: вакансия, но написать некому — ни @username, ни ссылки на площадку. */
+  noContact?: number;
+  /** Telegram: чаты, которые не прочитались, и почему. */
+  skippedChats?: Array<{ title: string; why: string }>;
 }
 
 interface AdapterWithSearchStats {
@@ -100,6 +106,14 @@ export interface SearchReport {
   rejectedTitle: number;
   /** Стажировки. */
   rejectedInternship: number;
+  /** Telegram: прочитанные посты, не похожие на вакансию (спека 4.6). */
+  tgNotVacancy: number;
+  /** Telegram: вакансии, где некому писать. */
+  tgNoContact: number;
+  /** Telegram: чаты, пропущенные в этом прогоне, и почему (закрыт, FloodWait). */
+  tgSkippedChats: Array<{ title: string; why: string }>;
+  /** Репосты: тот же текст, что у уже виденного поста (спека 4.7). */
+  textDuplicates: number;
   adapterErrors: Array<{ adapter: string; message: string }>;
   /**
    * Почему прогон остановился. Нужно панели: «нашли 12 из 20» само по себе
@@ -127,6 +141,12 @@ export interface RunSearchOptions {
   queries: SearchQuery[];
   /** Стоп-слова из настроек. undefined — прежние 1С и Битрикс. */
   stopWords?: readonly string[];
+  /**
+   * Включённые специальности — для бесфразовых адаптеров (Telegram): пост
+   * найден не фразой, и оценивает его та специальность, чьи слова заголовка
+   * в нём есть. undefined — специальности, стоящие за фразами.
+   */
+  specialties?: Specialty[];
   /**
    * Сколько вакансий должно ЛЕЧЬ В ОЧЕРЕДЬ по итогам прогона. Это то число,
    * которое человек вводит в панели: попросил 20 — получил 20 карточек на
@@ -195,9 +215,25 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
     found: 0, queued: 0, duplicates: 0, belowThreshold: 0, noCoreMatch: 0,
     rejectedExperience: 0, rejectedGrade: 0, rejectedStopword: 0, stopwordHits: {},
     rejectedTitle: 0, rejectedInternship: 0,
+    tgNotVacancy: 0, tgNoContact: 0, tgSkippedChats: [], textDuplicates: 0,
     adapterErrors: [], stoppedBecause: 'exhausted',
   };
   const stopWords = opts.stopWords ?? DEFAULT_STOP_WORDS;
+
+  // Каждая причина отсева считается своей строкой. Ссыпать их в одну кучу
+  // значило бы врать в отчёте: «отсеяно по 1С: 9» при девяти вакансиях, где
+  // 1С никто не упоминал.
+  const countReject = (screen: Extract<ScreenResult, { passed: false }>): void => {
+    if (screen.reason === 'experience') report.rejectedExperience++;
+    else if (screen.reason === 'grade') report.rejectedGrade++;
+    else if (screen.reason === 'not_title') report.rejectedTitle++;
+    else if (screen.reason === 'internship') report.rejectedInternship++;
+    else {
+      report.rejectedStopword++;
+      const word = screen.stopWord ?? '?';
+      report.stopwordHits[word] = (report.stopwordHits[word] ?? 0) + 1;
+    }
+  };
 
   // Дедуп В ПРЕДЕЛАХ этого прогона: разные формулировки запроса находят одну
   // и ту же вакансию по нескольку раз. Queue.has() ниже ловит дубли МЕЖДУ
@@ -232,9 +268,20 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
   const tasks: Task[] = [];
   opts.queries.forEach((qc, queryIndex) => {
     for (const adapter of opts.adapters) {
+      // Бесфразовый адаптер (Telegram) читает ленту, а не выдачу по фразе:
+      // одна задача на весь прогон, сколько бы фраз ни было.
+      if (adapter.queryless === true && queryIndex > 0) continue;
       tasks.push({ qc, adapter, queryIndex, skip: 0, done: false });
     }
   });
+  const specialtiesForQueryless = opts.specialties ?? [
+    ...new Map(opts.queries.map((q) => {
+      const s = q.specialty ?? DEFAULT_SPECIALTY;
+      return [s.id, s] as const;
+    })).values(),
+  ];
+  // Репосты (спека 4.7): хэши текстов, уже обработанных в этом прогоне.
+  const seenHashes = new Set<string>();
 
   const target = opts.target;
   const batchSize = opts.batchSize ?? DEFAULT_BATCH_SIZE;
@@ -304,9 +351,12 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
     const read = stats ? stats.read : vacancies.length;
     if (stats) {
       report.found += stats.read;
-      report.rejectedExperience += stats.rejectedExperience;
-      report.rejectedGrade += stats.rejectedGrade;
+      report.rejectedExperience += stats.rejectedExperience ?? 0;
+      report.rejectedGrade += stats.rejectedGrade ?? 0;
       report.duplicates += stats.duplicatesSkipped ?? 0;
+      report.tgNotVacancy += stats.notVacancy ?? 0;
+      report.tgNoContact += stats.noContact ?? 0;
+      report.tgSkippedChats.push(...(stats.skippedChats ?? []));
     } else {
       report.found += vacancies.length;
     }
@@ -316,8 +366,9 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
     // прочитанное — следующая порция продолжит, а не перечитает то же самое.
     if (read === 0) task.done = true;
     else task.skip += read;
-    // Без цели пара опрашивается ровно один раз (прежнее поведение).
-    if (target === undefined) task.done = true;
+    // Без цели пара опрашивается ровно один раз (прежнее поведение). Лента
+    // Telegram читается за один заход целиком — повторять незачем.
+    if (target === undefined || task.adapter.queryless === true) task.done = true;
 
     for (const v of vacancies) {
       if (target !== undefined && report.queued >= target) break;
@@ -328,35 +379,59 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
 
       if (opts.queue.has(v)) { report.duplicates++; continue; }
 
-      // Специальность фразы решает всё дальнейшее: стаж, слова заголовка,
-      // навыки и веса. Опыт 0 (прежний juniorOnly) смотрит и на ЗАГОЛОВОК:
-      // «Старший системный аналитик» пришёл с careerist без маркера опыта
-      // вообще, и владелец его отменил — системный аналитик он максимум младший.
-      const specialty = task.qc.specialty ?? DEFAULT_SPECIALTY;
-      const screen = screenVacancy(v, {
-        titleWords: specialty.titleWords,
-        experienceYears: specialty.experienceYears,
-        stopWords,
-      });
-      if (!screen.passed) {
-        // Каждая причина считается своей строкой. Ссыпать их в одну кучу
-        // значило бы врать в отчёте: «отсеяно по 1С: 9» при девяти вакансиях,
-        // где 1С никто не упоминал.
-        if (screen.reason === 'experience') report.rejectedExperience++;
-        else if (screen.reason === 'grade') report.rejectedGrade++;
-        else if (screen.reason === 'not_title') report.rejectedTitle++;
-        else if (screen.reason === 'internship') report.rejectedInternship++;
-        else {
-          report.rejectedStopword++;
-          const word = screen.stopWord ?? '?';
-          report.stopwordHits[word] = (report.stopwordHits[word] ?? 0) + 1;
+      // Один пост часто перепощен в несколько каналов (спека 4.7): ключ дубля —
+      // хэш текста, и в прогоне, и между прогонами.
+      if (v.contentHash !== null) {
+        if (seenHashes.has(v.contentHash) || opts.queue.hasContentHash(v.contentHash)) {
+          report.textDuplicates++;
+          continue;
         }
-        continue;
+        seenHashes.add(v.contentHash);
       }
 
-      const { score, matched, hasCoreMatch } = scoreVacancy(v, specialty.skills);
-      if (score < opts.config.minScore) { report.belowThreshold++; continue; }
-      if (!hasCoreMatch) { report.noCoreMatch++; continue; }
+      // Кто оценивает вакансию. Найденную фразой — специальность фразы. Пост
+      // Telegram фразой не найден: его оценивает та из включённых
+      // специальностей, чьи слова заголовка в нём есть, а если таких
+      // несколько — давшая лучший скор (при равенстве — первая в настройках).
+      const queryless = task.adapter.queryless === true;
+      const candidates = queryless
+        ? specialtiesForQueryless.filter((s) => hasTitleWord(`${v.title}\n${v.description}`, s.titleWords))
+        : [task.qc.specialty ?? DEFAULT_SPECIALTY];
+      if (candidates.length === 0) { report.rejectedTitle++; continue; }
+
+      let best: { specialty: Specialty; score: number; matched: string[] } | null = null;
+      let firstReject: ScreenResult | null = null;
+      let lowScore = false;
+      let noCore = false;
+      for (const candidate of candidates) {
+        // Опыт 0 (прежний juniorOnly) смотрит и на ЗАГОЛОВОК: «Старший
+        // системный аналитик» пришёл с careerist без маркера опыта вообще, и
+        // владелец его отменил — системный аналитик он максимум младший.
+        const screen = screenVacancy(v, {
+          titleWords: candidate.titleWords,
+          experienceYears: candidate.experienceYears,
+          stopWords,
+          // Гейт заголовка для поста уже сыграла проверка слов по всему посту
+          // выше, а заголовок из запасного правила может слов не содержать.
+          skipTitleGate: queryless,
+        });
+        if (!screen.passed) { firstReject ??= screen; continue; }
+        const s = scoreVacancy(v, candidate.skills);
+        if (s.score < opts.config.minScore) { lowScore = true; continue; }
+        if (!s.hasCoreMatch) { noCore = true; continue; }
+        if (best === null || s.score > best.score) best = { specialty: candidate, score: s.score, matched: s.matched };
+      }
+      if (best === null) {
+        // Причина — самая поздняя стадия, до которой дошёл хоть один кандидат:
+        // «ниже порога» честнее, чем «стоп-слово», если другой кандидат
+        // стоп-слово прошёл. У вакансии, найденной фразой, кандидат один, и
+        // это ровно прежний подсчёт.
+        if (noCore) report.noCoreMatch++;
+        else if (lowScore) report.belowThreshold++;
+        else if (firstReject !== null && !firstReject.passed) countReject(firstReject);
+        continue;
+      }
+      const { specialty, score, matched } = best;
 
       // Скелеты писем и выбор hybrid/full — только у засеянных специальностей
       // (legacyLetters). У остальных скелетов нет, письмо пишется целиком

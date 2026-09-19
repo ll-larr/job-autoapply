@@ -88,7 +88,9 @@ describe('formatSearchReport', () => {
   const BASE_REPORT: SearchReport = {
     found: 10, queued: 4, duplicates: 2, belowThreshold: 3, noCoreMatch: 1,
     rejectedExperience: 0, rejectedGrade: 0, rejectedStopword: 0, stopwordHits: {},
-    rejectedTitle: 0, rejectedInternship: 0, adapterErrors: [], stoppedBecause: 'target',
+    rejectedTitle: 0, rejectedInternship: 0,
+    tgNotVacancy: 0, tgNoContact: 0, tgSkippedChats: [], textDuplicates: 0,
+    adapterErrors: [], stoppedBecause: 'target',
   };
 
   it('содержит все пункты отчёта, требуемые заданием', () => {
@@ -114,6 +116,16 @@ describe('formatSearchReport', () => {
     expect(lines).toContain('Отсеяно (стоп-слова):   2 (1С: 1, Битрикс: 1)');
     expect(lines).toContain('Отсеяно (заголовок):    4');
     expect(lines).toContain('Отсеяно (стажировка):    3');
+  });
+
+  it('Telegram: счётчики и пропущенные чаты — только когда есть что сказать', () => {
+    expect(formatSearchReport('q', BASE_REPORT, 0, true).join('\n')).not.toContain('Telegram');
+    const lines = formatSearchReport('q', {
+      ...BASE_REPORT, tgNotVacancy: 7, tgNoContact: 3, textDuplicates: 2,
+      tgSkippedChats: [{ title: 'Работа в ИТ', why: 'чат недоступен' }],
+    }, 0, true).join('\n');
+    expect(lines).toContain('Telegram: не вакансия 7, без контакта 3, репостов 2');
+    expect(lines).toContain('«Работа в ИТ» пропущен: чат недоступен');
   });
 
   it('видно, найден ли OPENROUTER_API_KEY', () => {
