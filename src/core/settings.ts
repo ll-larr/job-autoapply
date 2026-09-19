@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname } from 'node:path';
 import type { SearchQueryConfig } from './config.js';
 import type { Skill, Specialty } from './specialty.js';
+import type { TgChat } from '../telegram/types.js';
 import {
   BA_DEFAULT_QUERIES, DEFAULT_STOP_WORDS, SYSTEM_ANALYST_DEFAULT_QUERIES,
   makeBaSpecialty, makeSystemAnalystSpecialty,
@@ -12,13 +13,25 @@ import {
  * и стоп-слова. Лежат в data/ — вне git, рядом с queue.db. Техника, которую не
  * крутят каждый день (модели, пороги, паузы), остаётся в config.json.
  */
+export type TgChatSetting = TgChat & { enabled: boolean };
+
 export interface Settings {
   version: 1;
   specialties: Specialty[];
   stopWords: string[];
+  /** Каналы и группы, где искать (спека 4.4). */
+  telegram: { chats: TgChatSetting[]; firstReadDays: number };
+  /**
+   * Автоотклик (спека 7.1). По умолчанию выключен. minScore null — общий
+   * minScore из config.json, то есть уходит всё, что прошло фильтры.
+   */
+  autoApply: { enabled: boolean; minScore: number | null };
 }
 
 export const SETTINGS_PATH = 'data/settings.json';
+
+/** Глубина первого чтения чата, дней (спека 4.4). */
+export const DEFAULT_FIRST_READ_DAYS = 14;
 
 const MAX_EXPERIENCE_YEARS = 50;
 
@@ -132,7 +145,50 @@ export function validateSettings(raw: unknown): Result {
     });
   }
 
-  return { ok: true, settings: { version: 1, specialties, stopWords: cleanList(raw['stopWords']) } };
+  // Секции Telegram и автоотклика появились 2026-09-19: файл, записанный
+  // раньше, их не содержит — отсутствие значит «по умолчанию», а не ошибку.
+  const tgRaw = isRecord(raw['telegram']) ? raw['telegram'] : {};
+  const days = tgRaw['firstReadDays'] ?? DEFAULT_FIRST_READ_DAYS;
+  if (typeof days !== 'number' || !Number.isInteger(days) || days < 1 || days > 90) {
+    return { ok: false, error: 'Telegram: глубина первого чтения — целое число дней от 1 до 90' };
+  }
+  const chats: TgChatSetting[] = [];
+  const seenChats = new Set<string>();
+  for (const [i, c] of (Array.isArray(tgRaw['chats']) ? tgRaw['chats'] as unknown[] : []).entries()) {
+    if (!isRecord(c) || typeof c['id'] !== 'string' || c['id'].trim() === ''
+      || typeof c['title'] !== 'string' || c['title'].trim() === '') {
+      return { ok: false, error: `Telegram, чат №${i + 1}: нужны id и название` };
+    }
+    const id = c['id'].trim();
+    if (seenChats.has(id)) continue;
+    seenChats.add(id);
+    chats.push({
+      id,
+      title: c['title'].trim(),
+      username: typeof c['username'] === 'string' && c['username'].trim() !== ''
+        ? c['username'].trim().replace(/^@/, '')
+        : null,
+      kind: c['kind'] === 'channel' ? 'channel' : 'group',
+      enabled: c['enabled'] !== false,
+    });
+  }
+
+  const aaRaw = isRecord(raw['autoApply']) ? raw['autoApply'] : {};
+  const aaMin = aaRaw['minScore'] ?? null;
+  if (aaMin !== null && (typeof aaMin !== 'number' || !Number.isInteger(aaMin) || aaMin < 0 || aaMin > 100)) {
+    return { ok: false, error: 'Автоотклик: порог — целое от 0 до 100 или пусто' };
+  }
+
+  return {
+    ok: true,
+    settings: {
+      version: 1,
+      specialties,
+      stopWords: cleanList(raw['stopWords']),
+      telegram: { chats, firstReadDays: days },
+      autoApply: { enabled: aaRaw['enabled'] === true, minScore: aaMin },
+    },
+  };
 }
 
 /**
@@ -157,6 +213,8 @@ export function seedSettings(
       makeSystemAnalystSpecialty(saQueries, baResumePdf),
     ],
     stopWords: [...DEFAULT_STOP_WORDS],
+    telegram: { chats: [], firstReadDays: DEFAULT_FIRST_READ_DAYS },
+    autoApply: { enabled: false, minScore: null },
   };
 }
 

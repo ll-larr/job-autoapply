@@ -48,6 +48,12 @@ describe('parseExperienceFromText — русские фразы, structured-си
     expect(parseExperienceFromText('Опыт работы не менее 4 лет')).toBe('between3And6');
   });
 
+  it('"от 3 – лет" — тире между числом и «лет» (живой пост Telegram, 2026-09-19)', () => {
+    expect(parseExperienceFromText('Опыт работы: от 3 – лет')).toBe('between1And3');
+    // Диапазон с тире по-прежнему диапазон, а не «от 3».
+    expect(parseExperienceFromText('Опыт от 3 – 6 лет')).toBe('between3And6');
+  });
+
   it('"опыт работы от ..." — общий шаблон с числом', () => {
     expect(parseExperienceFromText('опыт работы от 2 лет приветствуется')).toBe('between1And3');
   });

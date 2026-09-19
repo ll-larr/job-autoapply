@@ -442,3 +442,55 @@ describe('Queue — специальность строки', () => {
     old.close();
   });
 });
+
+describe('Queue — Telegram и автоотклик', () => {
+  function tgVacancy(id: string, contact: string, hash = `h${id}`) {
+    return normalizeVacancy({
+      source: 'tg', sourceId: `-1001:${id}`, title: 'Бизнес-аналитик', company: '', url: `https://t.me/x/${id}`,
+      description: 'd', geo: '', postedAt: '2026-09-19T00:00:00Z', contact, contentHash: hash, channel: 'Работа в ИТ',
+    });
+  }
+
+  it('контакт и хэш пишутся и читаются', () => {
+    q.insertPending(tgVacancy('1', 'hr_a'), 60, [], 'п', 'dm');
+    expect(q.listByStatus('pending')[0]!.contact).toBe('hr_a');
+    expect(q.hasContentHash('h1')).toBe(true);
+    expect(q.hasContentHash('нет')).toBe(false);
+  });
+
+  it('approve помнит, кто одобрил', () => {
+    q.insertPending(tgVacancy('1', 'hr_a'), 60, [], 'п', 'dm');
+    const [row] = q.listByStatus('pending');
+    q.approve(row!.id, undefined, 'auto');
+    expect(q.listByStatus('approved')[0]!.approvedBy).toBe('auto');
+  });
+
+  it('lastContactAt — последняя строка с контактом, отправленная или в очереди', () => {
+    expect(q.lastContactAt('hr_a')).toBeNull();
+    q.insertPending(tgVacancy('1', 'hr_a'), 60, [], 'п', 'dm');
+    expect(q.lastContactAt('hr_a')).toMatchObject({ status: 'pending', title: 'Бизнес-аналитик' });
+    const [row] = q.listByStatus('pending');
+    q.approve(row!.id);
+    q.markSent(row!.id);
+    expect(q.lastContactAt('hr_a')!.status).toBe('sent');
+    expect(q.lastContactAt('HR_A')).not.toBeNull(); // username без учёта регистра
+  });
+
+  it('курсоры чатов', () => {
+    expect(q.getTgCursor('-1001')).toBe(0);
+    q.setTgCursor('-1001', 4331);
+    q.setTgCursor('-1001', 4400);
+    expect(q.getTgCursor('-1001')).toBe(4400);
+  });
+
+  it('listSentSince — отправленные после момента', () => {
+    q.insertPending(tgVacancy('1', 'hr_a'), 60, [], 'п', 'dm');
+    const [row] = q.listByStatus('pending');
+    q.approve(row!.id, undefined, 'auto');
+    q.markSent(row!.id);
+    const sent = q.listSentSince(0);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.approvedBy).toBe('auto');
+    expect(sent[0]!.sentAt).toBeGreaterThan(0);
+  });
+});

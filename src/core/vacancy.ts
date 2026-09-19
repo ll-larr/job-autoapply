@@ -25,6 +25,15 @@ export interface RawVacancy {
   hasSponsorship?: boolean;
   /** Отсутствует у источников без структурного сигнала (hr.ge) — остаётся null. */
   experience?: ExperienceLevel | null;
+  /**
+   * Только у Telegram (спека 2026-09-18, 4.6): @username рекрутёра из поста,
+   * без @. Ему уходит первое сообщение.
+   */
+  contact?: string | null;
+  /** Только у Telegram (спека 4.7): хэш нормализованного текста поста — ловит репосты. */
+  contentHash?: string | null;
+  /** Только у Telegram: название чата, где нашёлся пост, — для карточки и письма. */
+  channel?: string | null;
 }
 
 export interface Vacancy {
@@ -42,6 +51,10 @@ export interface Vacancy {
   isRemote: boolean;
   hasSponsorship: boolean;
   experience: ExperienceLevel | null;
+  /** См. RawVacancy.contact: только Telegram, без @. */
+  contact: string | null;
+  contentHash: string | null;
+  channel: string | null;
 }
 
 function clean(s: string): string {
@@ -68,6 +81,9 @@ export function normalizeVacancy(raw: RawVacancy): Vacancy {
     isRemote: raw.isRemote ?? false,
     hasSponsorship: raw.hasSponsorship ?? false,
     experience: raw.experience ?? null,
+    contact: raw.contact == null ? null : (raw.contact.trim().replace(/^@/, '') || null),
+    contentHash: raw.contentHash ?? null,
+    channel: raw.channel ?? null,
   };
 }
 

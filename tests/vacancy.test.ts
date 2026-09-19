@@ -48,3 +48,17 @@ describe('vacancyKey', () => {
     expect(vacancyKey(v)).toBe('hh:123');
   });
 });
+
+describe('normalizeVacancy — поля Telegram', () => {
+  it('contact, contentHash, channel — необязательны, по умолчанию null', () => {
+    const v = normalizeVacancy({ source: 'hh', sourceId: '1', title: 't', company: 'c', url: 'u', description: 'd', geo: 'g', postedAt: '2026-09-19T00:00:00Z' });
+    expect(v.contact).toBeNull();
+    expect(v.contentHash).toBeNull();
+    expect(v.channel).toBeNull();
+  });
+
+  it('contact чистится от @ и пробелов', () => {
+    const v = normalizeVacancy({ source: 'tg', sourceId: '1:2', title: 't', company: '', url: 'u', description: 'd', geo: '', postedAt: new Date(), contact: ' @hr_person ' });
+    expect(v.contact).toBe('hr_person');
+  });
+});

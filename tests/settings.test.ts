@@ -147,3 +147,40 @@ describe('enabledSpecialties', () => {
     expect(enabledSpecialties(s).map((x) => x.id)).toEqual([SYSTEM_ANALYST_SPECIALTY_ID]);
   });
 });
+
+describe('settings — telegram и автоотклик', () => {
+  it('старый файл без секций — значения по умолчанию', () => {
+    const s = seedSettings(undefined, null) as unknown as Record<string, unknown>;
+    delete s['telegram'];
+    delete s['autoApply'];
+    const r = validateSettings(s);
+    expect(r.ok && r.settings.telegram).toEqual({ chats: [], firstReadDays: 14 });
+    expect(r.ok && r.settings.autoApply).toEqual({ enabled: false, minScore: null });
+  });
+
+  it('чаты: id и название обязательны, дубль id выкидывается', () => {
+    const s = seedSettings(undefined, null);
+    s.telegram.chats = [
+      { id: '-1001', title: 'Работа в ИТ', username: 'workayte', kind: 'channel', enabled: true },
+      { id: '-1001', title: 'дубль', username: null, kind: 'channel', enabled: true },
+    ];
+    const r = validateSettings(s);
+    expect(r.ok && r.settings.telegram.chats).toHaveLength(1);
+    s.telegram.chats = [{ id: '', title: 'x', username: null, kind: 'group', enabled: true }];
+    expect(validateSettings(s).ok).toBe(false);
+  });
+
+  it.each([0, 91, 1.5])('глубина первого чтения %s — ошибка', (days) => {
+    const s = seedSettings(undefined, null);
+    s.telegram.firstReadDays = days;
+    expect(validateSettings(s)).toMatchObject({ ok: false });
+  });
+
+  it('порог автоотклика — null или целое 0–100', () => {
+    const s = seedSettings(undefined, null);
+    s.autoApply = { enabled: true, minScore: 55 };
+    expect(validateSettings(s).ok).toBe(true);
+    s.autoApply = { enabled: true, minScore: 101 };
+    expect(validateSettings(s).ok).toBe(false);
+  });
+});
