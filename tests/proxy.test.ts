@@ -9,7 +9,9 @@ import {
   parseTasklistCsv,
   vpnListenerPorts,
   probeHttpProxy,
+  probeSocks5,
   discoverProxy,
+  discoverSocksProxy,
   createProxyResolver,
   createProxiedFetch,
   type ProxyAddress,
@@ -399,5 +401,48 @@ describe('createProxiedFetch — запрос идёт через найденн
     await expect(f(`http://127.0.0.1:${target}/`)).rejects.toThrow();
     await expect(f(`http://127.0.0.1:${target}/`)).rejects.toThrow();
     expect(discoveries).toBe(2);
+  });
+});
+
+describe('probeSocks5', () => {
+  async function fakeSocks(connectReply: number): Promise<{ port: number; close(): void }> {
+    const server = createServer((s) => {
+      let stage = 0;
+      s.on('data', () => {
+        if (stage === 0) { s.write(Buffer.from([5, 0])); stage = 1; return; }
+        s.write(Buffer.from([5, connectReply, 0, 1, 0, 0, 0, 0, 0, 0]));
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    return { port, close: () => server.close() };
+  }
+
+  it('SOCKS5 без пароля, CONNECT прошёл — годен', async () => {
+    const s = await fakeSocks(0);
+    expect(await probeSocks5({ host: '127.0.0.1', port: s.port })).toBe(true);
+    s.close();
+  });
+
+  it('CONNECT отклонён — не годен', async () => {
+    const s = await fakeSocks(5);
+    expect(await probeSocks5({ host: '127.0.0.1', port: s.port })).toBe(false);
+    s.close();
+  });
+
+  it('HTTP-прокси вместо SOCKS — не годен', async () => {
+    const server = createServer((s) => s.on('data', () => s.end('HTTP/1.1 400 Bad Request\r\n\r\n')));
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    expect(await probeSocks5({ host: '127.0.0.1', port })).toBe(false);
+    server.close();
+  });
+
+  it('discoverSocksProxy пробует кандидатов SOCKS-проверкой', async () => {
+    const d = await discoverSocksProxy({
+      env: {}, windowsProxyPorts: async () => [10809], vpnProcessPorts: async () => [10808, 10809],
+      probe: async (a) => a.port === 10808,
+    });
+    expect(d.found).toMatchObject({ port: 10808, source: 'vpn-process' });
   });
 });
