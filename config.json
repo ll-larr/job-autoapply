@@ -40,5 +40,6 @@
       "maxDelayMs": 3000
     }
   },
-  "maxConsecutiveFailures": 3
+  "maxConsecutiveFailures": 3,
+  "salaryExpectation": "180–260 тыс. ₽ на руки"
 }

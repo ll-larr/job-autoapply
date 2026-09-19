@@ -27,6 +27,7 @@ import { HhAdapter } from './adapters/hh.js';
 import { HrGeAdapter } from './adapters/hrge.js';
 import { CareeristAdapter } from './adapters/careerist.js';
 import { generateLetter, pickTemplate, pickMode } from './core/letter.js';
+import { answerQuestions } from './core/questions.js';
 import { proxyResolver, type ProxyDiscovery, type ProxySource } from './core/proxy.js';
 import type { Adapter } from './adapters/types.js';
 
@@ -262,12 +263,24 @@ export function formatStatusReport(
 // функции — чистая логика поверх переданных зависимостей.
 // ============================================================================
 
-export function buildAdapters(): Adapter[] {
+export function buildAdapters(config?: Config): Adapter[] {
   // careerist.ru пока умеет только искать: отклик там требует регистрации, и
   // её adapter.apply честно объявляет `auth_required` (см. adapters/careerist.ts).
   // В очередь вакансии попадают наравне с остальными, а отправка обходит их
   // стороной, не задевая hh.ru — Sender останавливает площадку, а не прогон.
-  return [new HhAdapter(), new HrGeAdapter(), new CareeristAdapter()];
+  // Анкету работодателя на hh.ru заполняет модель, без одобрения человеком —
+  // так решил владелец 2026-09-19. Без конфига (тесты) ответчика нет, и такая
+  // вакансия получает честный отказ, а не отправку наугад.
+  const hh = config === undefined
+    ? new HhAdapter()
+    : new HhAdapter({
+      answerTest: (questions, vacancy) => answerQuestions(
+        questions,
+        { vacancy, resume: readFileSync(RESUME_PATH, 'utf8'), salaryExpectation: config.salaryExpectation },
+        { models: config.letterModels },
+      ),
+    });
+  return [hh, new HrGeAdapter(), new CareeristAdapter()];
 }
 
 export function buildAdapterMap(adapters: readonly Adapter[]): Map<string, Adapter> {
@@ -517,7 +530,7 @@ async function main(): Promise<void> {
     // заново на каждый клик «Найти», и второй поиск подряд в одной и той же
     // панели гарантированно падал; теперь один и тот же адаптер просто
     // переиспользует уже открытый браузер (см. HhAdapter.getContext).
-    const adapters = buildAdapters();
+    const adapters = buildAdapters(config);
     try {
       await startPanel(queue, PANEL_PORT, {
         adapters,
@@ -616,7 +629,7 @@ async function main(): Promise<void> {
       const { report, emptyLetters, letterFailure } = await runSearchCommand({
         queue,
         config,
-        adapters: buildAdapters(),
+        adapters: buildAdapters(config),
         queries,
         limit,
         resume,
@@ -644,7 +657,7 @@ async function main(): Promise<void> {
       for (const line of formatSendPreflight(approvedRows)) console.log(line);
 
       clearStop(); // прошлый kill switch не должен блокировать новый прогон
-      const adapterMap = buildAdapterMap(buildAdapters());
+      const adapterMap = buildAdapterMap(buildAdapters(config));
       const report = await new Sender(queue, adapterMap, config).run();
 
       const { lines, exitCode } = formatSendResult(report);

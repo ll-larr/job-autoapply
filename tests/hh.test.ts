@@ -15,6 +15,13 @@ import {
   findNegotiationsItem,
   typeIntoChatFrame,
   HhAdapter,
+  HH_RESUME_AI,
+  HH_RESUME_DEFAULT,
+  pickHhResume,
+  readTestQuestions,
+  fillTestAnswers,
+  selectResume,
+  fillModalLetter,
 } from '../src/adapters/hh.js';
 
 const searchHtml = readFileSync('tests/fixtures/hh-search.html', 'utf8');
@@ -684,4 +691,250 @@ describe('уже поданный отклик не считается отка�
       captcha: false, sessionLost: false, alreadyApplied: true, submitted: false,
     })).toEqual({ status: 'already_applied' });
   });
+});
+
+/**
+ * Окно отклика hh.ru (сентябрь 2026). Фикстуры сняты живьём 2026-09-19 при
+ * полной блокировке модифицирующих запросов — ни одна не является поданным
+ * откликом. Токен _xsrf в них обнулён.
+ */
+const resumePickerHtml = readFileSync('tests/fixtures/hh-response-resume-picker.html', 'utf8');
+const resumeListHtml = readFileSync('tests/fixtures/hh-response-resume-list.html', 'utf8');
+const letterOpenHtml = readFileSync('tests/fixtures/hh-response-letter-open.html', 'utf8');
+const questionsHtml = readFileSync('tests/fixtures/hh-response-questions.html', 'utf8');
+
+function hhVacancy(over: Partial<{ title: string; description: string }> = {}) {
+  return normalizeVacancy({
+    source: 'hh',
+    sourceId: '136701903',
+    title: over.title ?? 'Бизнес-аналитик',
+    company: 'Компания',
+    url: 'https://hh.ru/vacancy/136701903',
+    description: over.description ?? 'Описание процессов в BPMN',
+    geo: 'Москва',
+    postedAt: new Date().toISOString(),
+  });
+}
+
+describe('pickHhResume', () => {
+  it('AI/LLM-вакансия — профильное резюме, остальные — основное', () => {
+    expect(pickHhResume(hhVacancy({ description: 'Внедрение LLM и RAG в процессы банка' }))).toBe(HH_RESUME_AI);
+    expect(pickHhResume(hhVacancy())).toBe(HH_RESUME_DEFAULT);
+  });
+});
+
+describe('окно отклика — разбор снятой разметки', () => {
+  it('анкета: 7 вопросов, радио со «своим вариантом» и текстовый вопрос о зарплате', async () => {
+    const { context, page } = await pageWithContent(questionsHtml);
+    try {
+      const qs = await readTestQuestions(page);
+      expect(qs).toHaveLength(7);
+      expect(qs[0]).toMatchObject({
+        name: 'task_392839377',
+        kind: 'single',
+        textName: 'task_392839377_text',
+        options: [
+          { value: '392839378', label: 'да' },
+          { value: '392839379', label: 'нет' },
+          { value: 'open', label: 'Own variant' },
+        ],
+      });
+      expect(qs[0]!.text).toContain('гибридном формате');
+      expect(qs[6]).toMatchObject({ name: 'task_392839395_text', kind: 'text', options: [], textName: 'task_392839395_text' });
+      expect(qs[6]!.text).toContain('финансовые ожидания');
+    } finally {
+      await context.close();
+    }
+  });
+
+  it('обычное окно без анкеты — вопросов нет (кнопки «спросить работодателя» не в счёт)', async () => {
+    const { context, page } = await pageWithContent(resumePickerHtml);
+    try {
+      expect(await readTestQuestions(page)).toEqual([]);
+    } finally {
+      await context.close();
+    }
+  });
+
+  it('fillTestAnswers отмечает варианты и пишет текст', async () => {
+    const { context, page } = await pageWithContent(questionsHtml);
+    try {
+      const qs = await readTestQuestions(page);
+      const answers = qs.map((q) => q.kind === 'text'
+        ? { name: q.name, values: [], text: 'Готов обсудить' }
+        : q.name === 'task_392839383'
+          ? { name: q.name, values: ['open'], text: 'Озон Банк, 1.5 года' }
+          : { name: q.name, values: [q.options[0]!.value], text: '' });
+      await fillTestAnswers(page, qs, answers);
+      expect(await page.locator('input[name="task_392839377"][value="392839378"]').isChecked()).toBe(true);
+      expect(await page.locator('input[name="task_392839383"][value="open"]').isChecked()).toBe(true);
+      expect(await page.locator('textarea[name="task_392839383_text"]').inputValue()).toBe('Озон Банк, 1.5 года');
+      expect(await page.locator('textarea[name="task_392839395_text"]').inputValue()).toBe('Готов обсудить');
+    } finally {
+      await context.close();
+    }
+  });
+
+  it('selectResume: выбранное — already, второе из списка — selected, чужое — not_found', async () => {
+    const { context, page } = await pageWithContent(resumeListHtml);
+    try {
+      expect(await selectResume(page, HH_RESUME_DEFAULT)).toBe('already');
+      expect(await selectResume(page, 'Менеджер продукта')).toBe('not_found');
+      expect(await selectResume(page, HH_RESUME_AI)).toBe('selected');
+    } finally {
+      await context.close();
+    }
+  });
+
+  it('fillModalLetter кладёт письмо в поле окна', async () => {
+    const { context, page } = await pageWithContent(letterOpenHtml);
+    try {
+      expect(await fillModalLetter(page, 'Здравствуйте! Письмо.')).toBe(true);
+      expect(await page.locator('[data-qa="vacancy-response-popup-form-letter-input"]').inputValue()).toBe('Здравствуйте! Письмо.');
+    } finally {
+      await context.close();
+    }
+  });
+});
+
+/**
+ * Сквозные сценарии окна. Клик по «Откликнуться» без JS — навигация по href
+ * на /applicant/vacancy_response, там отдаём снятое окно. «Send application»
+ * — type=submit, форма уходит нативным POST на тот же адрес; его и считаем.
+ */
+async function modalContext(formHtml: string): Promise<{ context: BrowserContext; posts: string[]; negotiations: () => number }> {
+  const context = await browser.newContext();
+  const posts: string[] = [];
+  let negotiationsHits = 0;
+  await context.route('**/*', (route) => {
+    if (!isHhDocumentRequest(route)) return route.abort();
+    const req = route.request();
+    const url = req.url();
+    if (url.includes('/applicant/vacancy_response')) {
+      if (req.method() === 'POST') {
+        posts.push(req.postData() ?? '');
+        return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: responseSentHtml });
+      }
+      return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: formHtml });
+    }
+    if (url.includes('/applicant/negotiations')) {
+      negotiationsHits++;
+      return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: negotiationsHtml });
+    }
+    if (url.includes('/vacancy/136701903')) {
+      return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: vacancyHtml });
+    }
+    return route.abort();
+  });
+  return { context, posts, negotiations: () => negotiationsHits };
+}
+
+/**
+ * Вакансия без кнопки отклика. Живой случай 2026-09-19: 136227311 ушла в
+ * архив, клик ждал несуществующую кнопку 30 секунд, бросил таймаут и уронил
+ * всю отправку. Маркер архива снят с той же страницы при чтении без кликов.
+ */
+describe('HhAdapter.apply — кнопки отклика нет', () => {
+  async function applyOn(html: string) {
+    const context = await browser.newContext();
+    let posts = 0;
+    await context.route('**/*', (route) => {
+      if (!isHhDocumentRequest(route)) return route.abort();
+      if (route.request().method() === 'POST') posts++;
+      return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: html });
+    });
+    try {
+      const adapter = new HhAdapter({ context, timeouts: { submitMs: 2000 } });
+      const started = Date.now();
+      const result = await adapter.apply(hhVacancy(), 'письмо');
+      return { result, ms: Date.now() - started, posts };
+    } finally {
+      await context.close();
+    }
+  }
+
+  it('вакансия в архиве — closed, без клика и без ожидания', async () => {
+    const r = await applyOn('<h1 data-qa="vacancy-title">Системный аналитик<span data-qa="vacancy-title-archived-text">В архиве</span></h1>');
+    expect(r.result).toEqual({ status: 'closed' });
+    expect(r.ms).toBeLessThan(5000);
+    expect(r.posts).toBe(0);
+  }, 30000);
+
+  it('кнопки нет и не архив — отказ с причиной, а не исключение по таймауту', async () => {
+    const r = await applyOn('<h1 data-qa="vacancy-title">Системный аналитик</h1>');
+    expect(r.result.status).toBe('failed');
+    expect(r.result.status === 'failed' && r.result.reason).toContain('кнопки отклика нет');
+    expect(r.ms).toBeLessThan(5000);
+  }, 30000);
+});
+
+describe('HhAdapter.apply — окно отклика (без сети, без реальной подачи)', () => {
+  it('окно с письмом: письмо уходит в форме, одна отправка, чат не нужен', async () => {
+    const { context, posts, negotiations } = await modalContext(letterOpenHtml);
+    try {
+      const adapter = new HhAdapter({ context, timeouts: { chatFrameMs: 500, submitMs: 5000 } });
+      expect(await adapter.apply(hhVacancy(), 'моё письмо')).toEqual({ status: 'sent' });
+      expect(posts).toHaveLength(1);
+      expect(negotiations()).toBe(0);
+    } finally {
+      await context.close();
+    }
+  }, 30000);
+
+  it('анкета без ответчика — отказ с причиной, форма НЕ отправлена', async () => {
+    const { context, posts } = await modalContext(questionsHtml);
+    try {
+      const adapter = new HhAdapter({ context, timeouts: { submitMs: 5000 } });
+      const r = await adapter.apply(hhVacancy(), 'письмо');
+      expect(r.status).toBe('failed');
+      expect(r.status === 'failed' && r.reason).toContain('анкета');
+      expect(posts).toHaveLength(0);
+    } finally {
+      await context.close();
+    }
+  }, 30000);
+
+  it('модель не ответила на анкету — отказ, форма НЕ отправлена', async () => {
+    const { context, posts } = await modalContext(questionsHtml);
+    try {
+      const adapter = new HhAdapter({
+        context,
+        timeouts: { submitMs: 5000 },
+        answerTest: async () => ({ answers: null, failure: 'HTTP 429' }),
+      });
+      const r = await adapter.apply(hhVacancy(), 'письмо');
+      expect(r.status === 'failed' && r.reason).toContain('HTTP 429');
+      expect(posts).toHaveLength(0);
+    } finally {
+      await context.close();
+    }
+  }, 30000);
+
+  it('анкета с ответами модели — ответы уходят в той же отправке', async () => {
+    const { context, posts } = await modalContext(questionsHtml);
+    try {
+      const seen: string[] = [];
+      const adapter = new HhAdapter({
+        context,
+        timeouts: { chatFrameMs: 500, submitMs: 5000 },
+        answerTest: async (qs) => {
+          seen.push(...qs.map((q) => q.name));
+          return {
+            answers: qs.map((q) => q.kind === 'text'
+              ? { name: q.name, values: [], text: 'Готов обсудить' }
+              : { name: q.name, values: [q.options[0]!.value], text: '' }),
+          };
+        },
+      });
+      const r = await adapter.apply(hhVacancy(), 'письмо');
+      expect(r).toEqual({ status: 'sent' });
+      expect(seen).toHaveLength(7);
+      expect(posts).toHaveLength(1);
+      const body = new URLSearchParams(posts[0]);
+      expect(body.get('task_392839377')).toBe('392839378');
+      expect(body.get('task_392839395_text')).toBe('Готов обсудить');
+    } finally {
+      await context.close();
+    }
+  }, 30000);
 });

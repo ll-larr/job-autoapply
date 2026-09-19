@@ -202,5 +202,38 @@ https://chatik.hh.ru/chat/<topicId>?without_list=1&platform=xhh&theme=hh-day&des
 На обычной странице есть `vacancy-response-question_*` (`work_place_location`,
 `employment_and_work_mode`, `is_vacancy_open`, `salary_options`,
 `how_to_contact`, `other`). Это НЕ вопросы работодателя к кандидату, а
-заготовки вопросов, которые кандидат задаёт работодателю. Модалку с вопросами
-работодателя они не описывают — та ещё не снята.
+заготовки вопросов, которые кандидат задаёт работодателю. Анкету
+работодателя они не описывают — она снята ниже.
+
+---
+
+## Окно отклика (сентябрь 2026)
+
+Снято живьём 2026-09-19 при полной блокировке модифицирующих запросов
+(`scripts/capture-hh-response-form.ts`, `scripts/capture-hh-response-modal.ts`).
+Раскрытие списка резюме и поля письма на сеть не ходят: ни одного запроса к
+`/applicant/vacancy_response` за оба прогона.
+
+Клик по `vacancy-response-link-top` больше не подаёт отклик сразу: открывается
+форма `form[name="vacancy_response"]`. У вакансий с анкетой работодателя та же
+форма живёт на отдельной странице `/applicant/vacancy_response?vacancyId=…`,
+вопросы сверху.
+
+| Что | Селектор |
+|---|---|
+| Отправка — единственное, что подаёт отклик | `[data-qa="vacancy-response-submit-popup"]` («Send application») |
+| Ячейка выбранного резюме | `[role="button"]` с `[data-qa="resume-title"]` внутри формы |
+| Варианты резюме (после клика по ячейке) | `[role="option"]`, `data-qa="magritte-select-option-<hash>"`, radio внутри |
+| Раскрыть поле письма | `[data-qa="add-cover-letter"]` (подписано «Add a CV» — кривой перевод) или `[data-qa="vacancy-response-letter-toggle"]` |
+| Поле письма | `[data-qa="vacancy-response-popup-form-letter-input"]` |
+| Вопрос анкеты | `[data-qa="task-body"]`, текст — `[data-qa="task-question"]` |
+| Варианты ответа | radio `task_<id>`; `value="open"` — «свой вариант» с textarea `task_<id>_text` |
+| Текстовый вопрос | только textarea `task_<id>_text` |
+| Предупреждение о видимости резюме | `[data-qa="hidden-resume-warning"]` — в DOM всегда, свёрнуто `max-height: 0` |
+
+Что после отправки анкеты показывает hh.ru, не снято — снять это значит подать
+отклик. Адаптер проверяет успех по факту: «Перейти к отклику» на странице
+вакансии.
+
+Фикстуры: `hh-response-resume-picker.html`, `hh-response-resume-list.html`,
+`hh-response-letter-open.html`, `hh-response-questions.html`. `_xsrf` в них обнулён.

@@ -62,6 +62,12 @@ export interface Config {
    * как череда обычных failed, и очередь продолжает долбить площадку.
    */
   maxConsecutiveFailures?: number;
+  /**
+   * Ответ на вопрос анкеты hh.ru о зарплатных ожиданиях (см. core/questions.ts).
+   * В резюме этого нет, а придумывать число модели нельзя. Не задано —
+   * «Готов обсудить на собеседовании».
+   */
+  salaryExpectation?: string;
 }
 
 export function loadConfig(path = 'config.json'): Config {

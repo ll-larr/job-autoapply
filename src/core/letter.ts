@@ -150,7 +150,7 @@ export function buildPrompt(input: LetterInput): PromptParts {
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 /** Достаёт текст ответа из тела OpenRouter chat-completions, не веря его форме. */
-function extractText(body: unknown): string | undefined {
+export function extractText(body: unknown): string | undefined {
   const choices = (body as { choices?: unknown })?.choices;
   if (!Array.isArray(choices) || choices.length === 0) return undefined;
   const first = choices[0] as { message?: { content?: unknown } } | undefined;
