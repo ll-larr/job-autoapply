@@ -51,11 +51,23 @@ export interface SearchFilters {
 }
 
 export type ApplyResult =
-  | { status: 'sent' }
+  /** warning — отправлено, но с оговоркой (Telegram: текст ушёл, резюме не приложилось). */
+  | { status: 'sent'; warning?: string }
   | { status: 'already_applied' }
   | { status: 'captcha' }
   | { status: 'auth_required' }
+  /**
+   * Площадка ограничила аккаунт: Telegram ответил PEER_FLOOD или долгим
+   * FloodWait (спека 2026-09-18, 5.3). Останавливает площадку, как капча.
+   */
+  | { status: 'account_limited' }
   | { status: 'failed'; reason: string };
+
+/** Что Sender знает о строке очереди сверх вакансии и письма. */
+export interface ApplyContext {
+  /** id специальности строки — по нему Telegram находит PDF резюме. */
+  specialty: string;
+}
 
 export interface Adapter {
   readonly name: string;
@@ -66,13 +78,14 @@ export interface Adapter {
    */
   readonly queryless?: boolean;
   search(filters: SearchFilters): Promise<Vacancy[]>;
-  apply(vacancy: Vacancy, letter: string): Promise<ApplyResult>;
+  /** ctx необязателен: адаптерам площадок он не нужен, Telegram берёт из него резюме. */
+  apply(vacancy: Vacancy, letter: string, ctx?: ApplyContext): Promise<ApplyResult>;
 }
 
 /**
- * captcha и auth_required требуют человека. Всё остальное — обычный исход
- * одной подачи, очередь продолжает работу.
+ * captcha, auth_required и account_limited требуют человека. Всё остальное —
+ * обычный исход одной подачи, очередь продолжает работу.
  */
 export function isHaltingResult(r: ApplyResult): boolean {
-  return r.status === 'captcha' || r.status === 'auth_required';
+  return r.status === 'captcha' || r.status === 'auth_required' || r.status === 'account_limited';
 }

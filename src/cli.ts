@@ -266,7 +266,11 @@ function explainHalt(halted: NonNullable<SendReport['halted']>): string {
     case 'captcha':
       return `площадка ${halted.source} показала капчу. Обход капчи не реализуется — пройди её руками в браузере, потом запусти send снова.`;
     case 'auth_required':
-      return `сессия на площадке ${halted.source} разлогинена. Залогинься заново (npx tsx scripts/login.ts), потом запусти send снова.`;
+      return halted.source === 'tg'
+        ? 'Telegram не подключён или сессия протухла. Войди заново (npm run tg:login), потом запусти send снова.'
+        : `сессия на площадке ${halted.source} разлогинена. Залогинься заново (npx tsx scripts/login.ts), потом запусти send снова.`;
+    case 'account_limited':
+      return `площадка ${halted.source}: аккаунт ограничен (Telegram: PEER_FLOOD или долгий FloodWait) — первые сообщения незнакомым сейчас не проходят. Подожди сутки; заявки остались approved.`;
     case 'too_many_failures':
       return `площадка ${halted.source}: несколько отказов подряд — похоже, что-то сломалось (капча, изменившаяся вёрстка, ограничение аккаунта). Разберись вручную перед повтором.`;
     default: {
@@ -291,6 +295,12 @@ export function formatSendResult(report: SendReport): { lines: string[]; exitCod
   for (const h of report.haltedSources.slice(1)) {
     lines.push(`ОСТАНОВЛЕНО: ${explainHalt(h)}`);
   }
+
+  for (const d of report.deferredContacts) {
+    const until = new Date(d.until).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+    lines.push(`Отложено до ${until}: @${d.contact} — ${d.title} (этому контакту писали меньше 7 дней назад)`);
+  }
+  for (const w of report.warnings) lines.push(`ВНИМАНИЕ: ${w}`);
 
   if (report.skippedEmptyLetter.length > 0) {
     lines.push(

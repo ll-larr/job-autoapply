@@ -476,6 +476,17 @@ describe('Queue — Telegram и автоотклик', () => {
     expect(q.lastContactAt('HR_A')).not.toBeNull(); // username без учёта регистра
   });
 
+  it('lastSentTo — только отправленное, ждущая строка не считается', () => {
+    q.insertPending(tgVacancy('1', 'hr_a'), 60, [], 'п', 'dm');
+    expect(q.lastSentTo('hr_a')).toBeNull();
+    const [row] = q.listByStatus('pending');
+    q.approve(row!.id);
+    q.markSent(row!.id);
+    q.insertPending(tgVacancy('2', 'hr_a'), 60, [], 'п', 'dm');
+    expect(q.lastSentTo('@HR_A')).toMatchObject({ title: 'Бизнес-аналитик' });
+    expect(q.lastSentTo('hr_a')!.at).toBe(q.listByStatus('sent')[0]!.sentAt);
+  });
+
   it('курсоры чатов', () => {
     expect(q.getTgCursor('-1001')).toBe(0);
     q.setTgCursor('-1001', 4331);

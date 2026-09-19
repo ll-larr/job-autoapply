@@ -191,7 +191,22 @@ describe('formatSendPreflight', () => {
 });
 
 describe('formatSendResult', () => {
-  const OK: SendReport = { sent: 3, failed: 0, halted: null, unthrottledSources: [], haltedSources: [], skippedEmptyLetter: [] };
+  const OK: SendReport = { sent: 3, failed: 0, halted: null, unthrottledSources: [], haltedSources: [], skippedEmptyLetter: [], deferredContacts: [], warnings: [] };
+
+  it('Telegram: отложенные контакты, предупреждения и ограничение аккаунта названы', () => {
+    const { lines, exitCode } = formatSendResult({
+      ...OK,
+      halted: { source: 'tg', reason: 'account_limited' },
+      haltedSources: [{ source: 'tg', reason: 'account_limited' }],
+      deferredContacts: [{ contact: 'hr_a', until: Date.UTC(2026, 8, 26, 12), title: 'Бизнес-аналитик' }],
+      warnings: ['Системный аналитик: резюме не приложилось: upload failed'],
+    });
+    const text = lines.join('\n');
+    expect(exitCode).toBe(1);
+    expect(text).toMatch(/аккаунт ограничен/);
+    expect(text).toContain('Отложено до 26.09: @hr_a — Бизнес-аналитик');
+    expect(text).toContain('ВНИМАНИЕ: Системный аналитик: резюме не приложилось');
+  });
 
   it('без halted — exitCode 0, никакого "ОСТАНОВЛЕНО"', () => {
     const { lines, exitCode } = formatSendResult(OK);
@@ -208,7 +223,7 @@ describe('formatSendResult', () => {
   ] as const)('halted reason=%s — exitCode 1 и понятное объяснение', (reason, pattern) => {
     const report: SendReport = {
       sent: 0, failed: 0, unthrottledSources: [],
-      halted: { source: 'hh', reason }, haltedSources: [{ source: 'hh', reason }], skippedEmptyLetter: [],
+      halted: { source: 'hh', reason }, haltedSources: [{ source: 'hh', reason }], skippedEmptyLetter: [], deferredContacts: [], warnings: [],
     };
     const { lines, exitCode } = formatSendResult(report);
     expect(exitCode).toBe(1);
@@ -237,7 +252,7 @@ describe('formatSendResult', () => {
     const report: SendReport = {
       sent: 1, failed: 0, unthrottledSources: ['hrge'],
       halted: { source: 'hh', reason: 'captcha' },
-      haltedSources: [{ source: 'hh', reason: 'captcha' }], skippedEmptyLetter: [],
+      haltedSources: [{ source: 'hh', reason: 'captcha' }], skippedEmptyLetter: [], deferredContacts: [], warnings: [],
     };
     const { lines } = formatSendResult(report);
     expect(lines.join('\n')).toContain('ОСТАНОВЛЕНО');

@@ -180,6 +180,20 @@ export class Queue {
     return { at: row.at, status: row.status as Status, title };
   }
 
+  /**
+   * Когда этому контакту в последний раз ушло сообщение (спека 5.5). Отдельно
+   * от lastContactAt: та видит и саму ждущую строку, а правилу «раз в 7 дней»
+   * нужна именно последняя отправка.
+   */
+  lastSentTo(contact: string): { at: number; title: string } | null {
+    const row = this.db.prepare(`
+      SELECT sent_at AS at, vacancy_json FROM applications
+      WHERE contact = ? AND status = 'sent' ORDER BY sent_at DESC LIMIT 1
+    `).get(contact.toLowerCase().replace(/^@/, '')) as unknown as { at: number; vacancy_json: string } | undefined;
+    if (row === undefined) return null;
+    return { at: row.at, title: (JSON.parse(row.vacancy_json) as { title: string }).title };
+  }
+
   /** Отправленное после момента — для вкладки «Отправлено». */
   listSentSince(sinceMs: number): QueueRow[] {
     const rows = this.db.prepare(

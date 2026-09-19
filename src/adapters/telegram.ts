@@ -1,10 +1,10 @@
-import type { Adapter, ApplyResult, SearchFilters } from './types.js';
+import type { Adapter, ApplyContext, ApplyResult, SearchFilters } from './types.js';
 import type { Vacancy } from '../core/vacancy.js';
 import type { Queue } from '../core/queue.js';
 import type { TgChatSetting } from '../core/settings.js';
-import type { TgReader } from '../telegram/types.js';
+import type { TgReader, TgSender } from '../telegram/types.js';
 import { postToVacancy } from '../telegram/parse.js';
-import { classifyTgError, describeTgFailure } from '../telegram/errors.js';
+import { classifyTgError, describeTgFailure, type TgFailure } from '../telegram/errors.js';
 
 /** Не больше сообщений с одного чата за прогон (спека 4.5): шумная группа не должна съесть прогон. */
 export const MAX_MESSAGES_PER_CHAT = 1000;
@@ -26,6 +26,13 @@ export interface TelegramAdapterOptions {
   firstReadDays: () => number;
   /** Слова заголовка всех включённых специальностей — для строки заголовка поста. */
   titleWords: () => string[];
+  /**
+   * Отправка — отдельно от чтения (спека 4.3): поиск получает только reader.
+   * Без sender apply отвечает auth_required, и строки остаются approved.
+   */
+  sender?: () => Promise<TgSender | { error: string }>;
+  /** PDF резюме специальности по её id; null — у специальности его нет. */
+  resumePdf?: (specialtyId: string) => string | null;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   random?: () => number;
@@ -102,7 +109,63 @@ export class TelegramAdapter implements Adapter {
     return null;
   }
 
-  async apply(): Promise<ApplyResult> {
-    return { status: 'failed', reason: 'отправка в Telegram ещё не подключена' };
+  /**
+   * Первое сообщение рекрутёру и PDF резюме специальности (спека 5.3).
+   * Вызывается только из Sender, то есть после одобрения — человеком или
+   * автооткликом. Отправка необратима: у рекрутёра всплывает уведомление, и
+   * удалённое сообщение он уже видел.
+   */
+  async apply(vacancy: Vacancy, letter: string, ctx?: ApplyContext): Promise<ApplyResult> {
+    if (vacancy.contact === null) return { status: 'failed', reason: 'у вакансии нет контакта — напиши вручную' };
+    const sender = this.opts.sender === undefined
+      ? { error: 'отправка в Telegram не подключена' }
+      : await this.opts.sender();
+    // Не подключён Telegram — не вина вакансии: строка остаётся approved,
+    // площадка останавливается, как при разлогиненном hh.
+    if ('error' in sender) return { status: 'auth_required' };
+
+    const username = vacancy.contact;
+
+    const peer = await this.attempt(() => sender.resolvePeer(username));
+    if (!peer.ok) return failureResult(peer.failure);
+    if (peer.value.kind !== 'user') {
+      const what = peer.value.kind === 'bot' ? 'бот' : 'канал или группа';
+      return { status: 'failed', reason: `@${username} — ${what}, а не человек — напиши вручную` };
+    }
+
+    const sent = await this.attempt(() => sender.sendText(username, letter));
+    if (!sent.ok) return failureResult(sent.failure);
+
+    // Текст уже у рекрутёра: что бы ни случилось с файлом, это «отправлено».
+    // failed здесь был бы неправдой, а повторная отправка — вторым сообщением.
+    const pdf = ctx === undefined ? null : (this.opts.resumePdf?.(ctx.specialty) ?? null);
+    if (pdf === null) return { status: 'sent', warning: 'у специальности нет PDF резюме — ушёл только текст' };
+    const file = await this.attempt(() => sender.sendFile(username, pdf));
+    if (!file.ok) return { status: 'sent', warning: `резюме не приложилось: ${describeTgFailure(file.failure)}` };
+    return { status: 'sent' };
   }
+
+  /** Вызов с одним повтором после короткого FloodWait; любой сбой — TgFailure, а не исключение. */
+  private async attempt<T>(f: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; failure: TgFailure }> {
+    for (let i = 0; ; i++) {
+      try {
+        return { ok: true, value: await f() };
+      } catch (e) {
+        const failure = classifyTgError(e);
+        if (failure.kind === 'flood_wait' && failure.seconds <= MAX_FLOOD_WAIT_S && i === 0) {
+          await this.sleep(failure.seconds * 1000);
+          continue;
+        }
+        return { ok: false, failure };
+      }
+    }
+  }
+}
+
+function failureResult(f: TgFailure): ApplyResult {
+  // PEER_FLOOD и долгий FloodWait — ограничение аккаунта: дальше слать нельзя
+  // никому, Telegram-подача встаёт (спека 5.3).
+  if (f.kind === 'peer_flood' || f.kind === 'flood_wait') return { status: 'account_limited' };
+  if (f.kind === 'auth') return { status: 'auth_required' };
+  return { status: 'failed', reason: describeTgFailure(f) };
 }

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { TelegramAdapter } from '../src/adapters/telegram.js';
-import type { TgChat, TgMessage, TgReader } from '../src/telegram/types.js';
+import type { TgChat, TgMessage, TgReader, TgSender } from '../src/telegram/types.js';
+import { normalizeVacancy } from '../src/core/vacancy.js';
 import type { TgChatSetting } from '../src/core/settings.js';
 import { errors } from 'telegram';
 
@@ -115,5 +116,86 @@ describe('TelegramAdapter.search', () => {
     const { adapter, slept } = mkAdapter(mkReader({ '-1001': [], '-1002': [] }), [CHAT, other]);
     await adapter.search({ query: '', skip: 0 });
     expect(slept).toEqual([1000]);
+  });
+});
+
+describe('TelegramAdapter.apply', () => {
+  const V = normalizeVacancy({
+    source: 'tg', sourceId: '-1001:7', title: 'Системный аналитик', company: '', url: 'https://t.me/workayte/7',
+    description: 'd', geo: '', postedAt: '2026-09-19T00:00:00Z', contact: 'hr_person', channel: 'Работа в ИТ',
+  });
+
+  function mkSender(over: Partial<TgSender> = {}) {
+    const log: string[] = [];
+    const sender: TgSender = {
+      async resolvePeer(u) { log.push(`resolve ${u}`); return { kind: 'user', username: u }; },
+      async sendText(u, t) { log.push(`text ${u} ${t.slice(0, 10)}`); },
+      async sendFile(u, p) { log.push(`file ${u} ${p}`); },
+      ...over,
+    };
+    return { sender, log };
+  }
+  function adapterWith(sender: TgSender | { error: string }, pdf: string | null = 'C:/cv.pdf') {
+    return new TelegramAdapter({
+      reader: async () => ({ error: 'не нужен' }), queue: { getTgCursor: () => 0, setTgCursor: () => {} },
+      chats: () => [], firstReadDays: () => 14, titleWords: () => [],
+      sender: async () => sender, resumePdf: () => pdf, sleep: async () => {},
+    });
+  }
+
+  it('человек — текст, затем PDF специальности', async () => {
+    const { sender, log } = mkSender();
+    expect(await adapterWith(sender).apply(V, 'Здравствуйте! …', { specialty: 'ba' })).toEqual({ status: 'sent' });
+    expect(log).toEqual(['resolve hr_person', 'text hr_person Здравствуй', 'file hr_person C:/cv.pdf']);
+  });
+
+  it.each(['bot', 'channel', 'group'] as const)('%s вместо человека — failed, ничего не отправлено', async (kind) => {
+    const { sender, log } = mkSender({ async resolvePeer(u) { return { kind, username: u }; } });
+    const r = await adapterWith(sender).apply(V, 'x', { specialty: 'ba' });
+    expect(r).toMatchObject({ status: 'failed' });
+    expect(r.status === 'failed' && r.reason).toMatch(/вручную/);
+    expect(log.some((l) => l.startsWith('text'))).toBe(false);
+  });
+
+  it('текст ушёл, файл нет — sent с предупреждением (текст не вернуть)', async () => {
+    const { sender } = mkSender({ async sendFile() { throw new Error('upload failed'); } });
+    const r = await adapterWith(sender).apply(V, 'x', { specialty: 'ba' });
+    expect(r).toMatchObject({ status: 'sent' });
+    expect(r.status === 'sent' && r.warning).toMatch(/резюме не приложилось/);
+  });
+
+  it('нет PDF у специальности — только текст, с предупреждением', async () => {
+    const { sender, log } = mkSender();
+    const r = await adapterWith(sender, null).apply(V, 'x', { specialty: 'ba' });
+    expect(r.status === 'sent' && r.warning).toMatch(/PDF/);
+    expect(log.some((l) => l.startsWith('file'))).toBe(false);
+  });
+
+  it.each([
+    ['PEER_FLOOD', 'account_limited'],
+    ['USER_PRIVACY_RESTRICTED', 'failed'],
+    ['USERNAME_NOT_OCCUPIED', 'failed'],
+    ['AUTH_KEY_UNREGISTERED', 'auth_required'],
+  ])('%s → %s', async (code, status) => {
+    const { sender } = mkSender({ async sendText() { throw new errors.RPCError(code, {} as never, 400); } });
+    expect((await adapterWith(sender).apply(V, 'x', { specialty: 'ba' })).status).toBe(status);
+  });
+
+  it('FloodWait до 60 с — ждём и повторяем; дольше — account_limited', async () => {
+    let n = 0;
+    const { sender } = mkSender({ async sendText() { if (n++ === 0) throw new errors.FloodWaitError({ request: {} as never, capture: 20 }); } });
+    expect((await adapterWith(sender).apply(V, 'x', { specialty: 'ba' })).status).toBe('sent');
+    const b = mkSender({ async sendText() { throw new errors.FloodWaitError({ request: {} as never, capture: 3600 }); } });
+    expect((await adapterWith(b.sender).apply(V, 'x', { specialty: 'ba' })).status).toBe('account_limited');
+  });
+
+  it('Telegram не подключён — auth_required с причиной-ошибкой не путается: failed не ставится', async () => {
+    expect((await adapterWith({ error: 'Telegram не подключён' }).apply(V, 'x', { specialty: 'ba' })).status).toBe('auth_required');
+  });
+
+  it('вакансия без контакта — failed «контакт не найден»', async () => {
+    const { sender } = mkSender();
+    const r = await adapterWith(sender).apply({ ...V, contact: null }, 'x', { specialty: 'ba' });
+    expect(r).toMatchObject({ status: 'failed' });
   });
 });

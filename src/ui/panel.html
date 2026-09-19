@@ -548,7 +548,12 @@ function buildSendResultText(r) {
   const unthrottled = (r.unthrottledSources && r.unthrottledSources.length)
     ? `, ПРОПУЩЕНО БЕЗ ОТПРАВКИ (нет записи в config.throttle): ${r.unthrottledSources.join(', ')}`
     : '';
-  return `Отправлено ${r.sent}, не удалось ${r.failed}${empty}${halted}${unthrottled}.`;
+  // Telegram: «раз в 7 дней одному контакту» и «текст ушёл, резюме нет».
+  const deferred = (r.deferredContacts && r.deferredContacts.length)
+    ? `, отложено ${r.deferredContacts.length} (этим контактам писали меньше 7 дней назад)`
+    : '';
+  const warnings = (r.warnings && r.warnings.length) ? `. ВНИМАНИЕ: ${r.warnings.join('; ')}` : '';
+  return `Отправлено ${r.sent}, не удалось ${r.failed}${empty}${halted}${unthrottled}${deferred}${warnings}.`;
 }
 
 function resetSendButton(approved) {

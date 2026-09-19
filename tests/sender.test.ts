@@ -590,3 +590,87 @@ describe('Sender — пустое письмо не отправляется', (
     expect(rep.skippedEmptyLetter).toHaveLength(1);
   });
 });
+
+describe('Sender — Telegram (спека 2026-09-18, 5.3–5.5)', () => {
+  const TG_CONFIG = {
+    ...CONFIG,
+    throttle: {
+      hh: { minDelayMs: 0, maxDelayMs: 0 },
+      tg: { maxPerDay: 40, minDelayMs: 0, maxDelayMs: 0 },
+    },
+  };
+
+  function tgRow(id: string, contact: string, title = `Аналитик ${id}`): number {
+    q.insertPending(normalizeVacancy({
+      source: 'tg', sourceId: `-1001:${id}`, title, company: '', url: `https://t.me/x/${id}`,
+      description: 'd', geo: '', postedAt: '2026-09-19T00:00:00Z', contact, channel: 'Работа в ИТ',
+    }), 60, [], 'Здравствуйте! …', 'dm', 'system-analyst');
+    const row = q.listByStatus('pending').find((r) => r.sourceId === `-1001:${id}`)!;
+    q.approve(row.id);
+    return row.id;
+  }
+
+  function tgAdapter(result: ApplyResult, calls: Array<{ sourceId: string; ctx: unknown }> = []): Adapter {
+    return {
+      name: 'tg',
+      async search() { return []; },
+      async apply(v, _letter, ctx) { calls.push({ sourceId: v.sourceId, ctx }); return result; },
+    };
+  }
+
+  it('контакту писали за 7 дней — строка остаётся approved, отчёт называет срок', async () => {
+    const first = tgRow('1', 'hr_a', 'Первая');
+    await new Sender(q, new Map([['tg', tgAdapter({ status: 'sent' })]]), TG_CONFIG, { sleep: async () => {} }).run();
+    const sentAt = q.listByStatus('sent').find((r) => r.id === first)!.sentAt!;
+
+    const second = tgRow('2', 'hr_a', 'Вторая');
+    const calls: Array<{ sourceId: string; ctx: unknown }> = [];
+    const rep = await new Sender(q, new Map([['tg', tgAdapter({ status: 'sent' }, calls)]]), TG_CONFIG, {
+      sleep: async () => {}, now: () => sentAt + 60_000,
+    }).run();
+
+    expect(calls).toEqual([]);
+    expect(q.listByStatus('approved').map((r) => r.id)).toEqual([second]);
+    expect(rep.deferredContacts).toEqual([{ contact: 'hr_a', until: sentAt + 7 * 86_400_000, title: 'Вторая' }]);
+  });
+
+  it('через 7 дней тому же контакту уже можно', async () => {
+    tgRow('1', 'hr_a');
+    await new Sender(q, new Map([['tg', tgAdapter({ status: 'sent' })]]), TG_CONFIG, { sleep: async () => {} }).run();
+    const sentAt = q.listByStatus('sent')[0]!.sentAt!;
+    tgRow('2', 'hr_a');
+    const rep = await new Sender(q, new Map([['tg', tgAdapter({ status: 'sent' })]]), TG_CONFIG, {
+      sleep: async () => {}, now: () => sentAt + 7 * 86_400_000 + 1,
+    }).run();
+    expect(rep.sent).toBe(1);
+    expect(rep.deferredContacts).toEqual([]);
+  });
+
+  it('account_limited останавливает только Telegram, hh продолжает', async () => {
+    tgRow('1', 'hr_a');
+    seed(q, 1, 'hh');
+    const rep = await new Sender(q, new Map([
+      ['tg', tgAdapter({ status: 'account_limited' })],
+      ['hh', mkAdapter([{ status: 'sent' }])],
+    ]), TG_CONFIG, { sleep: async () => {} }).run();
+    expect(rep.haltedSources).toContainEqual({ source: 'tg', reason: 'account_limited' });
+    expect(rep.sent).toBe(1);
+    expect(q.listByStatus('approved').map((r) => r.source)).toEqual(['tg']);
+  });
+
+  it('sent с предупреждением — строка sent, предупреждение в отчёте', async () => {
+    tgRow('1', 'hr_a', 'Системный аналитик');
+    const rep = await new Sender(q, new Map([
+      ['tg', tgAdapter({ status: 'sent', warning: 'резюме не приложилось: upload failed' })],
+    ]), TG_CONFIG, { sleep: async () => {} }).run();
+    expect(q.listByStatus('sent')).toHaveLength(1);
+    expect(rep.warnings).toEqual(['Системный аналитик: резюме не приложилось: upload failed']);
+  });
+
+  it('apply получает специальность строки', async () => {
+    tgRow('1', 'hr_a');
+    const calls: Array<{ sourceId: string; ctx: unknown }> = [];
+    await new Sender(q, new Map([['tg', tgAdapter({ status: 'sent' }, calls)]]), TG_CONFIG, { sleep: async () => {} }).run();
+    expect(calls).toEqual([{ sourceId: '-1001:1', ctx: { specialty: 'system-analyst' } }]);
+  });
+});
