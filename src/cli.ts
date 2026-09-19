@@ -33,6 +33,7 @@ import { HhAdapter } from './adapters/hh.js';
 import { HrGeAdapter } from './adapters/hrge.js';
 import { CareeristAdapter } from './adapters/careerist.js';
 import { generateLetter, pickTemplate, pickMode } from './core/letter.js';
+import { generateDm } from './core/dm.js';
 import { proxyResolver, type ProxyDiscovery, type ProxySource } from './core/proxy.js';
 import type { Adapter } from './adapters/types.js';
 import { extractPdfText, refreshResumeCache, resumeTextFor, LEGACY_RESUME_MD } from './core/resume.js';
@@ -355,6 +356,8 @@ export interface FillLettersDeps {
    */
   specialtyById: (id: string) => Specialty;
   generateLetterFn: typeof generateLetter;
+  /** Личное сообщение рекрутёру для постов Telegram (core/dm.ts). */
+  generateDmFn: typeof generateDm;
   pickTemplateFn: typeof pickTemplate;
   readTemplate: (name: string) => string;
   /** Куда сообщать о ходе. Команда пишет в консоль, панель — никуда. */
@@ -395,21 +398,25 @@ export async function fillEmptyLetters(deps: FillLettersDeps): Promise<FillLette
     // Та же развилка, что при поиске (pipeline.ts): скелеты и hybrid/full —
     // только у засеянных специальностей, остальные пишут письмо целиком.
     const specialty = deps.specialtyById(row.specialty);
-    const mode = specialty.legacyLetters ? pickMode(row.score, deps.config.letterFullThreshold) : 'full';
-    const template = specialty.legacyLetters
-      ? deps.readTemplate(deps.pickTemplateFn(row.vacancy, row.matched))
-      : '';
-    const result = await deps.generateLetterFn(
-      {
-        vacancy: row.vacancy,
-        matched: row.matched,
-        mode,
-        template,
-        resume: deps.resumeFor(specialty),
-        role: specialty.legacyLetters ? undefined : specialty.name,
-      },
-      { models: deps.config.letterModels },
-    );
+    const result = row.source === 'tg'
+      // Пост Telegram: не письмо, а личное сообщение рекрутёру (core/dm.ts).
+      ? await deps.generateDmFn(
+        { vacancy: row.vacancy, resume: deps.resumeFor(specialty), role: specialty.name },
+        { models: deps.config.letterModels },
+      )
+      : await deps.generateLetterFn(
+        {
+          vacancy: row.vacancy,
+          matched: row.matched,
+          mode: specialty.legacyLetters ? pickMode(row.score, deps.config.letterFullThreshold) : 'full',
+          template: specialty.legacyLetters
+            ? deps.readTemplate(deps.pickTemplateFn(row.vacancy, row.matched))
+            : '',
+          resume: deps.resumeFor(specialty),
+          role: specialty.legacyLetters ? undefined : specialty.name,
+        },
+        { models: deps.config.letterModels },
+      );
     if (result.letter.trim() === '') {
       failure = result.failure ?? failure;
       log(`  #${row.id} не удалось: ${row.vacancy.title.slice(0, 45)}`);
@@ -440,6 +447,8 @@ export interface SearchCommandDeps {
   /** Текст резюме, по которому пишет письма специальность (core/resume.ts). */
   resumeFor: (specialty: Specialty) => string;
   generateLetterFn: typeof generateLetter;
+  /** Личное сообщение рекрутёру для постов Telegram (core/dm.ts). */
+  generateDmFn: typeof generateDm;
   pickTemplateFn: typeof pickTemplate;
   readTemplate: (name: string) => string;
 }
@@ -470,20 +479,27 @@ export async function runSearchCommand(
     target: deps.limit,
     adapters: deps.adapters,
     generate: async (v, matched, mode, specialty) => {
-      // Скелеты — только у засеянных специальностей (legacyLetters); остальным
-      // конвейер уже выставил mode 'full', и скелет модели не показывается.
-      const template = specialty.legacyLetters ? deps.readTemplate(deps.pickTemplateFn(v, matched)) : '';
-      const result = await deps.generateLetterFn(
-        {
-          vacancy: v,
-          matched,
-          mode,
-          template,
-          resume: deps.resumeFor(specialty),
-          role: specialty.legacyLetters ? undefined : specialty.name,
-        },
-        { models: deps.config.letterModels },
-      );
+      // Пост Telegram: не письмо, а короткое личное сообщение рекрутёру со
+      // ссылкой на пост (core/dm.ts, спека 5.1).
+      // Остальное — письмо. Скелеты — только у засеянных специальностей
+      // (legacyLetters); остальным конвейер уже выставил mode 'full', и скелет
+      // модели не показывается.
+      const result = v.source === 'tg'
+        ? await deps.generateDmFn(
+          { vacancy: v, resume: deps.resumeFor(specialty), role: specialty.name },
+          { models: deps.config.letterModels },
+        )
+        : await deps.generateLetterFn(
+          {
+            vacancy: v,
+            matched,
+            mode,
+            template: specialty.legacyLetters ? deps.readTemplate(deps.pickTemplateFn(v, matched)) : '',
+            resume: deps.resumeFor(specialty),
+            role: specialty.legacyLetters ? undefined : specialty.name,
+          },
+          { models: deps.config.letterModels },
+        );
       if (result.mode === 'none') {
         emptyLetters++;
         letterFailure = result.failure ?? letterFailure;
@@ -648,6 +664,7 @@ async function main(): Promise<void> {
           resumeFor: (s) => resumeTextFor(s),
           specialtyById: (id) => specialtyOf(currentSettings(config), id),
           generateLetterFn: generateLetter,
+          generateDmFn: generateDm,
           pickTemplateFn: pickTemplate,
           readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
         }),
@@ -665,6 +682,7 @@ async function main(): Promise<void> {
             limit,
             resumeFor: (s) => resumeTextFor(s),
             generateLetterFn: generateLetter,
+            generateDmFn: generateDm,
             pickTemplateFn: pickTemplate,
             readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
           });
@@ -704,6 +722,7 @@ async function main(): Promise<void> {
         resumeFor: (s) => resumeTextFor(s),
         specialtyById: (id) => specialtyOf(currentSettings(config), id),
         generateLetterFn: generateLetter,
+        generateDmFn: generateDm,
         pickTemplateFn: pickTemplate,
         readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
         log: (line) => console.log(line),
@@ -747,6 +766,7 @@ async function main(): Promise<void> {
         limit,
         resumeFor: (s) => resumeTextFor(s),
         generateLetterFn: generateLetter,
+        generateDmFn: generateDm,
         pickTemplateFn: pickTemplate,
         readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
       });

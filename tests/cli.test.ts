@@ -27,6 +27,9 @@ import { DEFAULT_SPECIALTY } from '../src/core/specialty-defaults.js';
 
 const CONFIG = { minScore: 40, letterFullThreshold: 75, letterModels: ['m:free'], searchQueries: [], throttle: {} };
 
+/** Для прогонов без Telegram: сообщение рекрутёру здесь не должно понадобиться. */
+const NO_DM = async (): Promise<never> => { throw new Error('generateDm не должен вызываться для не-Telegram вакансий'); };
+
 describe('buildSearchQueries', () => {
   const settings = seedSettings([
     { query: 'бизнес-аналитик' },
@@ -325,10 +328,40 @@ describe('runSearchCommand — связка pipeline + генерация пис
         seen.push({ resume: input.resume, template: input.template, mode: input.mode, role: input.role });
         return { letter: 'п', mode: input.mode };
       },
+      generateDmFn: NO_DM,
       pickTemplateFn: () => 'fullstack-analyst',
       readTemplate: (name) => `ШАБЛОН:${name}`,
     });
     expect(seen).toEqual([{ resume: 'РЕЗЮМЕ:pm', template: '', mode: 'full', role: 'Менеджер продукта' }]);
+  });
+
+  it('пост Telegram — сообщение рекрутёру (generateDm), не письмо; резюме и роль специальности', async () => {
+    const tg: Adapter = {
+      name: 'tg', queryless: true,
+      async search(f) {
+        if ((f.skip ?? 0) > 0) return [];
+        return [normalizeVacancy({
+          source: 'tg', sourceId: '-1001:7', title: 'Бизнес-аналитик', company: '', url: 'https://t.me/x/7',
+          description: `Бизнес-аналитик. ${PROCESS_LANGUAGE}`, geo: '', postedAt: '2026-09-19T00:00:00Z',
+          contact: 'hr', contentHash: 'h7', channel: 'Работа в ИТ',
+        })];
+      },
+      async apply() { return { status: 'sent' }; },
+    };
+    const dm: Array<{ resume: string; role: string; url: string }> = [];
+    await runSearchCommand({
+      queue: q, config: CONFIG, adapters: [tg], queries: [{ query: 'x' }], limit: 10,
+      resumeFor: (s) => `РЕЗЮМЕ:${s.id}`,
+      generateLetterFn: async () => { throw new Error('письмо для поста Telegram писаться не должно'); },
+      generateDmFn: async (input) => {
+        dm.push({ resume: input.resume, role: input.role, url: input.vacancy.url });
+        return { letter: 'Здравствуйте! https://t.me/x/7', mode: 'dm' };
+      },
+      pickTemplateFn: () => 'fullstack-analyst',
+      readTemplate: () => 'СКЕЛЕТ',
+    });
+    expect(dm).toEqual([{ resume: 'РЕЗЮМЕ:business-analyst', role: 'Бизнес-аналитик', url: 'https://t.me/x/7' }]);
+    expect(q.listByStatus('pending')[0]!.letterMode).toBe('dm');
   });
 
   it('specialtyOf: удалённая специальность — бизнес-аналитик', () => {
@@ -351,6 +384,7 @@ describe('runSearchCommand — связка pipeline + генерация пис
         receivedModels = options.models;
         return { letter: 'готовое письмо', mode: input.mode };
       },
+      generateDmFn: NO_DM,
       pickTemplateFn: () => 'fullstack-analyst',
       readTemplate: (name) => `ШАБЛОН:${name}`,
     });
@@ -369,6 +403,7 @@ describe('runSearchCommand — связка pipeline + генерация пис
       queue: q, config: CONFIG, adapters: [mkAdapter([PROCESS_LANGUAGE])],
       queries: [{ query: 'q' }], limit: 10, resumeFor: () => 'r',
       generateLetterFn: async () => ({ letter: '', mode: 'none' }),
+      generateDmFn: NO_DM,
       pickTemplateFn: () => 'fullstack-analyst',
       readTemplate: () => 't',
     });
@@ -385,6 +420,7 @@ describe('runSearchCommand — связка pipeline + генерация пис
       queue: q, config: CONFIG, adapters: [mkAdapter(['мусор без релевантных слов'])],
       queries: [{ query: 'q' }], limit: 10, resumeFor: () => 'r',
       generateLetterFn: async () => { calls++; return { letter: 'x', mode: 'hybrid' }; },
+      generateDmFn: NO_DM,
       pickTemplateFn: () => 'fullstack-analyst',
       readTemplate: () => 't',
     });
