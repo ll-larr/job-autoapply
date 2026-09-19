@@ -2,7 +2,7 @@ import { existsSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Queue } from './queue.js';
 import type { Config } from './config.js';
-import type { Adapter } from '../adapters/types.js';
+import type { Adapter, ApplyResult } from '../adapters/types.js';
 
 const STOP_FLAG = 'data/STOP';
 
@@ -191,7 +191,24 @@ export class Sender {
         continue;
       }
 
-      const result = await adapter.apply(row.vacancy, row.letter);
+      // Исключение из адаптера — отказ этой заявки, а не конец всей
+      // отправки. 2026-09-19 клик по кнопке отклика архивной вакансии
+      // выбросил таймаут, и остальные двадцать заявок так и не ушли. В
+      // счётчик поломки такой отказ идёт как обычный: череда исключений —
+      // ровно то, от чего он защищает.
+      let result: ApplyResult;
+      try {
+        result = await adapter.apply(row.vacancy, row.letter);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        result = { status: 'failed', reason: `адаптер ${row.source} упал: ${message.split('\n')[0]!.slice(0, 200)}` };
+      }
+
+      if (result.status === 'closed') {
+        this.queue.markFailed(row.id, 'вакансия закрыта или в архиве — откликаться некуда');
+        report.failed++;
+        continue;
+      }
 
       if (result.status === 'captcha' || result.status === 'auth_required') {
         // Запись НЕ помечается failed — она остаётся approved и будет

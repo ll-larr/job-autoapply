@@ -315,6 +315,57 @@ describe('Sender предохранитель по череде отказов',
     expect(q.listByStatus('approved')).toHaveLength(3);
   });
 
+  it('закрытая вакансия — отказ с причиной, но в счётчик поломки не идёт', async () => {
+    // Живой случай 2026-09-19: вакансия 136227311 ушла в архив, пока ждала
+    // отправки. Три архивных подряд — обычное дело для старых заявок, и
+    // гасить из-за них площадку значит не отправить исправные.
+    seed(q, 5);
+    let applyCalls = 0;
+    const allClosed: Adapter = {
+      name: 'hh',
+      async search() { return []; },
+      async apply() { applyCalls++; return { status: 'closed' }; },
+    };
+    const s = new Sender(
+      q,
+      new Map([['hh', allClosed]]),
+      { ...CONFIG, throttle: { hh: { minDelayMs: 0, maxDelayMs: 0 } }, maxConsecutiveFailures: 3 },
+      { sleep: async () => {} },
+    );
+    const rep = await s.run();
+
+    expect(applyCalls).toBe(5);
+    expect(rep.halted).toBeNull();
+    expect(rep.failed).toBe(5);
+    const failed = q.listByStatus('failed');
+    expect(failed).toHaveLength(5);
+    expect(failed[0]!.error).toContain('архив');
+  });
+
+  it('исключение из адаптера — отказ этой заявки, отправка идёт дальше', async () => {
+    seed(q, 3);
+    let n = 0;
+    const flaky: Adapter = {
+      name: 'hh',
+      async search() { return []; },
+      async apply() {
+        if (n++ === 0) throw new Error('locator.click: Timeout 30000ms exceeded.');
+        return { status: 'sent' };
+      },
+    };
+    const s = new Sender(
+      q,
+      new Map([['hh', flaky]]),
+      { ...CONFIG, throttle: { hh: { minDelayMs: 0, maxDelayMs: 0 } } },
+      { sleep: async () => {} },
+    );
+    const rep = await s.run();
+
+    expect(rep.sent).toBe(2);
+    expect(rep.failed).toBe(1);
+    expect(q.listByStatus('failed')[0]!.error).toContain('Timeout 30000ms');
+  });
+
   it('успех между отказами сбрасывает счётчик', async () => {
     seed(q, 5);
     let n = 0;

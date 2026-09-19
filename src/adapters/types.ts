@@ -47,6 +47,11 @@ export type ApplyResult =
   | { status: 'already_applied' }
   | { status: 'captcha' }
   | { status: 'auth_required' }
+  /**
+   * Вакансия закрыта или в архиве — откликаться некуда. Отказ, но не признак
+   * поломки площадки: в счётчик «N отказов подряд» не идёт.
+   */
+  | { status: 'closed' }
   | { status: 'failed'; reason: string };
 
 export interface Adapter {
