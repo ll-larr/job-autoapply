@@ -38,6 +38,7 @@ import { proxyResolver, type ProxyDiscovery, type ProxySource } from './core/pro
 import type { Adapter } from './adapters/types.js';
 import { extractPdfText, refreshResumeCache, resumeTextFor, LEGACY_RESUME_MD } from './core/resume.js';
 import { suggestSpecialty } from './core/suggest.js';
+import { autoApproveAfterSearch, type AutoSkipReason } from './core/autoapply.js';
 import { TelegramAdapter } from './adapters/telegram.js';
 import { openTelegram, type OpenResult } from './telegram/gramjs.js';
 import { classifyTgError, describeTgFailure } from './telegram/errors.js';
@@ -125,6 +126,14 @@ export function specialtyOf(settings: Settings, id: string): Specialty {
   return settings.specialties.find((s) => s.id === id) ?? DEFAULT_SPECIALTY;
 }
 
+/** Предупреждение перед прогоном, когда автоотклик включён (спека 7.4). */
+export const AUTO_APPLY_BANNER: readonly string[] = [
+  '',
+  '  АВТООТКЛИК ВКЛЮЧЁН — поиск сам одобрит подходящее и отправит отклики.',
+  '  Выключить: панель → вкладка «Настройки».',
+  '',
+];
+
 const STATUS_ORDER: readonly Status[] = ['pending', 'approved', 'sent', 'failed', 'skipped'];
 
 // ============================================================================
@@ -190,6 +199,7 @@ export function formatSearchReport(
   emptyLetters: number,
   hasApiKey: boolean,
   letterFailure?: string,
+  auto?: { approved: number; skipped: number },
 ): string[] {
   const lines: string[] = [];
   lines.push(`=== Поиск: "${query}" ===`);
@@ -233,6 +243,9 @@ export function formatSearchReport(
       (report.queued > 0 ? ` из ${report.queued} поставленных в очередь` : '') +
       (emptyLetters > 0 ? ' — допиши вручную в панели' : ''),
   );
+  if (auto !== undefined) {
+    lines.push(`Автоотклик:              одобрено ${auto.approved}, оставлено на просмотр ${auto.skipped}`);
+  }
   if (report.adapterErrors.length > 0) {
     lines.push(`Ошибки адаптеров:        ${report.adapterErrors.length}`);
     for (const e of report.adapterErrors) lines.push(`  - ${e.adapter}: ${e.message}`);
@@ -512,6 +525,11 @@ export interface SearchCommandDeps {
   /** Включённые специальности — ими оцениваются посты Telegram (pipeline.ts). */
   specialties?: Specialty[];
   /**
+   * Настройки прогона. С ними после поиска срабатывает автоотклик (спека 7.2):
+   * годное одобряется само. Без них поиск только наполняет очередь.
+   */
+  settings?: Settings;
+  /**
    * Сколько вакансий должно ЛЕЧЬ В ОЧЕРЕДЬ за прогон — цель, а не потолок
    * просмотра: прогон сам решает, сколько для этого прочитать (см.
    * RunSearchOptions.target). См. resolveLimit.
@@ -537,7 +555,13 @@ export interface SearchCommandDeps {
  */
 export async function runSearchCommand(
   deps: SearchCommandDeps,
-): Promise<{ report: SearchReport; emptyLetters: number; letterFailure?: string }> {
+): Promise<{
+  report: SearchReport; emptyLetters: number; letterFailure?: string;
+  autoApproved: number; autoSkipped: Array<{ id: number; reason: AutoSkipReason }>;
+}> {
+  // Что одобрять автооткликом, считается по строкам ЭТОГО прогона: всё, что
+  // лежало в очереди раньше, человек уже видел и решения по нему не принял.
+  const startedAt = Date.now();
   let emptyLetters = 0;
   // Причина последнего провала генерации. Без неё пустые письма выглядят как
   // необъяснимое поведение системы: 2026-08-31 прогон вернул двадцать вакансий
@@ -581,7 +605,10 @@ export async function runSearchCommand(
       return result;
     },
   });
-  return { report, emptyLetters, letterFailure };
+  const auto = deps.settings === undefined
+    ? { approved: 0, skipped: [] }
+    : autoApproveAfterSearch(deps.queue, startedAt, deps.settings, deps.config);
+  return { report, emptyLetters, letterFailure, autoApproved: auto.approved, autoSkipped: auto.skipped };
 }
 
 const PROXY_SOURCE_LABEL: Record<ProxySource, string> = {
@@ -777,6 +804,7 @@ async function main(): Promise<void> {
             queries: buildSearchQueries(settings, []),
             stopWords: settings.stopWords,
             specialties: enabledSpecialties(settings),
+            settings,
             limit,
             resumeFor: (s) => resumeTextFor(s),
             generateLetterFn: generateLetter,
@@ -849,20 +877,27 @@ async function main(): Promise<void> {
     try {
       const limit = resolveLimit(rest);
       const settings = currentSettings(config);
+      if (settings.autoApply.enabled) {
+        for (const line of AUTO_APPLY_BANNER) console.log(line);
+      }
       const queries = buildSearchQueries(
         settings,
         rest.filter((a, i) => a !== '--limit' && rest[i - 1] !== '--limit'),
       );
       await refreshResumes(settings, (line) => console.error(line));
       const hasApiKey = Boolean(process.env['OPENROUTER_API_KEY']);
+      // Один набор адаптеров на поиск и на последующую автоотправку: у hh это
+      // один и тот же браузерный профиль, второй его не откроет.
+      const adapters = buildAdapters({ queue, settings: () => settings, session: tg });
 
-      const { report, emptyLetters, letterFailure } = await runSearchCommand({
+      const { report, emptyLetters, letterFailure, autoApproved, autoSkipped } = await runSearchCommand({
         queue,
         config,
-        adapters: buildAdapters({ queue, settings: () => settings, session: tg }),
+        adapters,
         queries,
         stopWords: settings.stopWords,
         specialties: enabledSpecialties(settings),
+        settings,
         limit,
         resumeFor: (s) => resumeTextFor(s),
         generateLetterFn: generateLetter,
@@ -871,8 +906,21 @@ async function main(): Promise<void> {
         readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
       });
 
-      for (const line of formatSearchReport(formatQueryLabel(queries), report, emptyLetters, hasApiKey, letterFailure)) {
+      const auto = settings.autoApply.enabled
+        ? { approved: autoApproved, skipped: autoSkipped.length }
+        : undefined;
+      for (const line of formatSearchReport(formatQueryLabel(queries), report, emptyLetters, hasApiKey, letterFailure, auto)) {
         console.log(line);
+      }
+
+      // Автоотклик: поиск одобрил — он же и отправляет, тем же Sender с теми
+      // же лимитами и предохранителями (спека 7.2).
+      if (autoApproved > 0) {
+        clearStop();
+        const sendReport = await new Sender(queue, buildAdapterMap(adapters), config).run();
+        const { lines, exitCode } = formatSendResult(sendReport);
+        for (const line of lines) console.log(line);
+        process.exitCode = exitCode;
       }
     } finally {
       // Без закрытия GramJS держит процесс живым своими соединениями.

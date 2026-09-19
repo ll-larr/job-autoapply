@@ -412,6 +412,40 @@ describe('Telegram во вкладке «Настройки»', () => {
     await expect.poll(() => page.textContent('#tgNote')).toMatch(/канал не найден/);
   });
 
+  it('включение автоотклика — только через подтверждение; отказ оставляет выключенным', async () => {
+    stored.autoApply = { enabled: false, minScore: null };
+    await page.goto(`http://127.0.0.1:${tp.port}/#settings`);
+    expect(await page.locator('#autoBanner').isHidden()).toBe(true);
+
+    page.once('dialog', (d) => { void d.dismiss(); });
+    await page.locator('#autoApply').click();
+    await expect.poll(() => page.locator('#autoApply').isChecked()).toBe(false);
+
+    page.once('dialog', (d) => {
+      expect(d.message()).toMatch(/без твоего просмотра/);
+      void d.accept();
+    });
+    await page.locator('#autoApply').click();
+    await page.fill('#autoMinScore', '55');
+    await page.click('#settingsSave');
+    await expect.poll(() => stored.autoApply).toEqual({ enabled: true, minScore: 55 });
+    await expect.poll(() => page.locator('#autoBanner').isVisible()).toBe(true);
+  });
+
+  it('вкладка «Отправлено» помечает отправленное автооткликом', async () => {
+    q.insertPending(normalizeVacancy({
+      source: 'tg', sourceId: '-1001:9', title: 'Системный аналитик', company: '', url: 'https://t.me/x/9',
+      description: 'd', geo: '', postedAt: '2026-09-19T00:00:00Z', contact: 'hr_a',
+    }), 70, [], 'Здравствуйте!', 'dm');
+    const row = q.listByStatus('pending').find((r) => r.sourceId === '-1001:9')!;
+    q.approve(row.id, undefined, 'auto');
+    q.markSent(row.id);
+
+    await page.goto(`http://127.0.0.1:${tp.port}/#sent`);
+    await expect.poll(() => page.locator('#sentList .card').count()).toBe(1);
+    expect(await page.locator('#sentList .card .meta').innerText()).toMatch(/АВТО.*@hr_a/);
+  });
+
   it('сохранение специальностей не трогает автоотклик', async () => {
     await page.goto(`http://127.0.0.1:${tp.port}/#settings`);
     await page.locator('.spec').first().locator('.skill').first().locator('[data-k="weight"]').fill('29');

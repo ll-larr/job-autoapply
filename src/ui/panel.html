@@ -72,6 +72,8 @@
                     border-radius: 4px; font-size: 13px; color: #5a4500; }
     .tg-chat { display: flex; gap: 8px; align-items: center; font-size: 14px; margin: 4px 0; }
     #tgPicker label { display: block; font-size: 14px; margin: 2px 0; }
+    #autoBanner { margin: 8px 20px; padding: 10px 12px; background: #9b1c1c; color: #fff;
+                  border-radius: 4px; font-size: 14px; font-weight: 600; }
     [hidden] { display: none !important; }
   </style>
 </head>
@@ -87,11 +89,13 @@
     </div>
     <div id="proxyWarn" style="display:none; margin:8px 20px; padding:10px 12px;
          background:#fff3cd; border:1px solid #e0c068; border-radius:4px; font-size:13px; color:#5a4500;"></div>
+    <div id="autoBanner" hidden>АВТООТКЛИК ВКЛЮЧЁН — поиск сам одобряет подходящее и отправляет отклики</div>
     <div id="searchNote"></div>
     <nav role="tablist">
       <button class="tab" role="tab" id="tab-pending"  aria-selected="true"  aria-controls="pane-pending">В ожидании<span class="n" id="n-pending">0</span></button>
       <button class="tab" role="tab" id="tab-approved" aria-selected="false" aria-controls="pane-approved">Одобрено<span class="n" id="n-approved">0</span></button>
       <button class="tab" role="tab" id="tab-skipped"  aria-selected="false" aria-controls="pane-skipped">Отменённые<span class="n" id="n-skipped">0</span></button>
+      <button class="tab" role="tab" id="tab-sent"     aria-selected="false" aria-controls="pane-sent">Отправлено<span class="n" id="n-sent">0</span></button>
       <button class="tab" role="tab" id="tab-settings" aria-selected="false" aria-controls="pane-settings">Настройки</button>
     </nav>
   </header>
@@ -122,6 +126,13 @@
     <div id="skippedList"></div>
   </section>
 
+  <section id="pane-sent" role="tabpanel" aria-labelledby="tab-sent" hidden>
+    <div class="actions">
+      <span class="hint">Что ушло за последние 30 дней. «Авто» — одобрено автооткликом, без твоего взгляда.</span>
+    </div>
+    <div id="sentList"></div>
+  </section>
+
   <section id="pane-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
     <div class="actions">
       <button id="settingsSave">Сохранить</button>
@@ -148,10 +159,22 @@
       <div id="tgPicker"></div>
       <span class="hint" id="tgNote"></span>
     </div>
+    <div class="settings-block" id="autoBlock">
+      <strong>Автоотклик</strong>
+      <span class="hint">поиск сам одобряет подходящее и отправляет — без твоего просмотра. По умолчанию выключен.</span>
+      <div style="margin-top:8px;">
+        <label><input type="checkbox" id="autoApply"> включить автоотклик</label>
+      </div>
+      <div style="margin-top:8px;">
+        <label class="hint">Отправлять при скоре не ниже
+          <input type="number" id="autoMinScore" min="0" max="100" step="1" style="width:72px;">
+          (пусто — общий порог minScore из config.json)</label>
+      </div>
+    </div>
   </section>
 
 <script>
-const TABS = ['pending', 'approved', 'skipped', 'settings'];
+const TABS = ['pending', 'approved', 'skipped', 'sent', 'settings'];
 
 function showTab(name) {
   for (const t of TABS) {
@@ -182,14 +205,16 @@ async function post(url, body) {
 }
 
 async function load() {
-  const [pendingRows, approvedRows, skippedRows] = await Promise.all([
+  const [pendingRows, approvedRows, skippedRows, sentRows] = await Promise.all([
     fetchJson('/api/pending'),
     fetchJson('/api/approved'),
     fetchJson('/api/skipped'),
+    fetchJson('/api/sent'),
   ]);
   renderPending(pendingRows);
   renderApproved(approvedRows);
   renderSkipped(skippedRows);
+  renderSent(Array.isArray(sentRows) ? sentRows : []);
 
   // Кнопка «Дописать письма» имеет смысл, только когда есть что дописывать.
   // Считаем по обеим вкладкам сразу: пустое письмо мешает и в ожидании, и в
@@ -215,6 +240,37 @@ function tgMeta(r) {
     : '';
   return `<div class="meta">Telegram: @${esc(r.contact)}${r.vacancy.channel ? ' · ' + esc(r.vacancy.channel) : ''}
     · справа — сообщение рекрутёру, к нему приложится PDF резюме</div>${warn}`;
+}
+
+/**
+ * Вкладка «Отправлено» (спека 7.4): что ушло, кому и кто это одобрил. Нужна
+ * именно из-за автоотклика: отправленное без человеческого взгляда он должен
+ * иметь возможность прочитать хотя бы потом.
+ */
+function renderSent(rows) {
+  setCount('sent', rows.length);
+  const list = document.getElementById('sentList');
+  list.innerHTML = '';
+  if (rows.length === 0) {
+    list.innerHTML = '<div class="empty">За последние 30 дней ничего не отправлено.</div>';
+    return;
+  }
+  for (const r of rows) {
+    const el = document.createElement('div');
+    el.className = 'card';
+    const when = r.sentAt ? new Date(r.sentAt).toLocaleString('ru-RU') : '';
+    const who = r.approvedBy === 'auto' ? 'АВТО' : 'одобрено вручную';
+    el.innerHTML = `
+      <div>
+        <div><a href="${r.vacancy.url}" target="_blank" rel="noopener">${esc(r.vacancy.title)}</a></div>
+        <div class="meta">${esc(when)} · ${esc(r.source)} · ${who}${r.contact ? ' · @' + esc(r.contact) : ''}</div>
+        <div class="desc"></div>
+      </div>
+      <div><div class="desc" style="max-height:none;"></div></div>`;
+    el.querySelectorAll('.desc')[0].textContent = r.vacancy.description;
+    el.querySelectorAll('.desc')[1].textContent = r.letter;
+    list.appendChild(el);
+  }
 }
 
 function renderPending(rows) {
@@ -820,6 +876,10 @@ function renderSettings(s) {
   list.innerHTML = '';
   for (const spec of s.specialties) list.appendChild(specCard(spec));
   document.getElementById('stopWords').value = s.stopWords.join('\n');
+  const auto = s.autoApply ?? { enabled: false, minScore: null };
+  document.getElementById('autoApply').checked = auto.enabled;
+  document.getElementById('autoMinScore').value = auto.minScore === null ? '' : auto.minScore;
+  document.getElementById('autoBanner').hidden = !auto.enabled;
   const tg = s.telegram ?? { chats: [], firstReadDays: 14 };
   document.getElementById('tgChats').innerHTML = '';
   for (const c of tg.chats) addChatRow(c);
@@ -920,9 +980,12 @@ function collectSettings() {
     specialties,
     stopWords: lines(document.getElementById('stopWords').value),
     telegram: { chats: collectChats(), firstReadDays: Number(document.getElementById('tgDays').value) },
-    // Автоотклик правится своим блоком (он появится ниже); здесь — как загружен,
-    // чтобы сохранение специальностей не выключало его молча.
-    autoApply: settingsLoaded?.autoApply ?? { enabled: false, minScore: null },
+    autoApply: {
+      enabled: document.getElementById('autoApply').checked,
+      minScore: document.getElementById('autoMinScore').value.trim() === ''
+        ? null
+        : Number(document.getElementById('autoMinScore').value),
+    },
   };
 }
 
@@ -938,6 +1001,29 @@ document.getElementById('addSpec').onclick = () => {
   document.getElementById('specList').appendChild(specCard({
     name: '', enabled: true, queries: [], titleWords: [], skills: [], experienceYears: 1, resumePdf: null,
   }));
+};
+
+/**
+ * Включение автоотклика — через подтверждение (спека 7.1): после него отклики
+ * уходят без просмотра человеком, а отправленное не отозвать. Выключение
+ * подтверждения не требует.
+ */
+document.getElementById('autoApply').onchange = (e) => {
+  if (!e.target.checked) return;
+  const ok = confirm(
+    'Включить автоотклик?\n\n'
+    + 'После сохранения поиск будет сам одобрять подходящее и отправлять отклики — без твоего просмотра.\n\n'
+    + 'НЕ уйдёт автоматически (останется на ручной просмотр):\n'
+    + '• письмо не сгенерировалось (например, выключен VPN);\n'
+    + '• письмо не прошло проверку на выдуманные факты;\n'
+    + '• скор ниже порога автоотклика;\n'
+    + '• контакту в Telegram писали за последние 7 дней.\n\n'
+    + 'Продолжают действовать: лимиты и паузы площадок (Telegram — 40 в сутки, 1–3 минуты между сообщениями), '
+    + 'остановки при капче hh и ограничении Telegram, кнопка «Стоп».\n\n'
+    + 'Риски: неудачную фразу письма ты увидишь только после отправки; ложное срабатывание фильтров '
+    + 'станет настоящим откликом; жалобы «спам» в Telegram ограничивают аккаунт.',
+  );
+  if (!ok) e.target.checked = false;
 };
 
 document.getElementById('settingsSave').onclick = async () => {

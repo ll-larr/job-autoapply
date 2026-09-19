@@ -432,6 +432,32 @@ describe('runSearchCommand — связка pipeline + генерация пис
     expect(q.listByStatus('pending')[0]!.letterMode).toBe('dm');
   });
 
+  it('автоотклик включён — строка прогона одобрена сама, с пометкой auto', async () => {
+    const settings = seedSettings(undefined, null);
+    settings.autoApply = { enabled: true, minScore: null };
+    const r = await runSearchCommand({
+      queue: q, config: CONFIG, adapters: [mkAdapter([PROCESS_LANGUAGE])],
+      queries: [{ query: 'бизнес-аналитик' }], limit: 10, settings,
+      resumeFor: () => 'Р', generateLetterFn: async (i) => ({ letter: 'письмо', mode: i.mode }),
+      generateDmFn: NO_DM, pickTemplateFn: () => 'fullstack-analyst', readTemplate: () => 'СКЕЛЕТ',
+    });
+    expect(r.autoApproved).toBe(1);
+    expect(q.listByStatus('approved').map((x) => x.approvedBy)).toEqual(['auto']);
+    expect(q.listByStatus('pending')).toHaveLength(0);
+  });
+
+  it('автоотклик выключен — всё ждёт человека', async () => {
+    const settings = seedSettings(undefined, null);
+    const r = await runSearchCommand({
+      queue: q, config: CONFIG, adapters: [mkAdapter([PROCESS_LANGUAGE])],
+      queries: [{ query: 'бизнес-аналитик' }], limit: 10, settings,
+      resumeFor: () => 'Р', generateLetterFn: async (i) => ({ letter: 'письмо', mode: i.mode }),
+      generateDmFn: NO_DM, pickTemplateFn: () => 'fullstack-analyst', readTemplate: () => 'СКЕЛЕТ',
+    });
+    expect(r.autoApproved).toBe(0);
+    expect(q.listByStatus('pending')).toHaveLength(1);
+  });
+
   it('specialtyOf: удалённая специальность — бизнес-аналитик', () => {
     const settings = seedSettings(undefined, null);
     expect(specialtyOf(settings, 'system-analyst').name).toBe('Системный аналитик');

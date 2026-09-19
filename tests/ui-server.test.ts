@@ -6,6 +6,7 @@ import { startPanel, type PanelDeps } from '../src/ui/server.js';
 import { Queue } from '../src/core/queue.js';
 import { normalizeVacancy } from '../src/core/vacancy.js';
 import { seedSettings, validateSettings, type Settings } from '../src/core/settings.js';
+import { clearStop, isStopRequested } from '../src/core/sender.js';
 
 // Порт 0 = система выдаёт свободный. Фиксированный порт создавал гонку между
 // перезапусками панели в beforeEach: следующий тест мог не достучаться до
@@ -621,5 +622,103 @@ describe('панель — Telegram', () => {
     expect(second.contactWarning).toMatch(/«Первая»/);
     // Строки без контакта (hh) — без предупреждения.
     expect(rows.find((r) => r.sourceId === '1')!.contactWarning).toBeNull();
+  });
+});
+
+describe('панель — автоотклик (спека 7.2–7.4)', () => {
+  const CONFIG = {
+    minScore: 40, letterFullThreshold: 75, letterModels: ['m'],
+    throttle: { hh: { minDelayMs: 0, maxDelayMs: 0 } },
+  };
+
+  function spyAdapter(hold?: Promise<void>) {
+    const applied: string[] = [];
+    return {
+      applied,
+      adapter: {
+        name: 'hh',
+        async search() { return []; },
+        async apply(v: { sourceId: string }) {
+          applied.push(v.sourceId);
+          if (hold !== undefined) await hold;
+          return { status: 'sent' as const };
+        },
+      },
+    };
+  }
+
+  function approvedRow(sourceId: string): void {
+    q.insertPending(normalizeVacancy({
+      source: 'hh', sourceId, title: 'Бизнес-аналитик', company: 'C', url: 'u',
+      description: 'd', geo: 'Москва', postedAt: '2026-09-19T00:00:00Z',
+    }), 60, [], 'письмо', 'full');
+    const row = q.listByStatus('pending').find((r) => r.sourceId === sourceId)!;
+    q.approve(row.id, undefined, 'auto');
+  }
+
+  it('поиск одобрил сам — отправка стартует без кнопки', async () => {
+    const spy = spyAdapter();
+    const auto = await startPanel(q, 0, {
+      adapters: [spy.adapter], config: CONFIG,
+      startSearch: async () => { approvedRow('auto-1'); return { report: {}, emptyLetters: 0, autoApproved: 1 }; },
+    });
+    await post(`http://127.0.0.1:${auto.port}/api/search/start`, { limit: 5 });
+    await expect.poll(() => spy.applied).toEqual(['auto-1']);
+    await expect.poll(async () => (await (await fetch(`http://127.0.0.1:${auto.port}/api/send/status`)).json() as { running: boolean }).running).toBe(false);
+    await auto.close();
+  });
+
+  it('поиск ничего не одобрил — отправка не стартует', async () => {
+    const spy = spyAdapter();
+    const auto = await startPanel(q, 0, {
+      adapters: [spy.adapter], config: CONFIG,
+      startSearch: async () => { approvedRow('manual-1'); return { report: {}, emptyLetters: 0, autoApproved: 0 }; },
+    });
+    await post(`http://127.0.0.1:${auto.port}/api/search/start`, { limit: 5 });
+    await expect.poll(async () => (await (await fetch(`http://127.0.0.1:${auto.port}/api/search/status`)).json() as { running: boolean }).running).toBe(false);
+    expect(spy.applied).toEqual([]);
+    await auto.close();
+  });
+
+  it('выключение тумблера посреди автоматической отправки останавливает её', async () => {
+    clearStop();
+    let release = (): void => {};
+    const hold = new Promise<void>((r) => { release = r; });
+    const spy = spyAdapter(hold);
+    let stored = seedSettings(undefined, null);
+    stored.autoApply = { enabled: true, minScore: null };
+    approvedRow('auto-2');
+    approvedRow('auto-3');
+
+    const auto = await startPanel(q, 0, {
+      adapters: [spy.adapter], config: CONFIG,
+      startSearch: async () => ({ report: {}, emptyLetters: 0, autoApproved: 2 }),
+      settings: {
+        get: () => stored,
+        save: async (raw) => { const r = validateSettings(raw); if (r.ok) stored = r.settings; return r; },
+        suggest: async () => ({ ok: false, error: 'не нужен' }),
+      },
+    });
+    await post(`http://127.0.0.1:${auto.port}/api/search/start`, { limit: 5 });
+    await expect.poll(() => spy.applied.length).toBe(1);
+
+    const off = structuredClone(stored);
+    off.autoApply = { enabled: false, minScore: null };
+    await post(`http://127.0.0.1:${auto.port}/api/settings`, off);
+    release();
+    await expect.poll(async () => (await (await fetch(`http://127.0.0.1:${auto.port}/api/send/status`)).json() as { running: boolean }).running).toBe(false);
+    // Вторая заявка не подавалась: прогон остановился по флагу.
+    expect(spy.applied).toEqual(['auto-2']);
+    expect(isStopRequested()).toBe(true);
+    clearStop();
+    await auto.close();
+  });
+
+  it('GET /api/sent — отправленное с пометкой, кто одобрил', async () => {
+    approvedRow('sent-1');
+    const row = q.listByStatus('approved')[0]!;
+    q.markSent(row.id);
+    const rows = await (await fetch(`http://127.0.0.1:${PORT}/api/sent`)).json() as Array<{ sourceId: string; approvedBy: string }>;
+    expect(rows.map((r) => [r.sourceId, r.approvedBy])).toEqual([['sent-1', 'auto']]);
   });
 });
