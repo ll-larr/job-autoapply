@@ -131,6 +131,18 @@ export class Queue {
     return true;
   }
 
+  /**
+   * id строки по ключу вакансии. Нужен боту (src/bot/handlers.ts): он
+   * показывает рекрутёрскую вакансию владельцу номером строки и привязывает к
+   * ней назначенное собеседование.
+   */
+  idOf(source: string, sourceId: string): number | null {
+    const row = this.db
+      .prepare('SELECT id FROM applications WHERE source = ? AND source_id = ?')
+      .get(source, sourceId) as unknown as { id: number } | undefined;
+    return row?.id ?? null;
+  }
+
   has(v: Vacancy): boolean {
     const row = this.db
       .prepare('SELECT 1 AS found FROM applications WHERE source = ? AND source_id = ?')
