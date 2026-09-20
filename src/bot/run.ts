@@ -202,7 +202,7 @@ async function sendCv(chatId: number, opts: RunBotOptions): Promise<void> {
   const { api, store, log } = opts;
   const path = opts.resumePdf?.() ?? null;
   if (path === null || !existsSync(path)) {
-    await api.sendMessage(chatId, TEXTS.cvMissing);
+    await api.sendMessage(chatId, TEXTS.cvMissing(opts.deps.profile.telegram));
     return;
   }
   const key = `cv:${Math.round(statSync(path).mtimeMs)}`;
@@ -215,7 +215,7 @@ async function sendCv(chatId: number, opts: RunBotOptions): Promise<void> {
   const sent = await api.sendDocumentByPath(chatId, path, basename(path), TEXTS.cvCaption);
   if (!sent.ok) {
     log(`резюме не отправилось: ${describe(sent.failure)}`);
-    await api.sendMessage(chatId, TEXTS.cvMissing);
+    await api.sendMessage(chatId, TEXTS.cvMissing(opts.deps.profile.telegram));
     return;
   }
   if (sent.value !== '') store.kvSet(key, sent.value);

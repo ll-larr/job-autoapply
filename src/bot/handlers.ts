@@ -105,7 +105,7 @@ export async function handleMessage(message: TgBotMessage, deps: HandlerDeps): P
   if (isNonText(message) || text.trim() === '') return [say(chatId, TEXTS.notText)];
 
   if (mode === 'await_meet') return handleMeetAnswer(text, chatId, now, day, deps);
-  if (muted) return [say(chatId, TEXTS.limit)];
+  if (muted) return [say(chatId, TEXTS.limit(deps.profile.telegram))];
   if (mode === 'await_vacancy') return handleVacancyText(text, message.message_id, chatId, username, day, deps);
   return handleQuestion(text, chatId, day, deps);
 }
@@ -134,7 +134,7 @@ async function handleDocument(
   const doc = message.document;
   if (doc === undefined) return [];
   if (mode !== 'await_vacancy') return [say(chatId, TEXTS.askVacancy)];
-  if (muted) return [say(chatId, TEXTS.limit)];
+  if (muted) return [say(chatId, TEXTS.limit(deps.profile.telegram))];
 
   const read = await deps.readFile(doc);
   if (!read.ok) {
@@ -200,7 +200,7 @@ async function processVacancy(
     }));
     actions.push(say(chatId, replyText(reply, chatId, deps)));
   } else {
-    actions.push(say(chatId, TEXTS.limit));
+    actions.push(say(chatId, TEXTS.limit(deps.profile.telegram)));
   }
 
   actions.push({
@@ -225,7 +225,7 @@ function handleMeetAnswer(
   if (parsed === null) return [say(chatId, TEXTS.meetBadFormat)];
 
   if (deps.store.meetingsToday(chatId, day) >= deps.limits.meetingsPerChatPerDay) {
-    return [say(chatId, TEXTS.limit)];
+    return [say(chatId, TEXTS.limit(deps.profile.telegram))];
   }
 
   const chat = deps.store.chat(chatId);
@@ -246,7 +246,7 @@ function handleMeetAnswer(
 async function handleQuestion(
   text: string, chatId: number, day: string, deps: HandlerDeps,
 ): Promise<BotAction[]> {
-  if (!allowModelCall(chatId, day, deps)) return [say(chatId, TEXTS.limit)];
+  if (!allowModelCall(chatId, day, deps)) return [say(chatId, TEXTS.limit(deps.profile.telegram))];
   deps.store.countModelCall(day, chatId);
   deps.store.countModelCall(day, 0);
   const reply = await deps.askModel(buildQuestionMessages({

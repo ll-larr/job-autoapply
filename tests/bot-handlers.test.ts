@@ -193,7 +193,7 @@ describe('собеседование', () => {
     }
     await send({ message_id: 90, text: '/set_meet' });
     const actions = await send({ message_id: 91, text: '08.11;10:00' });
-    expect(actions[0]).toEqual({ kind: 'text', chatId: 77, text: TEXTS.limit });
+    expect(actions[0]).toEqual({ kind: 'text', chatId: 77, text: TEXTS.limit('@ll_larr') });
     expect(deps.store.pendingMeetings()).toHaveLength(DEFAULT_BOT_LIMITS.meetingsPerChatPerDay);
   });
 });
@@ -205,7 +205,7 @@ describe('лимиты и защита', () => {
     }
     const before = modelCalls;
     const actions = await send({ message_id: 200, text: 'ещё вопрос' });
-    expect(actions[0]).toEqual({ kind: 'text', chatId: 77, text: TEXTS.limit });
+    expect(actions[0]).toEqual({ kind: 'text', chatId: 77, text: TEXTS.limit('@ll_larr') });
     expect(modelCalls).toBe(before);
   });
 
@@ -225,7 +225,7 @@ describe('лимиты и защита', () => {
       expect(actions[0]).toEqual({ kind: 'text', chatId: 77, text: TEXTS.offTopic });
     }
     const muted = await send({ message_id: 600, text: 'ну пожалуйста' });
-    expect(muted[0]).toEqual({ kind: 'text', chatId: 77, text: TEXTS.limit });
+    expect(muted[0]).toEqual({ kind: 'text', chatId: 77, text: TEXTS.limit('@ll_larr') });
   });
 
   it('ответ по теме обнуляет страйки', async () => {
