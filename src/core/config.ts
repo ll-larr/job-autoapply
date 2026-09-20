@@ -70,6 +70,58 @@ export interface Config {
    * «Готов обсудить на собеседовании».
    */
   salaryExpectation?: string;
+  /** Настройки бота-приёмника (спека 2026-09-20). Нет блока — команда `bot` не запускается. */
+  bot?: BotConfig;
+}
+
+/** Лимиты бота (спека 2026-09-20, раздел 6). Значения — стартовые, правятся в config.json. */
+export interface BotLimits {
+  perChatPerDay: number;
+  perBotPerDay: number;
+  minIntervalMs: number;
+  strikesBeforeMute: number;
+  muteHours: number;
+  meetingsPerChatPerDay: number;
+}
+
+export const DEFAULT_BOT_LIMITS: BotLimits = {
+  perChatPerDay: 20,
+  perBotPerDay: 200,
+  minIntervalMs: 3000,
+  strikesBeforeMute: 5,
+  muteHours: 24,
+  meetingsPerChatPerDay: 3,
+};
+
+export interface BotConfig {
+  profile: { github: string; telegram: string };
+  /** Модели для ответов рекрутёру. Не задано — те же, что у писем. */
+  models?: string[];
+  limits?: Partial<BotLimits>;
+}
+
+export interface ResolvedBotConfig {
+  profile: { github: string; telegram: string };
+  models: string[];
+  limits: BotLimits;
+}
+
+/**
+ * Блока `bot` нет — бот не запускается и говорит, чего не хватает. Молчаливые
+ * умолчания тут опасны: без github и telegram рекрутёр получил бы ответ с
+ * пустыми ссылками и ушёл ни с чем.
+ */
+export function resolveBotConfig(config: Config): ResolvedBotConfig {
+  const bot = config.bot;
+  if (bot === undefined) {
+    throw new Error('config.json: нет блока "bot" — добавь profile.github, profile.telegram');
+  }
+  const { github, telegram } = bot.profile ?? { github: '', telegram: '' };
+  if (typeof github !== 'string' || github === '' || typeof telegram !== 'string' || telegram === '') {
+    throw new Error('config.json: bot.profile.github и bot.profile.telegram обязательны');
+  }
+  const models = bot.models !== undefined && bot.models.length > 0 ? bot.models : config.letterModels;
+  return { profile: { github, telegram }, models, limits: { ...DEFAULT_BOT_LIMITS, ...bot.limits } };
 }
 
 export function loadConfig(path = 'config.json'): Config {
