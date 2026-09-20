@@ -51,6 +51,9 @@ export class Queue {
   constructor(dbPath: string) {
     mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new DatabaseSync(dbPath);
+    // WAL: бот (src/bot/state.ts) и панель пишут в эту базу одновременно.
+    // Без него параллельная запись упирается в «database is locked».
+    this.db.exec('PRAGMA journal_mode = WAL');
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS applications (
         id           INTEGER PRIMARY KEY AUTOINCREMENT,
