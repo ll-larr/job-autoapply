@@ -1,0 +1,434 @@
+import { DatabaseSync } from 'node:sqlite';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+import type { Vacancy } from './vacancy.js';
+import { BA_SPECIALTY_ID } from './specialty-defaults.js';
+
+export type Status = 'pending' | 'approved' | 'skipped' | 'sent' | 'failed';
+/**
+ * Откуда взялось письмо.
+ *
+ * `hybrid` и `full` — режимы генерации (скелет со вставками / целиком с нуля,
+ * см. core/letter.ts#pickMode). `none` — сгенерировать не удалось, письма нет.
+ * `manual` — человек написал его руками в панели: это не режим генерации, но
+ * и не отсутствие письма, и слепить его с остальными значило бы врать в
+ * отчётах о том, что модель сделала.
+ * `dm` — личное сообщение рекрутёру в Telegram (core/dm.ts): не письмо, у него свой промпт.
+ */
+export type LetterMode = 'hybrid' | 'full' | 'none' | 'manual' | 'dm';
+
+export interface QueueRow {
+  id: number;
+  source: string;
+  sourceId: string;
+  vacancy: Vacancy;
+  score: number;
+  matched: string[];
+  letter: string;
+  letterMode: LetterMode;
+  status: Status;
+  error: string | null;
+  /** id специальности из data/settings.json. У строк до 2026-09-18 — бизнес-аналитик. */
+  specialty: string;
+  /** @username рекрутёра без @, в нижнем регистре; только у Telegram. */
+  contact: string | null;
+  /** Кто одобрил; null — ещё не одобрена или одобрена до 2026-09-19. */
+  approvedBy: 'human' | 'auto' | null;
+  createdAt: number;
+  sentAt: number | null;
+}
+
+interface DbRow {
+  id: number; source: string; source_id: string; vacancy_json: string;
+  score: number; matched_json: string; letter: string; letter_mode: string;
+  status: string; error: string | null; specialty: string | null;
+  contact: string | null; approved_by: string | null; created_at: number; sent_at: number | null;
+}
+
+export class Queue {
+  private db: DatabaseSync;
+
+  constructor(dbPath: string) {
+    mkdirSync(dirname(dbPath), { recursive: true });
+    this.db = new DatabaseSync(dbPath);
+    // WAL: бот (src/bot/state.ts) и панель пишут в эту базу одновременно.
+    // Без него параллельная запись упирается в «database is locked».
+    this.db.exec('PRAGMA journal_mode = WAL');
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS applications (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        source       TEXT NOT NULL,
+        source_id    TEXT NOT NULL,
+        vacancy_json TEXT NOT NULL,
+        score        INTEGER NOT NULL,
+        matched_json TEXT NOT NULL,
+        letter       TEXT NOT NULL,
+        letter_mode  TEXT NOT NULL,
+        status       TEXT NOT NULL,
+        error        TEXT,
+        created_at   INTEGER NOT NULL,
+        decided_at   INTEGER,
+        sent_at      INTEGER
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_dedupe
+        ON applications(source, source_id);
+      CREATE INDEX IF NOT EXISTS idx_status ON applications(status);
+      CREATE INDEX IF NOT EXISTS idx_sent ON applications(source, sent_at);
+    `);
+
+    // Колонка появилась позже первых баз, поэтому добавляем её отдельно и
+    // молча глотаем ошибку «уже существует»: ALTER TABLE ... IF NOT EXISTS в
+    // SQLite нет, а ронять запуск на уже мигрированной базе бессмысленно.
+    try {
+      this.db.exec('ALTER TABLE applications ADD COLUMN skip_archived_at INTEGER');
+    } catch {
+      // колонка уже есть
+    }
+    // Специальность строки (спека 2026-09-18, раздел 6): по ней дописываются
+    // письма и выбирается резюме. Та же схема миграции, что выше.
+    try {
+      this.db.exec('ALTER TABLE applications ADD COLUMN specialty TEXT');
+    } catch {
+      // колонка уже есть
+    }
+    // Telegram и автоотклик (спека 2026-09-18, разделы 5–7): контакт
+    // рекрутёра (в нижнем регистре — username в Telegram регистронезависим),
+    // хэш текста поста против репостов и кто одобрил строку.
+    for (const column of ['contact TEXT', 'content_hash TEXT', 'approved_by TEXT']) {
+      try {
+        this.db.exec(`ALTER TABLE applications ADD COLUMN ${column}`);
+      } catch {
+        // колонка уже есть
+      }
+    }
+    // Индексы — после ALTER TABLE: на старой базе колонок до него ещё нет.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS tg_cursors (
+        chat_id    TEXT PRIMARY KEY,
+        last_id    INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_contact ON applications(contact);
+      CREATE INDEX IF NOT EXISTS idx_hash ON applications(content_hash);
+    `);
+  }
+
+  insertPending(
+    v: Vacancy, score: number, matched: string[], letter: string, letterMode: LetterMode,
+    specialty: string = BA_SPECIALTY_ID,
+  ): boolean {
+    if (this.has(v)) return false;
+    this.db.prepare(`
+      INSERT INTO applications
+        (source, source_id, vacancy_json, score, matched_json, letter, letter_mode, status, created_at,
+         specialty, contact, content_hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+    `).run(
+      v.source, v.sourceId, JSON.stringify(v), score,
+      JSON.stringify(matched), letter, letterMode, Date.now(), specialty,
+      v.contact?.toLowerCase() ?? null, v.contentHash ?? null,
+    );
+    return true;
+  }
+
+  /**
+   * id строки по ключу вакансии. Нужен боту (src/bot/handlers.ts): он
+   * показывает рекрутёрскую вакансию владельцу номером строки и привязывает к
+   * ней назначенное собеседование.
+   */
+  idOf(source: string, sourceId: string): number | null {
+    const row = this.db
+      .prepare('SELECT id FROM applications WHERE source = ? AND source_id = ?')
+      .get(source, sourceId) as unknown as { id: number } | undefined;
+    return row?.id ?? null;
+  }
+
+  has(v: Vacancy): boolean {
+    const row = this.db
+      .prepare('SELECT 1 AS found FROM applications WHERE source = ? AND source_id = ?')
+      .get(v.source, v.sourceId);
+    return row !== undefined;
+  }
+
+  listByStatus(status: Status): QueueRow[] {
+    const rows = this.db
+      .prepare('SELECT * FROM applications WHERE status = ? ORDER BY score DESC, id ASC')
+      .all(status) as unknown as DbRow[];
+    return rows.map(this.toQueueRow);
+  }
+
+  /**
+   * `by` — кто одобрил: человек в панели или автоотклик (спека 7.4: во
+   * вкладке «Отправлено» видно, что ушло без человеческого взгляда).
+   */
+  approve(id: number, letter?: string, by: 'human' | 'auto' = 'human'): void {
+    const result = letter === undefined
+      ? this.db.prepare(
+          "UPDATE applications SET status='approved', decided_at=?, approved_by=? WHERE id=? AND status='pending'",
+        ).run(Date.now(), by, id)
+      : this.db.prepare(
+          "UPDATE applications SET status='approved', letter=?, decided_at=?, approved_by=? WHERE id=? AND status='pending'",
+        ).run(letter, Date.now(), by, id);
+    this.requireTransitioned(id, 'pending', result.changes);
+  }
+
+  hasContentHash(hash: string): boolean {
+    return this.db.prepare('SELECT 1 AS found FROM applications WHERE content_hash = ? LIMIT 1').get(hash) !== undefined;
+  }
+
+  /**
+   * Последняя строка с этим контактом (спека 5.5): отправленная — по времени
+   * отправки, ждущая решения или отправки — по времени постановки. null —
+   * этому человеку мы ещё не писали и писать не собираемся.
+   */
+  lastContactAt(contact: string): { at: number; title: string; status: Status } | null {
+    const row = this.db.prepare(`
+      SELECT status, vacancy_json,
+             CASE WHEN status = 'sent' THEN sent_at ELSE created_at END AS at
+      FROM applications
+      WHERE contact = ? AND status IN ('sent', 'pending', 'approved')
+      ORDER BY at DESC LIMIT 1
+    `).get(contact.toLowerCase().replace(/^@/, '')) as unknown as
+      { status: string; vacancy_json: string; at: number } | undefined;
+    if (row === undefined) return null;
+    const title = (JSON.parse(row.vacancy_json) as { title: string }).title;
+    return { at: row.at, status: row.status as Status, title };
+  }
+
+  /**
+   * Когда этому контакту в последний раз ушло сообщение (спека 5.5). Отдельно
+   * от lastContactAt: та видит и саму ждущую строку, а правилу «раз в 7 дней»
+   * нужна именно последняя отправка.
+   */
+  lastSentTo(contact: string): { at: number; title: string } | null {
+    const row = this.db.prepare(`
+      SELECT sent_at AS at, vacancy_json FROM applications
+      WHERE contact = ? AND status = 'sent' ORDER BY sent_at DESC LIMIT 1
+    `).get(contact.toLowerCase().replace(/^@/, '')) as unknown as { at: number; vacancy_json: string } | undefined;
+    if (row === undefined) return null;
+    return { at: row.at, title: (JSON.parse(row.vacancy_json) as { title: string }).title };
+  }
+
+  /** Отправленное после момента — для вкладки «Отправлено». */
+  listSentSince(sinceMs: number): QueueRow[] {
+    const rows = this.db.prepare(
+      "SELECT * FROM applications WHERE status='sent' AND sent_at >= ? ORDER BY sent_at DESC",
+    ).all(sinceMs) as unknown as DbRow[];
+    return rows.map(this.toQueueRow);
+  }
+
+  /** Последний прочитанный id сообщения в чате Telegram (спека 4.5); 0 — чат ещё не читали. */
+  getTgCursor(chatId: string): number {
+    const row = this.db.prepare('SELECT last_id FROM tg_cursors WHERE chat_id = ?').get(chatId) as unknown as
+      { last_id: number } | undefined;
+    return row?.last_id ?? 0;
+  }
+
+  /** Курсор только растёт: прогон, прочитавший меньше, не откатывает прочитанное другим. */
+  setTgCursor(chatId: string, lastId: number): void {
+    this.db.prepare(`
+      INSERT INTO tg_cursors (chat_id, last_id, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(chat_id) DO UPDATE SET last_id = MAX(last_id, excluded.last_id), updated_at = excluded.updated_at
+    `).run(chatId, lastId, Date.now());
+  }
+
+  /**
+   * Дописать письмо в строку, которая ещё ждёт решения человека.
+   *
+   * Нужно, потому что дедупликация по (source, source_id) не даст повторным
+   * поиском перегенерировать письмо: вакансия уже в очереди, и следующий
+   * прогон её просто пропустит. Если генерация в тот раз не удалась (не было
+   * ключа, модель отдала 429), строка навсегда осталась бы с пустым письмом,
+   * и единственным выходом было бы удалить базу и потерять уже принятые
+   * решения. Отсюда отдельная операция дозаполнения.
+   *
+   * Из `pending` — всегда. Из `approved` — ТОЛЬКО когда письмо там пустое.
+   *
+   * Запрет на правку одобренного письма остаётся в силе и он правильный:
+   * человек одобрил конкретный текст, подменять его под ним недопустимо. Но
+   * пустое письмо он не одобрял — одобрять было нечего. Строка попадает в
+   * approved без текста, когда генерация не удалась (пропал ключ, свободная
+   * модель отдала 429), а человек одобряет вакансию, а не письмо. Найдено на
+   * живой очереди 2026-08-31: шесть таких заявок ждали отправки, и починить
+   * их было нечем — `letters` брала только pending, а тут стоял этот гейт.
+   *
+   * Условие `TRIM(letter) = ''` держит инвариант ровно: непустое одобренное
+   * письмо не перезапишется даже отсюда.
+   */
+  setLetter(id: number, letter: string, letterMode: LetterMode): void {
+    const result = this.db.prepare(
+      "UPDATE applications SET letter=?, letter_mode=? WHERE id=? AND "
+      + "(status='pending' OR (status='approved' AND TRIM(letter) = ''))",
+    ).run(letter, letterMode, id);
+    this.requireTransitioned(id, ['pending', 'approved'], result.changes);
+  }
+
+  skip(id: number): void {
+    const result = this.db.prepare(
+      "UPDATE applications SET status='skipped', decided_at=? WHERE id=? AND status IN ('pending','approved')",
+    ).run(Date.now(), id);
+    this.requireTransitioned(id, ['pending', 'approved'], result.changes);
+  }
+
+  /**
+   * Вернуть отменённую строку обратно на рассмотрение.
+   *
+   * Нужно потому, что «Пропустить» в панели — один клик, а последствия у него
+   * необратимые: строка уходит в `skipped`, панель её больше не показывает, а
+   * повторный поиск не находит — дедуп по (source, source_id) считает вакансию
+   * уже обработанной. Промах мышью стоил бы вакансии навсегда.
+   *
+   * Только из `skipped` и только в `pending`. Воскрешать `sent` по-прежнему
+   * нельзя: отправленный отклик не отменить, и возврат такой строки в очередь
+   * означал бы повторную подачу.
+   */
+  /**
+   * Недавно отменённые — для вкладки «Отменённые» в панели.
+   *
+   * Вкладка существует ради одного: «Пропустить» — один клик, и без возврата
+   * промах мышью стоил бы вакансии навсегда. Но держать там всё подряд
+   * бессмысленно, поэтому показываем только свежие.
+   *
+   * Строка при этом НЕ удаляется. Удаление сломало бы дедупликацию: вакансия
+   * снова стала бы «невиданной», и следующий поиск притащил бы её обратно —
+   * то есть осознанный отказ пользователя отменился бы сам собой через сутки.
+   * Поэтому запись живёт вечно, а из вкладки просто уходит.
+   */
+  listRecentSkipped(withinMs: number, now: number = Date.now()): QueueRow[] {
+    const rows = this.db.prepare(
+      "SELECT * FROM applications WHERE status='skipped' AND decided_at >= ?"
+      + ' AND skip_archived_at IS NULL ORDER BY decided_at DESC',
+    ).all(now - withinMs) as unknown as DbRow[];
+    return rows.map(this.toQueueRow);
+  }
+
+  /**
+   * Убрать всё из вкладки «Отменённые» по кнопке.
+   *
+   * Именно убрать из вкладки, а НЕ удалить строки. Удаление стёрло бы вакансии
+   * из дедупликации по (source, source_id), и следующий же поиск притащил бы
+   * всё отклонённое обратно — то есть кнопка «очистить» на деле возвращала бы
+   * мусор в очередь. Поэтому строки остаются, а помечаются как убранные.
+   *
+   * Возвращает, сколько записей убрано.
+   */
+  archiveSkipped(now: number = Date.now()): number {
+    const result = this.db.prepare(
+      "UPDATE applications SET skip_archived_at=? WHERE status='skipped' AND skip_archived_at IS NULL",
+    ).run(now);
+    return Number(result.changes);
+  }
+
+  unskip(id: number): void {
+    const result = this.db.prepare(
+      "UPDATE applications SET status='pending', decided_at=NULL, skip_archived_at=NULL"
+      + " WHERE id=? AND status='skipped'",
+    ).run(id);
+    this.requireTransitioned(id, 'skipped', result.changes);
+  }
+
+  markSent(id: number): void {
+    const result = this.db.prepare(
+      "UPDATE applications SET status='sent', sent_at=? WHERE id=? AND status='approved'",
+    ).run(Date.now(), id);
+    this.requireTransitioned(id, 'approved', result.changes);
+  }
+
+  markFailed(id: number, reason: string): void {
+    const result = this.db.prepare(
+      "UPDATE applications SET status='failed', error=? WHERE id=? AND status='approved'",
+    ).run(reason, id);
+    this.requireTransitioned(id, 'approved', result.changes);
+  }
+
+  /**
+   * Гвард на каждый переход статуса. Все четыре UPDATE выше несут
+   * `AND status=<ожидаемый>` (или, для skip, `AND status IN (<ожидаемые>)`)
+   * в WHERE, так что переход физически не может случиться из чужого
+   * состояния — SQLite просто не находит строку для обновления и
+   * .run().changes остаётся 0. Молчаливый no-op здесь недопустим: строка
+   * sent, которую approve() тихо не тронул бы, выглядела бы для вызывающего
+   * кода как успешно одобренная и снова попала бы в listByStatus('approved')
+   * → повторная отправка отклика. Поэтому при changes=0 бросаем ошибку с id
+   * и фактическим статусом строки — каждый нелегальный переход в этой
+   * системе является багом вызывающего кода, а не штатной ситуацией,
+   * которую стоит проглатывать.
+   */
+  private requireTransitioned(
+    id: number,
+    expectedFrom: Status | Status[],
+    changes: number | bigint,
+  ): void {
+    if (Number(changes) > 0) return;
+    const expectedLabel = Array.isArray(expectedFrom)
+      ? expectedFrom.map((s) => `'${s}'`).join(' or ')
+      : `'${expectedFrom}'`;
+    const existing = this.db
+      .prepare('SELECT status FROM applications WHERE id = ?')
+      .get(id) as unknown as { status: string } | undefined;
+    if (existing === undefined) {
+      throw new Error(`Queue: no application with id=${id} (expected status ${expectedLabel})`);
+    }
+    throw new Error(
+      `Queue: illegal transition for id=${id} — expected status ${expectedLabel}, found '${existing.status}'`,
+    );
+  }
+
+  /**
+   * Считает записи, "застрявшие" в approved без sent_at — процесс мог
+   * умереть между approve() и markSent() для этой строки. Ремонт не нужен:
+   * такая строка уже находится ровно в том состоянии, которого ждёт
+   * следующий прогон — listByStatus('approved') подберёт её сам и повторно
+   * попытается отправить. Дубль при этом невозможен: уникальный индекс не
+   * даст вставить вакансию второй раз, а отправка идёт по конкретной строке,
+   * а не по вакансии. Поэтому метод только считает и ничего не мутирует —
+   * это диагностика для старта ("N записей ждут отправки с прошлого
+   * прогона"), а не восстановительное действие.
+   */
+  countStuckApproved(): number {
+    const row = this.db.prepare(
+      "SELECT COUNT(*) AS n FROM applications WHERE status='approved' AND sent_at IS NULL",
+    ).get() as unknown as { n: number };
+    return row.n;
+  }
+
+  countSentSince(source: string, sinceMs: number): number {
+    const row = this.db.prepare(
+      "SELECT COUNT(*) AS n FROM applications WHERE source=? AND status='sent' AND sent_at >= ?",
+    ).get(source, sinceMs) as unknown as { n: number };
+    return row.n;
+  }
+
+  close(): void {
+    this.db.close();
+  }
+
+  private toQueueRow = (r: DbRow): QueueRow => {
+    // JSON.parse doesn't revive Date instances — Vacancy.postedAt is typed
+    // Date, but straight off JSON.parse it's a string wearing that type via
+    // a lying cast. Parse into the on-the-wire shape (postedAt as string),
+    // then explicitly revive it, so the runtime value matches what
+    // QueueRow's type promises the caller.
+    const wireVacancy = JSON.parse(r.vacancy_json) as Omit<Vacancy, 'postedAt'> & {
+      postedAt: string;
+    };
+    const vacancy: Vacancy = { ...wireVacancy, postedAt: new Date(wireVacancy.postedAt) };
+    return {
+      id: r.id,
+      source: r.source,
+      sourceId: r.source_id,
+      vacancy,
+      score: r.score,
+      matched: JSON.parse(r.matched_json) as string[],
+      letter: r.letter,
+      letterMode: r.letter_mode as LetterMode,
+      status: r.status as Status,
+      error: r.error,
+      specialty: r.specialty ?? BA_SPECIALTY_ID,
+      contact: r.contact,
+      approvedBy: r.approved_by === 'auto' || r.approved_by === 'human' ? r.approved_by : null,
+      createdAt: r.created_at,
+      sentAt: r.sent_at,
+    };
+  };
+}

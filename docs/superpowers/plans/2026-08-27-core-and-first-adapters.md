@@ -584,8 +584,14 @@ describe('scoreVacancy', () => {
   });
 
   it('скор ограничен сверху сотней', () => {
-    const all = Object.keys(DEFAULT_WEIGHTS).join(' ');
-    expect(scoreVacancy(v(all)).score).toBeLessThanOrEqual(100);
+    // По одному настоящему ключевику на каждую группу: сырая сумма весов 102,
+    // поэтому тест действительно проходит через Math.min(100, total).
+    // Через Object.keys(DEFAULT_WEIGHTS) он набирал бы 72 и проходил бы
+    // даже с удалённым капом — то есть не проверял бы ничего.
+    const everyGroup = 'LLM SQL DWH REST BRD ROI BPMN UML Kafka';
+    const r = scoreVacancy(v(everyGroup));
+    expect(r.matched).toHaveLength(Object.keys(DEFAULT_WEIGHTS).length);
+    expect(r.score).toBe(100);
   });
 
   it('возвращает совпавшие ключевики — они идут в письмо', () => {
@@ -673,9 +679,16 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `Vacancy`, `vacancyKey` (Task 1)
-- Produces: класс `Queue` с методами `constructor(dbPath: string)`, `insertPending(v, score, matched, letter, letterMode): boolean`, `has(v): boolean`, `listByStatus(status): QueueRow[]`, `approve(id, letter?)`, `skip(id)`, `markSent(id)`, `markFailed(id, reason)`, `recoverStuck(): number`, `countSentSince(source, sinceMs): number`, `close()`. Тип `QueueRow`, тип `Status = 'pending'|'approved'|'skipped'|'sent'|'failed'`
+- Produces: класс `Queue` с методами `constructor(dbPath: string)`, `insertPending(v, score, matched, letter, letterMode): boolean`, `has(v): boolean`, `listByStatus(status): QueueRow[]`, `approve(id, letter?)`, `skip(id)`, `markSent(id)`, `markFailed(id, reason)`, `countStuckApproved(): number`, `countSentSince(source, sinceMs): number`, `close()`. Тип `QueueRow`, тип `Status = 'pending'|'approved'|'skipped'|'sent'|'failed'`
 
 Это сердце надёжности. Уникальный индекс на `(source, source_id)` — единственная гарантия, что отклик не уйдёт дважды.
+
+**Реализовано сверх исходного текста задачи (по итогам ревью, коммит `fe27dd7`) — учитывать в задачах 11–13:**
+
+- **Переходы статусов защищены guard'ами.** `approve` и `skip` срабатывают только из `pending`; `markSent` и `markFailed` — только из `approved`. Незаконный переход **бросает** ошибку с id и фактическим статусом. Без guard'а `approve()` на уже отправленной строке возвращал её в `approved`, отправщик брал её из `listByStatus('approved')` и подавал вакансию **второй раз** — уникальный индекс от этого не спасает, он защищает от дублей строк, а не от повторной отправки одной строки.
+- **`postedAt` оживляется при чтении.** `JSON.parse` отдаёт строку, а тип обещает `Date`; `toQueueRow` восстанавливает `Date`, иначе первый же `.getTime()` падал бы без предупреждения компилятора.
+- **`recoverStuck` переименован в `countStuckApproved`** — метод ничего не чинит, только считает, и чинить действительно нечего: после обрыва между `approve` и `markSent` строка уже в том состоянии, которое ждёт следующий прогон.
+- **`skip` разрешён из `pending` и из `approved`** (коммит `8f7da77`). Первая версия guard'а пускала `skip` только из `pending`, и это отнимало у человека возможность отменить уже одобренную, но ещё не отправленную заявку — при том что отправка идёт с длинными паузами и окно на передумать реальное. Из `sent` и `failed` `skip` по-прежнему запрещён. **Задача 12 может показывать кнопку отмены и для одобренных строк.**
 
 - [ ] **Step 1: Написать падающий тест**
 
@@ -745,20 +758,20 @@ describe('Queue переходы статусов', () => {
 });
 
 describe('Queue восстановление после обрыва', () => {
-  it('approved без sent_at остаются в работе и считаются recoverStuck', () => {
+  it('approved без sent_at остаются в работе и считаются countStuckApproved', () => {
     q.insertPending(mkVacancy('4'), 50, [], 'l', 'hybrid');
     const row = q.listByStatus('pending')[0]!;
     q.approve(row.id);
-    expect(q.recoverStuck()).toBe(1);
+    expect(q.countStuckApproved()).toBe(1);
     expect(q.listByStatus('approved')).toHaveLength(1);
   });
 
-  it('отправленные recoverStuck не трогает', () => {
+  it('отправленные countStuckApproved не трогает', () => {
     q.insertPending(mkVacancy('5'), 50, [], 'l', 'hybrid');
     const row = q.listByStatus('pending')[0]!;
     q.approve(row.id);
     q.markSent(row.id);
-    expect(q.recoverStuck()).toBe(0);
+    expect(q.countStuckApproved()).toBe(0);
     expect(q.listByStatus('sent')).toHaveLength(1);
   });
 });
@@ -905,7 +918,7 @@ export class Queue {
    * уникальный индекс не даст вставить вакансию второй раз, а сама отправка
    * идёт по конкретной строке.
    */
-  recoverStuck(): number {
+  countStuckApproved(): number {
     const row = this.db.prepare(
       "SELECT COUNT(*) AS n FROM applications WHERE status='approved' AND sent_at IS NULL",
     ).get() as unknown as { n: number };
@@ -1280,243 +1293,368 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-### Task 7: Снять настоящий контракт API hr.ge
+### Task 7: Снять настоящий контракт API hr.ge перехватом Playwright
 
 **Files:**
+- Create: `scripts/capture-hrge.ts`
 - Create: `tests/fixtures/hrge-search-request.json`, `tests/fixtures/hrge-search-response.json`
 - Create: `docs/hrge-api.md`
 
 **Interfaces:**
 - Consumes: ничего
-- Produces: зафиксированный формат запроса и ответа `announcement-search` — на них опирается Task 8
+- Produces: зафиксированные формат запроса и ответа `announcement-search` — на них опирается Task 8
 
-Известно точно (разведка 2026-08-27): эндпоинт `POST https://api.p.hr.ge/public-portal/tenant/1/api/v3/announcement-search`, соседние маршруты `announcement/{id}`, `apply`, `search-field`, `announcement-view`. Модель фильтра из бандла:
+**Что уже установлено разведкой (2026-08-27/28), перепроверять не нужно:**
 
-```
-localityIds[], categoryIds[], specializationCodes[], industryCodes[],
-workScheduleCodes[], announcementTypeId, publishDateRangeOptionId,
-seniorityLevelCodes, employmentFormTypeIds[], transportTypeIds[],
-drivingLicenceIds[], worldLanguageIds[], educationLevelCodes[],
-experienceRangeOptionIds[], experienceRange{from,to},
-withoutWorkExperience, anyExperience, employmentFormIds[],
-isWorkFromHome, query, salaryRangeOptionId, onlySelectedSalary, currentPage
-```
+- Эндпоинт: `POST https://api.p.hr.ge/public-portal/tenant/1/api/v3/announcement-search`
+- Соседние маршруты из бандла `main-*.js`: `announcement/{id}`, `apply`, `search-field`, `announcement-view`, `announcement-stats/{id}`
+- Модель фильтра, снятая из бандла дословно:
+  `localityIds[]`, `categoryIds[]`, `specializationCodes[]`, `industryCodes[]`, `workScheduleCodes[]`, `announcementTypeId`, `publishDateRangeOptionId`, `seniorityLevelCodes`, `employmentFormTypeIds[]`, `transportTypeIds[]`, `drivingLicenceIds[]`, `worldLanguageIds[]`, `educationLevelCodes[]`, `experienceRangeOptionIds[]`, `experienceRange{from,to}`, `withoutWorkExperience`, `anyExperience`, `employmentFormIds[]`, `isWorkFromHome`, `query`, `salaryRangeOptionId`, `onlySelectedSalary`, `currentPage`
+- `GET .../api/v3/public/configs` отвечает **200 без авторизации** и отдаёт, среди прочего, `uxSettings.websiteSettings.generalDefaultNumberOfListItemsOnPage = 20` и `recaptchaSiteKey`
+- На сайте подключён AWS WAF (`challenge.js`)
 
-Неизвестна обёртка запроса: все пробы через `curl` дают `500 "Attempted to divide by zero"`. Значит сервер ждёт поле, которого в фильтре нет (вероятно размер страницы) или заголовок. Угадывать дальше бессмысленно — снимаем настоящий запрос.
+**Чего разведка НЕ добыла и что должна добыть эта задача:** точная форма тела запроса. Сервер отвечает `500 "Attempted to divide by zero"` на все перебранные варианты — проверены голый фильтр, обёртка `{filter}`, добавление `pageSize` / `take` / `rowCount` / `numberOfItemsOnPage` / `itemsOnPage` / `numberOfListItemsOnPage` / `listItemsOnPage` / `pageItemCount` / `numberOfItems`, а также тенанты 1, 2, 4, 5. Ошибка не зависит от payload — делится на ноль что-то, чего в запросе нет вовсе.
 
-- [ ] **Step 1: Открыть страницу поиска в браузерной панели**
+**Перебор прекращён намеренно.** Снимаем настоящий запрос перехватом, а не угадыванием.
 
-Открыть `https://www.hr.ge/search-posting` через браузерную панель (`preview_start` с этим URL).
+- [ ] **Step 1: Написать скрипт перехвата**
 
-- [ ] **Step 2: Поставить хук на fetch до того, как приложение сделает запрос**
+Создать `scripts/capture-hrge.ts`:
 
-Выполнить в консоли страницы:
+```typescript
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { chromium } from 'playwright';
 
-```javascript
-window.__captured = [];
-const origFetch = window.fetch;
-window.fetch = async function (...args) {
-  const [input, init] = args;
-  const url = typeof input === 'string' ? input : input.url;
-  if (url.includes('announcement-search')) {
-    window.__captured.push({
-      url,
-      method: init?.method ?? 'GET',
-      headers: init?.headers ?? null,
-      body: init?.body ?? null,
-    });
+const OUT = 'tests/fixtures';
+const TARGET = 'announcement-search';
+
+const browser = await chromium.launch({ headless: false });
+const page = await browser.newPage();
+
+let captured = false;
+
+page.on('request', (req) => {
+  if (!req.url().includes(TARGET)) return;
+  mkdirSync(OUT, { recursive: true });
+  writeFileSync(`${OUT}/hrge-search-request.json`, JSON.stringify({
+    url: req.url(),
+    method: req.method(),
+    headers: req.headers(),
+    body: req.postData(),
+  }, null, 2), 'utf8');
+  console.log('captured request:', req.method(), req.url());
+});
+
+page.on('response', async (res) => {
+  if (!res.url().includes(TARGET) || res.status() !== 200) return;
+  try {
+    const json = await res.json();
+    mkdirSync(OUT, { recursive: true });
+    writeFileSync(`${OUT}/hrge-search-response.json`, JSON.stringify(json, null, 2), 'utf8');
+    captured = true;
+    console.log('captured response:', res.status());
+  } catch (e) {
+    console.error('response not JSON:', e);
   }
-  return origFetch.apply(this, args);
-};
-'hook installed';
+});
+
+await page.goto('https://www.hr.ge/search-posting', { waitUntil: 'networkidle' });
+// Приложение шлёт запрос при загрузке маршрута; даём ему время и на догрузку.
+await page.waitForTimeout(8000);
+
+console.log(captured ? 'OK: fixtures written' : 'FAILED: no 200 response seen');
+await browser.close();
+process.exit(captured ? 0 : 1);
 ```
 
-- [ ] **Step 3: Спровоцировать поиск**
+- [ ] **Step 2: Запустить перехват**
 
-Ввести `analyst` в поле поиска на странице и нажать кнопку поиска. Если приложение вместо `fetch` использует `XMLHttpRequest`, хук выше ничего не поймает — тогда поставить второй хук:
+Run: `npx tsx scripts/capture-hrge.ts`
+Expected: `captured request: POST ...`, затем `captured response: 200`, затем `OK: fixtures written`.
 
-```javascript
-const origOpen = XMLHttpRequest.prototype.open;
-const origSend = XMLHttpRequest.prototype.send;
-XMLHttpRequest.prototype.open = function (m, u, ...rest) {
-  this.__m = m; this.__u = u; return origOpen.call(this, m, u, ...rest);
-};
-XMLHttpRequest.prototype.send = function (body) {
-  if (String(this.__u).includes('announcement-search')) {
-    window.__captured.push({ url: this.__u, method: this.__m, body });
-  }
-  return origSend.call(this, body);
-};
-'xhr hook installed';
-```
+Если запрос перехвачен, а ответ 200 не пришёл — записать фактический статус и тело ошибки в `docs/hrge-api.md` и перейти к Step 5.
 
-и повторить поиск.
+- [ ] **Step 3: Воспроизвести пойманный запрос обычным HTTP**
 
-- [ ] **Step 4: Забрать пойманный запрос**
-
-```javascript
-JSON.stringify(window.__captured, null, 2);
-```
-
-- [ ] **Step 5: Воспроизвести запрос через curl и убедиться, что он отвечает 200**
-
-Подставить пойманные тело и заголовки:
+Взять `body` и `headers` из `tests/fixtures/hrge-search-request.json` и повторить запрос через `curl` (или через `fetch` в отдельном скрипте) **вне браузера**:
 
 ```bash
 curl -s -m 20 -w "\n[HTTP %{http_code}]\n" -X POST \
   -H "Content-Type: application/json" \
   "https://api.p.hr.ge/public-portal/tenant/1/api/v3/announcement-search" \
-  -d '<ПОЙМАННОЕ_ТЕЛО>'
+  -d @- <<'BODY'
+<ПОЙМАННОЕ_ТЕЛО>
+BODY
 ```
 
-Expected: `HTTP 200` и JSON со списком вакансий.
+Это решающая проверка: она отвечает, возможен ли HTTP-адаптер вообще.
 
-Если 200 получается только с дополнительным заголовком — зафиксировать этот заголовок в `docs/hrge-api.md`. Если запрос проходит только из браузера (AWS WAF на пути), это меняет решение: адаптер `hrge` тоже становится браузерным, и Task 8 переписывается на Playwright. **Это допустимый исход разведки — записать его явно, а не обходить.**
+- [ ] **Step 4: Определить минимальный набор заголовков**
 
-- [ ] **Step 6: Сохранить фикстуры**
+Если Step 3 дал 200 — убрать заголовки по одному и найти минимальный работающий набор. Если Step 3 дал 403 или иную ошибку, повторить с заголовками из перехвата, добавляя их по одному, пока не пройдёт.
 
-Записать пойманное тело в `tests/fixtures/hrge-search-request.json`, полученный ответ — в `tests/fixtures/hrge-search-response.json`. Ответ обрезать до двух вакансий, чтобы фикстура читалась.
+- [ ] **Step 5: Записать вывод — включая отрицательный**
 
-- [ ] **Step 7: Задокументировать**
+Создать `docs/hrge-api.md`: базовый URL, точная форма тела с именами полей, минимальный набор обязательных заголовков, структура ответа с путями до `id`, `title`, `company`, `description`, `city`, `publishDate`, ссылка на страницу вакансии. Отдельным разделом — WAF и `recaptchaSiteKey`.
 
-Создать `docs/hrge-api.md`: базовый URL, точный формат запроса, обязательные заголовки, структура ответа с путями до `id`, `title`, `company`, `description`, `city`, `publishDate`, ссылка на страницу вакансии, и — отдельным разделом — что выяснилось про WAF и reCAPTCHA (`recaptchaSiteKey` присутствует в `public/configs`).
+**Отрицательный результат — валидный результат, и его надо записать явно.** Если запрос работает только изнутри браузера, зафиксировать это прямым текстом: тогда адаптер `hrge` в Task 8 строится на Playwright, а не на `fetch`, и первая итерация теряет проверку «две крайности» — обе площадки оказываются браузерными. Это меняет вывод итерации, поэтому решение принимает человек, а не реализующий.
 
-- [ ] **Step 8: Коммит**
+- [ ] **Step 6: Обрезать фикстуру ответа**
+
+Оставить в `tests/fixtures/hrge-search-response.json` две вакансии, сохранив структуру обёртки целиком. Фикстура должна читаться глазами.
+
+- [ ] **Step 7: Коммит**
 
 ```bash
-git add docs/hrge-api.md tests/fixtures/hrge-search-request.json tests/fixtures/hrge-search-response.json
-git commit -m "docs: capture real hr.ge announcement-search API contract
+git add scripts/capture-hrge.ts docs/hrge-api.md tests/fixtures/hrge-search-request.json tests/fixtures/hrge-search-response.json
+git commit -m "docs: capture real hr.ge announcement-search contract via Playwright
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
-
----
 
 ### Task 8: Адаптер hr.ge
 
 **Files:**
 - Create: `src/adapters/hrge.ts`
+- Create: `scripts/capture-hrge-detail.ts`
+- Create: `tests/fixtures/hrge-detail-response.json`
 - Test: `tests/hrge.test.ts`
 
 **Interfaces:**
-- Consumes: `Adapter`, `SearchFilters`, `ApplyResult` (Task 3); `normalizeVacancy` (Task 1); фикстуры из Task 7
-- Produces: класс `HrGeAdapter implements Adapter`; функция `parseSearchResponse(json: unknown): Vacancy[]`
+- Consumes: `Adapter`, `SearchFilters`, `ApplyResult` (Task 3); `normalizeVacancy` (Task 1); контракт и фикстуры из Task 7
+- Produces: класс `HrGeAdapter implements Adapter`; функции `parseSearchResponse(json: unknown): SearchItem[]`, `parseDetailResponse(json: unknown): string`
 
-Точные имена полей ответа берутся из `tests/fixtures/hrge-search-response.json`, снятого в Task 7. Ниже они обозначены как `<ПОЛЕ_ИЗ_ФИКСТУРЫ>` — подставь реальные при реализации.
+**Источник истины — `docs/hrge-api.md`.** Он написан по живому перехвату. Ничего в нём не угадано, и угадывать поверх него нельзя: имена полей проволоки НЕ выводятся из бандла заменой регистра (`experienceRange` на проволоке зовётся `WorkExperience`, а чекбокс «удалёнка» шлёт `EmploymentFormTypeIds:[2]`, а не `IsWorkFromHome`).
 
-- [ ] **Step 1: Написать падающий тест**
+**Настоящее тело запроса поиска** (PascalCase, сервер к регистру нечувствителен):
+
+```json
+{
+  "Query": "analyst",
+  "CategoryIds": [],
+  "WorkExperience": { "from": null, "to": null },
+  "WithoutWorkExperience": false,
+  "AnyExperience": false,
+  "OnlySelectedSalary": false,
+  "Start": 0,
+  "Limit": 100,
+  "IsWorkFromHome": false
+}
+```
+
+`Limit` обязателен: без него сервер делит на ноль и отдаёт `500`. `Start` — смещение от нуля. Общее число результатов — `data.announcements.totalCount`.
+
+**Поля вакансии в `data.announcements.items[]`:** `announcementId`, `title`, `customerName`, `locations` (массив строк, единственного `city` нет), `publishDate` (ISO без таймзоны).
+
+**Описания в ответе поиска НЕТ.** Это не мелочь: `scorer` считает по `title` + `description`, и без описания скор будет почти всегда нулевым, то есть вся выдача hr.ge отсеется на пороге `minScore`. Поэтому адаптер обязан дочитывать деталь каждой вакансии, которую собирается вернуть.
+
+**Контракт `apply` не снят и в этой задаче не снимается.** Снять его — значит отправить настоящий отклик на живую вакансию от имени пользователя. Это его аккаунт и его решение, поэтому шаг отложен до отдельного наблюдаемого прогона. В этой задаче `apply` возвращает честный `failed` с причиной и ссылкой.
+
+- [ ] **Step 1: Снять контракт детали вакансии**
+
+Маршрут известен из бандла: `GET https://api.p.hr.ge/public-portal/tenant/1/api/v3/announcement/{id}`. Это чтение, побочных эффектов нет.
+
+Создать `scripts/capture-hrge-detail.ts`: взять `announcementId` первой вакансии из `tests/fixtures/hrge-search-response-keyword.json`, сделать обычный `fetch` на этот маршрут, записать ответ в `tests/fixtures/hrge-detail-response.json`.
+
+Run: `npx tsx scripts/capture-hrge-detail.ts`
+Expected: `HTTP 200` и JSON с телом вакансии.
+
+Найти в ответе поле с полным текстом описания и **дописать его путь в `docs/hrge-api.md`** в раздел про описание. Если поле называется не так, как ожидалось, или описание приходит как HTML — записать это прямо, HTML не выбрасывать молча.
+
+Если маршрут отвечает не 200 — остановиться и доложить, не подбирая варианты вслепую.
+
+- [ ] **Step 2: Написать падающий тест**
 
 Создать `tests/hrge.test.ts`:
 
 ```typescript
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { parseSearchResponse, HrGeAdapter } from '../src/adapters/hrge.js';
+import { parseSearchResponse, parseDetailResponse, HrGeAdapter } from '../src/adapters/hrge.js';
 
-const fixture = JSON.parse(
-  readFileSync('tests/fixtures/hrge-search-response.json', 'utf8'),
+const searchFixture = JSON.parse(
+  readFileSync('tests/fixtures/hrge-search-response-keyword.json', 'utf8'),
+);
+const detailFixture = JSON.parse(
+  readFileSync('tests/fixtures/hrge-detail-response.json', 'utf8'),
 );
 
 describe('parseSearchResponse', () => {
-  it('превращает ответ API в массив Vacancy', () => {
-    const vs = parseSearchResponse(fixture);
-    expect(vs.length).toBeGreaterThan(0);
-    const v = vs[0]!;
-    expect(v.source).toBe('hrge');
-    expect(v.sourceId).not.toBe('');
-    expect(v.url).toContain('hr.ge');
-    expect(v.postedAt).toBeInstanceOf(Date);
+  it('вытаскивает вакансии из настоящего ответа поиска', () => {
+    const items = parseSearchResponse(searchFixture);
+    expect(items.length).toBeGreaterThan(0);
+    const first = items[0]!;
+    expect(first.sourceId).toMatch(/^\d+$/);
+    expect(first.title).not.toBe('');
+    expect(first.company).not.toBe('');
+  });
+
+  it('склеивает массив locations в одну строку', () => {
+    const items = parseSearchResponse(searchFixture);
+    expect(typeof items[0]!.geo).toBe('string');
+    expect(items[0]!.geo).not.toBe('');
   });
 
   it('на пустом списке возвращает пустой массив, а не бросает', () => {
-    expect(parseSearchResponse({ data: { announcements: [] } })).toEqual([]);
+    expect(parseSearchResponse({ data: { announcements: { items: [], totalCount: 0 } } }))
+      .toEqual([]);
   });
 
   it('на мусорном входе возвращает пустой массив', () => {
     expect(parseSearchResponse(null)).toEqual([]);
     expect(parseSearchResponse({ nope: 1 })).toEqual([]);
+    expect(parseSearchResponse({ data: {} })).toEqual([]);
+  });
+});
+
+describe('parseDetailResponse', () => {
+  it('достаёт текст описания из настоящего ответа детали', () => {
+    const text = parseDetailResponse(detailFixture);
+    expect(text.length).toBeGreaterThan(50);
+  });
+
+  it('на мусорном входе возвращает пустую строку', () => {
+    expect(parseDetailResponse(null)).toBe('');
+    expect(parseDetailResponse({})).toBe('');
+  });
+});
+
+describe('HrGeAdapter.search', () => {
+  it('шлёт Limit — без него сервер делит на ноль', async () => {
+    let sentBody: Record<string, unknown> | null = null;
+    const a = new HrGeAdapter({
+      fetchImpl: async (_url, init) => {
+        sentBody = JSON.parse(String((init as RequestInit).body));
+        return new Response(JSON.stringify(searchFixture), { status: 200 });
+      },
+    });
+    await a.search({ query: 'analyst', maxResults: 0 });
+    expect(sentBody).not.toBeNull();
+    expect(sentBody!['Limit']).toBeGreaterThan(0);
+    expect(sentBody!['Query']).toBe('analyst');
+  });
+
+  it('дочитывает описание для каждой возвращённой вакансии', async () => {
+    let detailCalls = 0;
+    const a = new HrGeAdapter({
+      fetchImpl: async (url) => {
+        if (String(url).includes('announcement-search')) {
+          return new Response(JSON.stringify(searchFixture), { status: 200 });
+        }
+        detailCalls++;
+        return new Response(JSON.stringify(detailFixture), { status: 200 });
+      },
+    });
+    const vs = await a.search({ query: 'analyst', maxResults: 2 });
+    expect(vs).toHaveLength(2);
+    expect(detailCalls).toBe(2);
+    for (const v of vs) expect(v.description.length).toBeGreaterThan(50);
+  });
+
+  it('падение детали не роняет всю выдачу — вакансия остаётся с пустым описанием', async () => {
+    const a = new HrGeAdapter({
+      fetchImpl: async (url) => {
+        if (String(url).includes('announcement-search')) {
+          return new Response(JSON.stringify(searchFixture), { status: 200 });
+        }
+        return new Response('nope', { status: 500 });
+      },
+    });
+    const vs = await a.search({ query: 'analyst', maxResults: 1 });
+    expect(vs).toHaveLength(1);
+    expect(vs[0]!.description).toBe('');
+  });
+
+  it('на ошибке поиска возвращает пустой массив', async () => {
+    const a = new HrGeAdapter({
+      fetchImpl: async () => new Response('boom', { status: 500 }),
+    });
+    expect(await a.search({ query: 'analyst' })).toEqual([]);
   });
 });
 
 describe('HrGeAdapter.apply', () => {
-  it('распознаёт требование капчи как captcha, а не как failed', async () => {
-    const a = new HrGeAdapter({
-      fetchImpl: async () => new Response(
-        JSON.stringify({ error: { errorCode: 'RECAPTCHA_REQUIRED' } }),
-        { status: 400 },
-      ),
-    });
-    const r = await a.apply({ sourceId: '1' } as never, 'письмо');
-    expect(r.status).toBe('captcha');
+  it('возвращает failed с причиной — контракт apply ещё не снят', async () => {
+    const a = new HrGeAdapter();
+    const r = await a.apply(
+      { sourceId: '490990', url: 'https://www.hr.ge/announcement/490990' } as never,
+      'письмо',
+    );
+    expect(r.status).toBe('failed');
+    if (r.status === 'failed') {
+      expect(r.reason).toContain('490990');
+    }
   });
 
-  it('401 означает auth_required, очередь должна встать', async () => {
-    const a = new HrGeAdapter({
-      fetchImpl: async () => new Response('{}', { status: 401 }),
-    });
-    const r = await a.apply({ sourceId: '1' } as never, 'письмо');
-    expect(r.status).toBe('auth_required');
-  });
-
-  it('успешный ответ даёт sent', async () => {
-    const a = new HrGeAdapter({
-      fetchImpl: async () => new Response('{"data":{"success":true}}', { status: 200 }),
-    });
-    const r = await a.apply({ sourceId: '1' } as never, 'письмо');
-    expect(r.status).toBe('sent');
+  it('не делает ни одного сетевого вызова', async () => {
+    let calls = 0;
+    const a = new HrGeAdapter({ fetchImpl: async () => { calls++; return new Response('{}'); } });
+    await a.apply({ sourceId: '1', url: 'u' } as never, 'письмо');
+    expect(calls).toBe(0);
   });
 });
 ```
 
-- [ ] **Step 2: Запустить, убедиться что падает**
+- [ ] **Step 3: Запустить, убедиться что падает**
 
 Run: `npm test -- tests/hrge.test.ts`
 Expected: FAIL — модуль не найден
 
-- [ ] **Step 3: Реализовать**
+- [ ] **Step 4: Реализовать**
 
-Создать `src/adapters/hrge.ts`. Пути до полей (`<ПОЛЕ_ИЗ_ФИКСТУРЫ>`) подставить из фикстуры Task 7:
+Создать `src/adapters/hrge.ts`. Точный путь до поля описания подставить из `docs/hrge-api.md` после Step 1 — ниже он помечен как `<ПОЛЕ_ОПИСАНИЯ_ИЗ_DOCS>`.
 
 ```typescript
 import { normalizeVacancy, type Vacancy } from '../core/vacancy.js';
 import type { Adapter, ApplyResult, SearchFilters } from './types.js';
 
 const BASE = 'https://api.p.hr.ge/public-portal/tenant/1/api/v3';
+const DEFAULT_LIMIT = 100;
 
-/** Каркас фильтра из бандла hr.ge. Поля не выдуманы — сняты из main-*.js. */
-const BASE_FILTER = {
-  localityIds: [], categoryIds: [], specializationCodes: [], industryCodes: [],
-  workScheduleCodes: [], announcementTypeId: null, publishDateRangeOptionId: 0,
-  seniorityLevelCodes: null, employmentFormTypeIds: [], transportTypeIds: [],
-  drivingLicenceIds: [], worldLanguageIds: [], educationLevelCodes: [],
-  experienceRangeOptionIds: [], experienceRange: { from: null, to: null },
-  withoutWorkExperience: false, anyExperience: false, employmentFormIds: [],
-  isWorkFromHome: false, query: '', salaryRangeOptionId: 0,
-  onlySelectedSalary: false, currentPage: 1,
-};
+/** Промежуточная форма: то, что даёт поиск, ещё без описания. */
+export interface SearchItem {
+  sourceId: string;
+  title: string;
+  company: string;
+  geo: string;
+  publishDate: string;
+  url: string;
+}
 
-export function parseSearchResponse(json: unknown): Vacancy[] {
-  const items = (json as { data?: { announcements?: unknown[] } })?.data?.announcements;
+export function parseSearchResponse(json: unknown): SearchItem[] {
+  const items = (json as { data?: { announcements?: { items?: unknown[] } } })
+    ?.data?.announcements?.items;
   if (!Array.isArray(items)) return [];
 
-  const out: Vacancy[] = [];
+  const out: SearchItem[] = [];
   for (const raw of items) {
     const a = raw as Record<string, unknown>;
-    const id = String(a['<ПОЛЕ_ИЗ_ФИКСТУРЫ:id>'] ?? '');
-    if (id === '') continue;
-    out.push(normalizeVacancy({
-      source: 'hrge',
-      sourceId: id,
-      title: String(a['<ПОЛЕ_ИЗ_ФИКСТУРЫ:title>'] ?? ''),
-      company: String(a['<ПОЛЕ_ИЗ_ФИКСТУРЫ:company>'] ?? ''),
-      url: `https://www.hr.ge/announcement/${id}`,
-      description: String(a['<ПОЛЕ_ИЗ_ФИКСТУРЫ:description>'] ?? ''),
-      geo: String(a['<ПОЛЕ_ИЗ_ФИКСТУРЫ:city>'] ?? 'Georgia'),
-      postedAt: String(a['<ПОЛЕ_ИЗ_ФИКСТУРЫ:publishDate>'] ?? new Date().toISOString()),
-      isRemote: Boolean(a['<ПОЛЕ_ИЗ_ФИКСТУРЫ:isWorkFromHome>'] ?? false),
-    }));
+    const id = a['announcementId'];
+    if (typeof id !== 'number' && typeof id !== 'string') continue;
+    const sourceId = String(id);
+    const locations = Array.isArray(a['locations'])
+      ? (a['locations'] as unknown[]).map(String).filter((s) => s !== '')
+      : [];
+    out.push({
+      sourceId,
+      title: String(a['title'] ?? ''),
+      company: String(a['customerName'] ?? ''),
+      geo: locations.length > 0 ? locations.join(', ') : 'Georgia',
+      publishDate: String(a['publishDate'] ?? new Date().toISOString()),
+      url: `https://www.hr.ge/announcement/${sourceId}`,
+    });
   }
   return out;
+}
+
+/** Путь до текста описания — из docs/hrge-api.md, снят живым перехватом. */
+export function parseDetailResponse(json: unknown): string {
+  const d = (json as { data?: Record<string, unknown> })?.data;
+  if (d === undefined || d === null) return '';
+  const raw = d['<ПОЛЕ_ОПИСАНИЯ_ИЗ_DOCS>'];
+  if (typeof raw !== 'string') return '';
+  // Если поле приходит как HTML — раздеть до текста, иначе скор считает по разметке.
+  return raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 export class HrGeAdapter implements Adapter {
@@ -1529,55 +1667,95 @@ export class HrGeAdapter implements Adapter {
 
   async search(filters: SearchFilters): Promise<Vacancy[]> {
     const body = {
-      ...BASE_FILTER,
-      query: filters.query,
-      isWorkFromHome: filters.remoteOnly ?? false,
-      currentPage: 1,
+      Query: filters.query,
+      CategoryIds: [],
+      WorkExperience: { from: null, to: null },
+      WithoutWorkExperience: false,
+      AnyExperience: false,
+      OnlySelectedSalary: false,
+      Start: 0,
+      Limit: DEFAULT_LIMIT,
+      IsWorkFromHome: filters.remoteOnly ?? false,
     };
+
     const res = await this.fetchImpl(`${BASE}/announcement-search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     if (!res.ok) return [];
-    return parseSearchResponse(await res.json());
+
+    const items = parseSearchResponse(await res.json());
+    const wanted = filters.maxResults === undefined
+      ? items
+      : items.slice(0, filters.maxResults);
+
+    const out: Vacancy[] = [];
+    for (const item of wanted) {
+      out.push(normalizeVacancy({
+        source: 'hrge',
+        sourceId: item.sourceId,
+        title: item.title,
+        company: item.company,
+        url: item.url,
+        description: await this.fetchDescription(item.sourceId),
+        geo: item.geo,
+        postedAt: item.publishDate,
+        isRemote: filters.remoteOnly ?? false,
+      }));
+    }
+    return out;
   }
 
-  async apply(vacancy: Vacancy, letter: string): Promise<ApplyResult> {
-    const res = await this.fetchImpl(`${BASE}/apply`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ announcementId: vacancy.sourceId, coverLetter: letter }),
-    });
+  /** Описания в ответе поиска нет, а скорер без него слеп. Дочитываем деталь. */
+  private async fetchDescription(sourceId: string): Promise<string> {
+    try {
+      const res = await this.fetchImpl(`${BASE}/announcement/${sourceId}`);
+      if (!res.ok) return '';
+      return parseDetailResponse(await res.json());
+    } catch {
+      // Одна недочитанная деталь не должна ронять всю выдачу.
+      return '';
+    }
+  }
 
-    if (res.status === 401 || res.status === 403) return { status: 'auth_required' };
-
-    const text = await res.text();
-    if (/recaptcha|captcha/i.test(text)) return { status: 'captcha' };
-    if (/already.?applied|already.?exists/i.test(text)) return { status: 'already_applied' };
-    if (res.ok) return { status: 'sent' };
-    return { status: 'failed', reason: `HTTP ${res.status}: ${text.slice(0, 200)}` };
+  async apply(vacancy: Vacancy, _letter: string): Promise<ApplyResult> {
+    // Контракт apply не снят: чтобы его снять, нужно отправить настоящий отклик
+    // на живую вакансию от имени пользователя. Это его аккаунт и его решение.
+    // Пока — честный отказ со ссылкой, чтобы человек подал руками.
+    return {
+      status: 'failed',
+      reason:
+        `hr.ge: контракт отправки отклика ещё не снят, вакансия ${vacancy.sourceId} ` +
+        `не подана. Подай вручную: ${vacancy.url}`,
+    };
   }
 }
 ```
 
-Порядок проверок в `apply` важен: капча проверяется **до** `res.ok`, потому что сервер может вернуть требование капчи со статусом 200.
-
-- [ ] **Step 4: Запустить тесты**
+- [ ] **Step 5: Запустить тесты**
 
 Run: `npm test -- tests/hrge.test.ts`
-Expected: PASS, 6 тестов
+Expected: PASS, 12 тестов
 
-- [ ] **Step 5: Коммит**
+Run: `npm test`
+Expected: весь набор зелёный
+
+Run: `npm run typecheck`
+Expected: без ошибок
+
+- [ ] **Step 6: Проверить интерфейс**
+
+Прочитать `src/adapters/types.ts`. Убедиться, что за эту задачу в него не добавилось ни метода, ни поля. Если добавилось — остановиться и доложить: это значит, что интерфейс не выдерживает вторую площадку, и чинить надо интерфейс, а не адаптер.
+
+- [ ] **Step 7: Коммит**
 
 ```bash
-git add src/adapters/hrge.ts tests/hrge.test.ts
-git commit -m "feat: hr.ge HTTP adapter with captcha and auth detection
+git add src/adapters/hrge.ts scripts/capture-hrge-detail.ts tests/hrge.test.ts tests/fixtures/hrge-detail-response.json docs/hrge-api.md
+git commit -m "feat: hr.ge HTTP adapter with detail fetch for descriptions
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
-
----
 
 ### Task 9: Профиль браузера и снятие фикстур hh.ru
 
@@ -1695,24 +1873,36 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `Adapter` (Task 3), `normalizeVacancy` (Task 1), `openProfile` (Task 9), фикстуры и селекторы из Task 9
-- Produces: класс `HhAdapter implements Adapter`; функция `parseSearchHtml(html: string): Vacancy[]`
+- Produces: класс `HhAdapter implements Adapter`; функция `parseSearchPage(page: Page): Promise<Vacancy[]>`; функция `classifyApplyOutcome(s: ApplySignals): ApplyResult`
 
-Парсер отделён от браузера: `parseSearchHtml` — чистая функция над строкой, тестируется на фикстуре без запуска Chromium. Браузер нужен только для навигации и клика.
+**Парсинг идёт через DOM Playwright, не через регулярки.** Playwright уже в зависимостях, а разбор HTML регулярками ломается на любой смене вёрстки и не переживает вложенные теги. `parseSearchPage` принимает `Page`, поэтому тестируется офлайн: фикстура загружается в страницу через `page.setContent(html)`, браузер при этом реальный, но сети нет.
 
 - [ ] **Step 1: Написать падающий тест**
 
 Создать `tests/hh.test.ts`:
 
 ```typescript
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { parseSearchHtml, classifyApplyOutcome } from '../src/adapters/hh.js';
+import { chromium, type Browser, type Page } from 'playwright';
+import { parseSearchPage, classifyApplyOutcome } from '../src/adapters/hh.js';
 
 const html = readFileSync('tests/fixtures/hh-search.html', 'utf8');
 
-describe('parseSearchHtml', () => {
-  it('вытаскивает вакансии из реальной выдачи', () => {
-    const vs = parseSearchHtml(html);
+let browser: Browser;
+let page: Page;
+
+beforeAll(async () => {
+  // Реальный браузер, но без сети: фикстура грузится через setContent.
+  browser = await chromium.launch({ headless: true });
+  page = await browser.newPage();
+});
+afterAll(async () => { await browser.close(); });
+
+describe('parseSearchPage', () => {
+  it('вытаскивает вакансии из реальной выдачи', async () => {
+    await page.setContent(html);
+    const vs = await parseSearchPage(page);
     expect(vs.length).toBeGreaterThan(0);
     const v = vs[0]!;
     expect(v.source).toBe('hh');
@@ -1722,12 +1912,14 @@ describe('parseSearchHtml', () => {
     expect(v.company).not.toBe('');
   });
 
-  it('на пустом HTML возвращает пустой массив', () => {
-    expect(parseSearchHtml('<html><body></body></html>')).toEqual([]);
+  it('на пустой странице возвращает пустой массив', async () => {
+    await page.setContent('<html><body></body></html>');
+    expect(await parseSearchPage(page)).toEqual([]);
   });
 
-  it('sourceId уникален внутри одной выдачи', () => {
-    const ids = parseSearchHtml(html).map((v) => v.sourceId);
+  it('sourceId уникален внутри одной выдачи', async () => {
+    await page.setContent(html);
+    const ids = (await parseSearchPage(page)).map((v) => v.sourceId);
     expect(new Set(ids).size).toBe(ids.length);
   });
 });
@@ -1765,6 +1957,7 @@ Expected: FAIL — модуль не найден
 Создать `src/adapters/hh.ts`. Селекторы взять из `docs/hh-selectors.md` (Task 9) — ниже помечены как `<СЕЛЕКТОР:...>`:
 
 ```typescript
+import type { Page, Locator } from 'playwright';
 import { normalizeVacancy, type Vacancy } from '../core/vacancy.js';
 import { openProfile } from '../browser.js';
 import type { Adapter, ApplyResult, SearchFilters } from './types.js';
@@ -1789,43 +1982,43 @@ export function classifyApplyOutcome(s: ApplySignals): ApplyResult {
   return { status: 'failed', reason: 'форма отклика не подтвердила отправку' };
 }
 
-export function parseSearchHtml(html: string): Vacancy[] {
+/**
+ * Разбор выдачи через DOM Playwright. Селекторы — из docs/hh-selectors.md.
+ * Функция принимает Page, а не строку, поэтому в тестах фикстура грузится
+ * через page.setContent и сеть не нужна.
+ */
+export async function parseSearchPage(page: Page): Promise<Vacancy[]> {
+  const cards = await page.locator('<СЕЛЕКТОР:card>').all();
   const out: Vacancy[] = [];
   const seen = new Set<string>();
 
-  // Каждая карточка выдачи содержит ссылку вида /vacancy/<id>.
-  // Точный селектор карточки — в docs/hh-selectors.md.
-  const cardRe = /<[^>]+data-qa="vacancy-serp__vacancy"[\s\S]*?(?=<[^>]+data-qa="vacancy-serp__vacancy"|$)/g;
-  const cards = html.match(cardRe) ?? [];
-
   for (const card of cards) {
-    const idMatch = /hh\.ru\/vacancy\/(\d+)/.exec(card);
-    const id = idMatch?.[1];
+    const href = await card.locator('<СЕЛЕКТОР:title-link>').first()
+      .getAttribute('href').catch(() => null);
+    const id = href === null ? undefined : /\/vacancy\/(\d+)/.exec(href)?.[1];
     if (id === undefined || seen.has(id)) continue;
     seen.add(id);
-
-    const title = textOf(card, '<СЕЛЕКТОР:title>');
-    const company = textOf(card, '<СЕЛЕКТОР:company>');
-    const geo = textOf(card, '<СЕЛЕКТОР:region>');
 
     out.push(normalizeVacancy({
       source: 'hh',
       sourceId: id,
-      title,
-      company,
+      title: await innerTextOr(card, '<СЕЛЕКТОР:title-link>', ''),
+      company: await innerTextOr(card, '<СЕЛЕКТОР:company>', ''),
       url: `https://hh.ru/vacancy/${id}`,
       description: '', // полное описание дочитывается на странице вакансии
-      geo: geo === '' ? 'не указан' : geo,
+      geo: await innerTextOr(card, '<СЕЛЕКТОР:region>', 'не указан'),
       postedAt: new Date(),
     }));
   }
   return out;
 }
 
-function textOf(fragment: string, dataQa: string): string {
-  const re = new RegExp(`data-qa="${dataQa}"[^>]*>([\\s\\S]*?)<`, 'i');
-  const m = re.exec(fragment);
-  return (m?.[1] ?? '').replace(/<[^>]+>/g, '').trim();
+async function innerTextOr(
+  scope: Locator, selector: string, fallback: string,
+): Promise<string> {
+  const text = await scope.locator(selector).first().innerText().catch(() => '');
+  const trimmed = text.trim();
+  return trimmed === '' ? fallback : trimmed;
 }
 
 export class HhAdapter implements Adapter {
@@ -1837,7 +2030,7 @@ export class HhAdapter implements Adapter {
       const page = await ctx.newPage();
       const url = `https://hh.ru/search/vacancy?text=${encodeURIComponent(filters.query)}&area=1`;
       await page.goto(url, { waitUntil: 'domcontentloaded' });
-      const vacancies = parseSearchHtml(await page.content());
+      const vacancies = await parseSearchPage(page);
 
       // Дочитываем полное описание — без него скоринг слепой.
       const limit = filters.maxResults ?? vacancies.length;
@@ -2679,7 +2872,7 @@ switch (cmd) {
   }
 
   case 'panel': {
-    const stuck = queue.recoverStuck();
+    const stuck = queue.countStuckApproved();
     if (stuck > 0) console.log(`${stuck} записей ждут отправки с прошлого прогона`);
     await startPanel(queue, 4321);
     console.log('Панель: http://127.0.0.1:4321');

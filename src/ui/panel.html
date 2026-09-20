@@ -1,0 +1,1139 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Job Autoapply — очередь</title>
+  <style>
+    body { font: 15px/1.5 system-ui, sans-serif; margin: 0; background: #f6f6f7; color: #1b1b1d; }
+
+    header { background: #fff; border-bottom: 1px solid #ddd; position: sticky; top: 0; z-index: 5; }
+    .bar { padding: 12px 20px 0; display: flex; gap: 12px; align-items: baseline; }
+    .bar strong { font-size: 16px; }
+
+    nav { display: flex; gap: 2px; padding: 10px 20px 0; }
+    .tab {
+      appearance: none; border: 1px solid transparent; border-bottom: none;
+      background: transparent; font: inherit; cursor: pointer;
+      padding: 8px 16px; border-radius: 6px 6px 0 0; color: #555;
+      position: relative; top: 1px;
+    }
+    .tab:hover { background: #f0f0f2; }
+    .tab[aria-selected="true"] {
+      background: #f6f6f7; border-color: #ddd; color: #1b1b1d; font-weight: 600;
+    }
+    .tab .n {
+      display: inline-block; margin-left: 7px; padding: 0 7px;
+      background: #e6e6ea; border-radius: 9px; font-size: 12px; font-weight: 500; color: #444;
+    }
+    .tab[aria-selected="true"] .n { background: #dcdce2; }
+    .tab:focus-visible { outline: 2px solid #3b6ea5; outline-offset: 2px; }
+
+    .actions { padding: 12px 20px 0; display: flex; gap: 8px; align-items: center; }
+
+    .bar { justify-content: space-between; }
+    .search-box { display: flex; gap: 8px; align-items: center; }
+    .search-box label { font-size: 13px; color: #555; }
+    .search-box input {
+      width: 76px; padding: 5px 8px; font: inherit; font-size: 14px;
+      border: 1px solid #ccc; border-radius: 4px;
+    }
+    #searchNote { font-size: 12px; color: #666; padding: 0 20px 0; min-height: 16px; }
+    .hint { font-size: 13px; color: #666; }
+
+    .card { display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+            background: #fff; margin: 16px 20px; padding: 16px;
+            border: 1px solid #ddd; border-radius: 8px; }
+    .card.slim { grid-template-columns: 1fr auto; align-items: center; }
+    .meta { font-size: 13px; color: #666; }
+    .score { font-weight: 700; }
+    .desc { max-height: 260px; overflow-y: auto; white-space: pre-wrap;
+            font-size: 13px; border: 1px solid #eee; padding: 8px; }
+    textarea { width: 100%; min-height: 260px; font: 13px/1.5 ui-monospace, monospace; }
+    button { padding: 6px 14px; cursor: pointer; }
+    .empty { padding: 40px 20px; color: #666; }
+
+    .spec { background: #fff; margin: 16px 20px; padding: 16px; border: 1px solid #ddd; border-radius: 8px; }
+    .spec .row { display: grid; grid-template-columns: 170px 1fr; gap: 8px; align-items: start; margin-bottom: 8px; }
+    .spec .row > label { font-size: 13px; color: #555; padding-top: 5px; }
+    .spec input[type=text], .spec input[type=number] {
+      font: inherit; font-size: 14px; padding: 4px 6px; border: 1px solid #ccc; border-radius: 4px;
+    }
+    .spec input[data-f="titleWords"], .spec input[data-f="resumePdf"] { width: 100%; box-sizing: border-box; }
+    .spec input[data-f="experienceYears"] { width: 72px; justify-self: start; }
+    .spec textarea { min-height: 60px; font: 13px/1.4 system-ui, sans-serif; }
+    .skills { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 6px; }
+    .skills th { text-align: left; font-weight: 500; color: #666; padding: 4px; }
+    .skills td { padding: 3px 4px; vertical-align: top; }
+    .skills input[data-k="synonyms"] { width: 100%; box-sizing: border-box; }
+    .skills input[data-k="weight"] { width: 64px; }
+    .settings-block { background: #fff; margin: 16px 20px; padding: 16px; border: 1px solid #ddd; border-radius: 8px; }
+    .settings-block textarea { min-height: 110px; margin-top: 6px; font: 13px/1.4 system-ui, sans-serif; }
+    .llm-row { display: grid; grid-template-columns: 170px 1fr; gap: 8px; align-items: start; margin-top: 10px; }
+    .llm-row > label { font-size: 13px; color: #555; padding-top: 5px; }
+    .llm-row input[type=password], .llm-row input[type=text], .llm-row select {
+      font: inherit; font-size: 14px; padding: 4px 6px; border: 1px solid #ccc; border-radius: 4px;
+    }
+    .llm-row input[type=password], .llm-row input[type=text] { width: 320px; }
+    .llm-row .hint { display: block; margin-top: 4px; }
+    .contact-warn { margin: 6px 0; padding: 6px 10px; background: #fff3cd; border: 1px solid #e0c068;
+                    border-radius: 4px; font-size: 13px; color: #5a4500; }
+    .tg-chat { display: flex; gap: 8px; align-items: center; font-size: 14px; margin: 4px 0; }
+    #tgPicker label { display: block; font-size: 14px; margin: 2px 0; }
+    #autoBanner { margin: 8px 20px; padding: 10px 12px; background: #9b1c1c; color: #fff;
+                  border-radius: 4px; font-size: 14px; font-weight: 600; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="bar">
+      <strong>Очередь откликов</strong>
+      <div class="search-box">
+        <label for="searchLimit">Найти вакансий</label>
+        <input type="number" id="searchLimit" value="20" min="1" max="500" step="10">
+        <button id="searchStart">Найти</button>
+      </div>
+    </div>
+    <div id="proxyWarn" style="display:none; margin:8px 20px; padding:10px 12px;
+         background:#fff3cd; border:1px solid #e0c068; border-radius:4px; font-size:13px; color:#5a4500;"></div>
+    <div id="autoBanner" hidden>АВТООТКЛИК ВКЛЮЧЁН — поиск сам одобряет подходящее и отправляет отклики</div>
+    <div id="searchNote"></div>
+    <nav role="tablist">
+      <button class="tab" role="tab" id="tab-pending"  aria-selected="true"  aria-controls="pane-pending">В ожидании<span class="n" id="n-pending">0</span></button>
+      <button class="tab" role="tab" id="tab-approved" aria-selected="false" aria-controls="pane-approved">Одобрено<span class="n" id="n-approved">0</span></button>
+      <button class="tab" role="tab" id="tab-skipped"  aria-selected="false" aria-controls="pane-skipped">Отменённые<span class="n" id="n-skipped">0</span></button>
+      <button class="tab" role="tab" id="tab-sent"     aria-selected="false" aria-controls="pane-sent">Отправлено<span class="n" id="n-sent">0</span></button>
+      <button class="tab" role="tab" id="tab-settings" aria-selected="false" aria-controls="pane-settings">Настройки</button>
+    </nav>
+  </header>
+
+  <section id="pane-pending" role="tabpanel" aria-labelledby="tab-pending">
+    <div class="actions">
+      <button id="approveAll">Одобрить всё</button>
+      <button id="fillLettersPending">Дописать письма</button>
+      <span class="hint" id="lettersHint"></span>
+    </div>
+    <div id="list"></div>
+  </section>
+
+  <section id="pane-approved" role="tabpanel" aria-labelledby="tab-approved" hidden>
+    <div class="actions">
+      <button id="sendAll">Отправить всё</button>
+      <button id="fillLetters">Дописать письма</button>
+      <span class="hint" id="sendHint">Отправка необратима: отклик на hh.ru нельзя отозвать.</span>
+    </div>
+    <div id="approvedList"></div>
+  </section>
+
+  <section id="pane-skipped" role="tabpanel" aria-labelledby="tab-skipped" hidden>
+    <div class="actions">
+      <button id="clearSkipped">Очистить вкладку</button>
+      <span class="hint">Записи уходят отсюда сами через сутки. Вакансии остаются отклонёнными и в поиске больше не всплывут.</span>
+    </div>
+    <div id="skippedList"></div>
+  </section>
+
+  <section id="pane-sent" role="tabpanel" aria-labelledby="tab-sent" hidden>
+    <div class="actions">
+      <span class="hint">Что ушло за последние 30 дней. «Авто» — одобрено автооткликом, без твоего взгляда.</span>
+    </div>
+    <div id="sentList"></div>
+  </section>
+
+  <section id="pane-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+    <div class="actions">
+      <button id="settingsSave">Сохранить</button>
+      <button id="addSpec">Добавить специальность</button>
+      <span class="hint" id="settingsNote">Правка действует со следующего поиска.</span>
+    </div>
+    <div class="settings-block" id="llmBlock">
+      <strong>Модель для писем</strong>
+      <span class="hint">кто пишет письма, личные сообщения рекрутёрам и отвечает на анкеты.</span>
+      <div class="llm-row">
+        <label for="llmKey">Ключ OpenRouter</label>
+        <div>
+          <input type="password" id="llmKey" placeholder="sk-or-v1-…" autocomplete="off" spellcheck="false">
+          <button type="button" id="llmKeyShow">Показать</button>
+          <div class="hint">берётся на openrouter.ai/keys. Хранится в data/settings.json на этом компьютере —
+            в git этот каталог не попадает. Пусто — ключ берётся из файла .env.</div>
+        </div>
+      </div>
+      <div class="llm-row">
+        <label for="llmModel">Модель</label>
+        <div>
+          <select id="llmModel"></select>
+          <input type="text" id="llmModelOther" placeholder="например z-ai/glm-5.3" spellcheck="false" hidden>
+          <div class="hint">выбранная пробуется первой; если она откажет (лимит, кончились деньги),
+            пойдут запасные из config.json. Платные модели тратят деньги со счёта OpenRouter.</div>
+        </div>
+      </div>
+    </div>
+    <div id="specList"></div>
+    <div class="settings-block">
+      <label for="stopWords"><strong>Стоп-слова</strong>
+        <span class="hint">по одному в строке. Отсекают вакансию, если слово в заголовке или 2+ раза в описании.</span></label>
+      <textarea id="stopWords" rows="5"></textarea>
+    </div>
+    <div class="settings-block" id="tgBlock">
+      <strong>Telegram</strong>
+      <span class="hint">каналы и группы, где искать вакансии. Нужен VPN и вход: npm run tg:login.</span>
+      <div id="tgChats"></div>
+      <div class="actions" style="padding-left:0; flex-wrap:wrap;">
+        <input type="text" id="tgRef" placeholder="@канал или ссылка t.me" size="28">
+        <button id="tgAdd">Добавить</button>
+        <button id="tgPick">Выбрать из моих чатов</button>
+        <label class="hint">Глубина первого чтения, дней
+          <input type="number" id="tgDays" min="1" max="90" step="1" style="width:64px;"></label>
+      </div>
+      <div id="tgPicker"></div>
+      <span class="hint" id="tgNote"></span>
+    </div>
+    <div class="settings-block" id="autoBlock">
+      <strong>Автоотклик</strong>
+      <span class="hint">поиск сам одобряет подходящее и отправляет — без твоего просмотра. По умолчанию выключен.</span>
+      <div style="margin-top:8px;">
+        <label><input type="checkbox" id="autoApply"> включить автоотклик</label>
+      </div>
+      <div style="margin-top:8px;">
+        <label class="hint">Отправлять при скоре не ниже
+          <input type="number" id="autoMinScore" min="0" max="100" step="1" style="width:72px;">
+          (пусто — общий порог minScore из config.json)</label>
+      </div>
+    </div>
+  </section>
+
+<script>
+const TABS = ['pending', 'approved', 'skipped', 'sent', 'settings'];
+
+function showTab(name) {
+  for (const t of TABS) {
+    const isActive = t === name;
+    document.getElementById('tab-' + t).setAttribute('aria-selected', String(isActive));
+    document.getElementById('pane-' + t).hidden = !isActive;
+  }
+  // Вкладка живёт в адресе, чтобы обновление страницы не выкидывало обратно
+  // на первую: после «Восстановить» или «Очистить вкладку» человек остаётся
+  // там, где работал.
+  history.replaceState(null, '', '#' + name);
+}
+
+for (const t of TABS) {
+  document.getElementById('tab-' + t).onclick = () => showTab(t);
+}
+
+async function fetchJson(url) {
+  return (await fetch(url)).json();
+}
+
+async function post(url, body) {
+  return fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+async function load() {
+  const [pendingRows, approvedRows, skippedRows, sentRows] = await Promise.all([
+    fetchJson('/api/pending'),
+    fetchJson('/api/approved'),
+    fetchJson('/api/skipped'),
+    fetchJson('/api/sent'),
+  ]);
+  renderPending(pendingRows);
+  renderApproved(approvedRows);
+  renderSkipped(skippedRows);
+  renderSent(Array.isArray(sentRows) ? sentRows : []);
+
+  // Кнопка «Дописать письма» имеет смысл, только когда есть что дописывать.
+  // Считаем по обеим вкладкам сразу: пустое письмо мешает и в ожидании, и в
+  // одобренных, а кнопка одна и та же.
+  emptyLetterCount = [...pendingRows, ...approvedRows]
+    .filter((r) => r.letter.trim() === '').length;
+  updateLettersBtns();
+}
+
+function setCount(name, n) {
+  document.getElementById('n-' + name).textContent = n;
+}
+
+/**
+ * Строка Telegram в карточке: кому уйдёт сообщение, из какого чата пост, и
+ * предупреждение, если этому рекрутёру уже писали (спека 5.2, 5.5). У вакансий
+ * площадок контакта нет — строки нет.
+ */
+function tgMeta(r) {
+  if (!r.contact) return '';
+  const warn = r.contactWarning
+    ? `<div class="contact-warn">${esc(r.contactWarning)}</div>`
+    : '';
+  return `<div class="meta">Telegram: @${esc(r.contact)}${r.vacancy.channel ? ' · ' + esc(r.vacancy.channel) : ''}
+    · справа — сообщение рекрутёру, к нему приложится PDF резюме</div>${warn}`;
+}
+
+/**
+ * Вкладка «Отправлено» (спека 7.4): что ушло, кому и кто это одобрил. Нужна
+ * именно из-за автоотклика: отправленное без человеческого взгляда он должен
+ * иметь возможность прочитать хотя бы потом.
+ */
+function renderSent(rows) {
+  setCount('sent', rows.length);
+  const list = document.getElementById('sentList');
+  list.innerHTML = '';
+  if (rows.length === 0) {
+    list.innerHTML = '<div class="empty">За последние 30 дней ничего не отправлено.</div>';
+    return;
+  }
+  for (const r of rows) {
+    const el = document.createElement('div');
+    el.className = 'card';
+    const when = r.sentAt ? new Date(r.sentAt).toLocaleString('ru-RU') : '';
+    const who = r.approvedBy === 'auto' ? 'АВТО' : 'одобрено вручную';
+    el.innerHTML = `
+      <div>
+        <div><a href="${r.vacancy.url}" target="_blank" rel="noopener">${esc(r.vacancy.title)}</a></div>
+        <div class="meta">${esc(when)} · ${esc(r.source)} · ${who}${r.contact ? ' · @' + esc(r.contact) : ''}</div>
+        <div class="desc"></div>
+      </div>
+      <div><div class="desc" style="max-height:none;"></div></div>`;
+    el.querySelectorAll('.desc')[0].textContent = r.vacancy.description;
+    el.querySelectorAll('.desc')[1].textContent = r.letter;
+    list.appendChild(el);
+  }
+}
+
+function renderPending(rows) {
+  setCount('pending', rows.length);
+  const list = document.getElementById('list');
+  list.innerHTML = '';
+
+  if (rows.length === 0) {
+    list.innerHTML = '<div class="empty">Пусто. Запусти поиск.</div>';
+    return;
+  }
+
+  for (const r of rows) {
+    const el = document.createElement('div');
+    el.className = 'card';
+    el.dataset.id = r.id;
+    el.dataset.score = r.score;
+    el.innerHTML = `
+      <div>
+        <div><a href="${r.vacancy.url}" target="_blank" rel="noopener">${r.vacancy.title}</a></div>
+        <div class="meta">${r.vacancy.company} · ${r.vacancy.geo} · ${r.source}</div>
+        <div class="meta">скор <span class="score">${r.score}</span> ·
+             ${r.matched.join(', ') || 'без совпадений'} · режим ${r.letterMode}</div>
+        ${tgMeta(r)}
+        <div class="desc"></div>
+      </div>
+      <div>
+        <textarea></textarea>
+        <div style="margin-top:8px; display:flex; gap:8px;">
+          <button data-act="approve">Принять</button>
+          <button data-act="skip">Пропустить</button>
+        </div>
+      </div>`;
+    el.querySelector('.desc').textContent = r.vacancy.description;
+    el.querySelector('textarea').value = r.letter;
+
+    el.querySelector('[data-act="approve"]').onclick = async () => {
+      await post('/api/approve', { id: r.id, letter: el.querySelector('textarea').value });
+      load();
+    };
+    el.querySelector('[data-act="skip"]').onclick = async () => {
+      await post('/api/skip', { id: r.id });
+      load();
+    };
+    list.appendChild(el);
+  }
+}
+
+function renderApproved(rows) {
+  setCount('approved', rows.length);
+  // Любая перерисовка снимает взвод: если человек успел кликнуть что-то
+  // ещё, второй клик по «Отправить всё» не должен унаследовать готовность
+  // от намерения, о котором он уже забыл.
+  if (!sendPolling) resetSendButton(rows.length);
+  const list = document.getElementById('approvedList');
+  list.innerHTML = '';
+
+  if (rows.length === 0) {
+    list.innerHTML = '<div class="empty">Нет одобренных заявок, ожидающих отправки.</div>';
+    return;
+  }
+
+  for (const r of rows) {
+    const el = document.createElement('div');
+    el.className = 'card';
+    el.innerHTML = `
+      <div>
+        <div><a href="${r.vacancy.url}" target="_blank" rel="noopener">${r.vacancy.title}</a></div>
+        <div class="meta">${r.vacancy.company} · ${r.vacancy.geo} · ${r.source}</div>
+        <div class="meta">скор <span class="score">${r.score}</span> · одобрено, ждёт отправки</div>
+        ${tgMeta(r)}
+        <div class="desc"></div>
+      </div>
+      <div>
+        <div class="desc letter-preview" style="max-height:none;"></div>
+        <textarea class="letter-edit" style="display:none;"
+                  placeholder="Впиши сопроводительное письмо — без него заявка не отправится."></textarea>
+        <div style="margin-top:8px; display:flex; gap:8px;">
+          <button data-act="save" style="display:none;">Сохранить письмо</button>
+          <button data-act="cancel">Отменить</button>
+        </div>
+      </div>`;
+    el.querySelector('.desc').textContent = r.vacancy.description;
+    const preview = el.querySelector('.letter-preview');
+    const edit = el.querySelector('.letter-edit');
+    const save = el.querySelector('[data-act="save"]');
+
+    if (r.letter.trim() === '') {
+      // Пустое письмо на одобренной заявке — не мелочь: отправка её пропустит
+      // целиком, и без этой пометки «Отправлено 0» выглядело бы поломкой.
+      // Раньше здесь была только надпись, отсылавшая к кнопке, которой не
+      // существовало, и вписать текст было некуда. Теперь и поле, и кнопка.
+      preview.textContent = 'ПИСЬМА НЕТ — заявка не отправится. Впиши текст ниже или нажми «Дописать письма».';
+      preview.style.color = '#b00';
+      preview.style.fontWeight = '600';
+      edit.style.display = '';
+      save.style.display = '';
+      save.onclick = async () => {
+        const text = edit.value.trim();
+        if (text === '') return;
+        const res = await post('/api/letter', { id: r.id, letter: text });
+        if (!res.ok) {
+          const err = await res.json();
+          preview.textContent = err.error ?? 'Не удалось сохранить письмо.';
+          return;
+        }
+        load();
+      };
+    } else {
+      preview.textContent = r.letter;
+    }
+
+    el.querySelector('[data-act="cancel"]').onclick = async () => {
+      // skip() принимает и approved: отправитель работает медленно, с
+      // паузами, так что у человека есть реальное окно передумать уже
+      // после одобрения, но до фактической отправки.
+      await post('/api/skip', { id: r.id });
+      load();
+    };
+    list.appendChild(el);
+  }
+}
+
+function renderSkipped(rows) {
+  setCount('skipped', rows.length);
+  const list = document.getElementById('skippedList');
+  list.innerHTML = '';
+
+  if (rows.length === 0) {
+    list.innerHTML = '<div class="empty">Пусто. Сюда попадает отменённое за последние сутки.</div>';
+    return;
+  }
+
+  for (const r of rows) {
+    const el = document.createElement('div');
+    el.className = 'card slim';
+    el.innerHTML = `
+      <div>
+        <div><a href="${r.vacancy.url}" target="_blank" rel="noopener">${r.vacancy.title}</a></div>
+        <div class="meta">${r.vacancy.company} · ${r.vacancy.geo} · ${r.source} · скор ${r.score}</div>
+      </div>
+      <div><button data-act="unskip">Восстановить</button></div>`;
+
+    el.querySelector('[data-act="unskip"]').onclick = async () => {
+      await post('/api/unskip', { id: r.id });
+      load();
+    };
+    list.appendChild(el);
+  }
+}
+
+// startedAt (см. /api/search/status и /api/send/status) иначе писался бы и
+// никогда не читался: и поиск, и отправка идут минутами, и "сколько уже
+// прошло" — не декоративная мелочь для операции такой длины.
+function formatElapsed(startedAt, now) {
+  if (typeof startedAt !== 'number') return '';
+  const seconds = Math.max(0, Math.round((now - startedAt) / 1000));
+  return ` (${seconds} c)`;
+}
+
+// Поиск. Подтверждения не требует, в отличие от отправки: он ничего не
+// подаёт, только наполняет очередь. Но идёт минутами — открывает браузер,
+// листает выдачу, дочитывает описания, зовёт модель на каждое письмо, — так
+// что запускается асинхронно, а состояние опрашивается.
+let searchPolling = null;
+
+const searchBtn = document.getElementById('searchStart');
+const searchLimit = document.getElementById('searchLimit');
+const searchNote = document.getElementById('searchNote');
+
+searchBtn.onclick = async () => {
+  const limit = Number(searchLimit.value);
+  if (!Number.isInteger(limit) || limit <= 0) {
+    searchNote.textContent = 'Число вакансий должно быть целым положительным.';
+    return;
+  }
+  const res = await post('/api/search/start', { limit });
+  if (!res.ok) {
+    const err = await res.json();
+    searchNote.textContent = err.error ?? 'Не удалось запустить поиск.';
+    return;
+  }
+  pollSearch();
+};
+
+async function pollSearch() {
+  if (searchPolling) return;
+  searchBtn.disabled = true;
+  searchLimit.disabled = true;
+  searchNote.textContent = 'Поиск идёт. Откроется браузер — это нормально, страницы только читаются. '
+    + 'Выдача листается, пока не наберётся заказанное число подходящих, так что это надолго.';
+
+  searchPolling = setInterval(async () => {
+    const st = await fetchJson('/api/search/status');
+    if (st.running) {
+      searchNote.textContent = 'Поиск идёт' + formatElapsed(st.startedAt, Date.now())
+        + '. Откроется браузер — это нормально, страницы только читаются.';
+      return;
+    }
+
+    clearInterval(searchPolling);
+    searchPolling = null;
+    searchBtn.disabled = false;
+    searchLimit.disabled = false;
+
+    if (st.error) {
+      searchNote.textContent = 'Поиск упал: ' + st.error;
+    } else if (st.result) {
+      const r = st.result.report;
+      // "Просмотрено", а не "найдено": found считает сырые карточки выдачи,
+      // прочитанные ради того, чтобы набрать заказанное число подходящих.
+      const parts = [`просмотрено ${r.found}`, `в очередь ${r.queued}`];
+      // Недобор надо назвать причиной. "В очередь 12" при заказанных 20
+      // одинаково выглядит и когда подходящего больше нет, и когда прогон
+      // упёрся в предохранитель — а делать с этим нужно разное.
+      if (r.stoppedBecause === 'exhausted') parts.push('выдача кончилась');
+      else if (r.stoppedBecause === 'scan_cap') parts.push('упёрлись в потолок просмотра');
+      if (r.duplicates) parts.push(`уже было ${r.duplicates}`);
+      if (r.belowThreshold) parts.push(`ниже порога ${r.belowThreshold}`);
+      if (r.noCoreMatch) parts.push(`не по профилю ${r.noCoreMatch}`);
+      const rejected = (r.rejectedExperience ?? 0) + (r.rejectedGrade ?? 0)
+        + (r.rejectedStopword ?? 0) + (r.rejectedTitle ?? 0) + (r.rejectedInternship ?? 0);
+      if (rejected) parts.push(`отсеяно фильтрами ${rejected}`);
+      const hits = Object.entries(r.stopwordHits ?? {}).map(([w, n]) => `${w} ${n}`).join(', ');
+      if (hits) parts.push(`стоп-слова: ${hits}`);
+      if (r.tgNoContact) parts.push(`tg без контакта ${r.tgNoContact}`);
+      if (r.textDuplicates) parts.push(`репостов ${r.textDuplicates}`);
+      for (const c of r.tgSkippedChats ?? []) parts.push(`«${c.title}»: ${c.why}`);
+      if (st.result.emptyLetters) parts.push(`БЕЗ ПИСЬМА ${st.result.emptyLetters}`);
+      searchNote.textContent = parts.join(' · ');
+    }
+    load();
+  }, 3000);
+}
+
+// Дозаполнение писем. Идёт минутами (модель на каждое письмо), поэтому та же
+// схема, что у поиска и отправки: запуск асинхронный, состояние опрашивается.
+//
+// Кнопка есть на обеих вкладках: пустое письмо мешает и там, и там, а гонять
+// человека между вкладками ради одного действия незачем.
+let lettersPolling = null;
+/** Сколько писем осталось дописать. Считается в load() по обеим вкладкам. */
+let emptyLetterCount = 0;
+/** Умеет ли эта панель генерировать вообще (передана ли fillLetters). */
+let lettersAvailable = true;
+
+const lettersBtns = [
+  document.getElementById('fillLetters'),
+  document.getElementById('fillLettersPending'),
+];
+const lettersHint = document.getElementById('lettersHint');
+
+function setLettersBtns(disabled, text) {
+  for (const b of lettersBtns) {
+    if (!b) continue;
+    b.disabled = disabled;
+    b.textContent = text;
+  }
+}
+
+/**
+ * Приводит кнопки в соответствие с тем, есть ли работа.
+ *
+ * Нажатие при нуле пустых писем не ломает ничего — прогон просто ответит
+ * «Пустых писем нет», — но кнопка, которая заведомо ничего не сделает, не
+ * должна выглядеть рабочей. Заодно число на ней избавляет от необходимости
+ * пересчитывать карточки глазами.
+ *
+ * Во время генерации не вмешивается: там состоянием кнопок управляет
+ * pollLetters, и перерисовка из load() иначе стирала бы «Пишу письма...».
+ */
+function updateLettersBtns() {
+  if (lettersPolling || !lettersAvailable) return;
+  setLettersBtns(
+    emptyLetterCount === 0,
+    emptyLetterCount === 0 ? 'Письма написаны' : `Дописать письма (${emptyLetterCount})`,
+  );
+}
+
+async function startLetters() {
+  const res = await post('/api/letters/start', {});
+  if (!res.ok) {
+    const err = await res.json();
+    lettersHint.textContent = err.error ?? 'Не удалось запустить дозаполнение.';
+    return;
+  }
+  pollLetters();
+}
+
+for (const b of lettersBtns) if (b) b.onclick = startLetters;
+
+async function pollLetters() {
+  if (lettersPolling) return;
+  setLettersBtns(true, 'Пишу письма...');
+  lettersHint.textContent = 'Модель пишет письмо на каждую вакансию — это небыстро.';
+
+  lettersPolling = setInterval(async () => {
+    const st = await fetchJson('/api/letters/status');
+    if (st.running) return;
+
+    clearInterval(lettersPolling);
+    lettersPolling = null;
+    // Не «Дописать письма» безусловно: часть могла не удаться, часть удалась,
+    // и верное состояние знает только load() ниже. До него — нейтральное.
+    setLettersBtns(true, 'Дописать письма');
+
+    if (st.error) {
+      lettersHint.textContent = 'Дозаполнение упало: ' + st.error;
+    } else if (st.result) {
+      const r = st.result;
+      if (r.found === 0) {
+        lettersHint.textContent = 'Пустых писем нет.';
+      } else {
+        // Причину надо назвать. Двадцать пустых писем без объяснения уже
+        // стоили прогона: оказалось, кончились деньги на OpenRouter, но
+        // понять это по панели было нельзя.
+        lettersHint.textContent = `Заполнено ${r.filled} из ${r.found}.`
+          + (r.filled < r.found && r.failure ? ` Причина: ${r.failure}` : '');
+      }
+    }
+    load();
+  }, 3000);
+}
+
+// Отправка одним кликом — по решению владельца аккаунта. Здесь было
+// подтверждение в два клика (первый вооружал кнопку, второй запускал), и
+// повод у него был: подача на hh.ru необратима, работодатель видит отклик
+// сразу. Но одобрение уже И ЕСТЬ это решение — вакансия попадает на вкладку
+// "Одобрено" только после того, как человек прочитал её и письмо и нажал
+// "Принять", а второе подтверждение переспрашивало про то же самое и просто
+// выглядело как неработающая кнопка.
+let sendPolling = null;
+
+// Итог последней отправки. Держится отдельно от текста подсказки, потому что
+// подсказку перерисовывает renderApproved на КАЖДОМ load() — а load() идёт
+// сразу за отправкой, чтобы убрать уехавшие строки со вкладки. Раньше это
+// затирало "Отправлено 3, не удалось 0" через несколько миллисекунд после
+// показа, и панель оставалась с надписью "Нечего отправлять" — то есть с тем
+// же текстом, что и когда отправка не запускалась вовсе. Ровно так отправка и
+// выглядела неработающей.
+let sendResultText = null;
+
+const sendBtn = document.getElementById('sendAll');
+const sendHint = document.getElementById('sendHint');
+
+// unthrottledSources документирован в src/core/sender.ts как "The caller is
+// responsible for surfacing this — a skip that nobody looks at is as bad as
+// no protection at all." Раньше эта строка собиралась только из sent/failed/
+// halted, и площадка без записи в config.throttle отправляла молча ноль
+// заявок, а панель писала "Отправлено 0, не удалось 0" — неотличимо от
+// пустой очереди.
+function buildSendResultText(r) {
+  // Остановка поштучная по площадкам: careerist.ru ждёт аккаунта и отваливается
+  // сразу, но hh.ru при этом отправляет дальше. Строка обязана называть каждую
+  // отвалившуюся, иначе «ОСТАНОВЛЕНО (auth_required)» читается как «ничего не
+  // ушло», хотя ушло.
+  const sources = (r.haltedSources && r.haltedSources.length)
+    ? r.haltedSources.map((h) => `${h.source}: ${h.reason}`).join('; ')
+    : null;
+  const halted = sources ? `, ОСТАНОВЛЕНО (${sources})`
+    : r.halted ? `, ОСТАНОВЛЕНО (${r.halted.reason})` : '';
+  const empty = (r.skippedEmptyLetter && r.skippedEmptyLetter.length)
+    ? `, БЕЗ ПИСЬМА пропущено ${r.skippedEmptyLetter.length} (нажми «Дописать письма»)`
+    : '';
+  const unthrottled = (r.unthrottledSources && r.unthrottledSources.length)
+    ? `, ПРОПУЩЕНО БЕЗ ОТПРАВКИ (нет записи в config.throttle): ${r.unthrottledSources.join(', ')}`
+    : '';
+  // Telegram: «раз в 7 дней одному контакту» и «текст ушёл, резюме нет».
+  const deferred = (r.deferredContacts && r.deferredContacts.length)
+    ? `, отложено ${r.deferredContacts.length} (этим контактам писали меньше 7 дней назад)`
+    : '';
+  const warnings = (r.warnings && r.warnings.length) ? `. ВНИМАНИЕ: ${r.warnings.join('; ')}` : '';
+  return `Отправлено ${r.sent}, не удалось ${r.failed}${empty}${halted}${unthrottled}${deferred}${warnings}.`;
+}
+
+function resetSendButton(approved) {
+  sendBtn.disabled = approved === 0;
+  sendBtn.textContent = 'Отправить всё';
+  // Итог прошлой отправки главнее подсказки: он единственный ответ на вопрос
+  // "сработало ли". Держится до следующего запуска.
+  sendHint.textContent = sendResultText ?? (approved === 0
+    ? 'Нечего отправлять.'
+    : 'Отправка необратима: отклик на hh.ru нельзя отозвать.');
+}
+
+sendBtn.onclick = async () => {
+  const st = await fetchJson('/api/send/status');
+  if (st.running) return;
+
+  // Кнопка гасится сразу, до ответа сервера: подача идёт минутами, и второй
+  // клик по ещё живой кнопке успел бы уйти раньше, чем придёт статус
+  // "running". Сервер такой второй запуск отобьёт (409), но человеку не
+  // должно казаться, что первый клик не сработал.
+  sendBtn.disabled = true;
+  sendBtn.textContent = 'Отправка идёт...';
+  sendResultText = null;
+  sendHint.textContent = `Запускаю подачу: ${st.approved}.`;
+
+  const res = await post('/api/send/start', {});
+  if (!res.ok) {
+    const err = await res.json();
+    sendResultText = err.error ?? 'Не удалось запустить отправку.';
+    resetSendButton(st.approved);
+    return;
+  }
+  pollSend();
+};
+
+async function pollSend() {
+  if (sendPolling) return;
+  sendPolling = setInterval(async () => {
+    const st = await fetchJson('/api/send/status');
+    if (st.running) {
+      sendBtn.disabled = true;
+      sendBtn.textContent = 'Отправка идёт...';
+      sendHint.textContent = 'Идёт' + formatElapsed(st.startedAt, Date.now())
+        + '. Между подачами стоят паузы, это надолго. Окно можно не держать.';
+      return;
+    }
+
+    clearInterval(sendPolling);
+    sendPolling = null;
+
+    if (st.error) {
+      sendResultText = 'Отправка упала: ' + st.error;
+    } else if (st.report) {
+      sendResultText = buildSendResultText(st.report);
+    }
+    sendHint.textContent = sendResultText ?? sendHint.textContent;
+    sendBtn.disabled = false;
+    sendBtn.textContent = 'Отправить всё';
+    // Убирает со вкладки строки, которые только что уехали. Итог отправки эта
+    // перерисовка больше не затирает — см. sendResultText.
+    load();
+  }, 3000);
+}
+
+document.getElementById('clearSkipped').onclick = async () => {
+  await post('/api/skipped/clear', {});
+  load();
+};
+
+document.getElementById('approveAll').onclick = async () => {
+  // Одобряет ВСЁ, что лежит в "В ожидании", без порога по скору. Порог здесь
+  // был лишним ситом: очередь уже прошла minScore, core-гейт и три жёстких
+  // фильтра на этапе поиска, а решение по каждой оставшейся вакансии человек
+  // принимает глазами. Скор остаётся на карточке как подсказка, а не как
+  // условие.
+  //
+  // Читаем текущее значение textarea из живого DOM, а не письмо из
+  // последнего fetch — если человек успел отредактировать черновик, но не
+  // нажал "Принять" для конкретной карточки, эта правка не должна тихо
+  // потеряться при массовом одобрении. Textarea — источник истины.
+  const cards = document.querySelectorAll('#list .card[data-score]');
+  for (const card of cards) {
+    const id = Number(card.dataset.id);
+    const letter = card.querySelector('textarea').value;
+    await post('/api/approve', { id, letter });
+  }
+  load();
+};
+
+showTab(TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'pending');
+load();
+fetchJson('/api/search/status').then((st) => {
+  if (st.running) pollSearch();
+  else if (!st.canSearch) {
+    searchBtn.disabled = true;
+    searchLimit.disabled = true;
+    searchNote.textContent = 'Панель запущена без поиска — используй npm run search.';
+  }
+});
+
+// Прокси. Нужен ровно одному адресату — OpenRouter, то есть письмам: площадки
+// ходят мимо него. Поэтому выключенный VPN не ломает систему целиком, но
+// обнуляет генерацию, а выглядит это как «вакансии нашлись, письма пустые».
+// Именно так и вышло 2026-09-01 на прогоне в 22 вакансии.
+//
+// Проверяется по расписанию, а не один раз при загрузке: VPN включают и
+// выключают по ходу работы, и полоса должна появляться и исчезать сама.
+// Прокси ищется заново на каждый опрос и на каждое письмо (src/core/proxy.ts),
+// так что перезапуск панели не нужен никогда — и советовать его нельзя.
+async function checkProxy() {
+  const w = document.getElementById('proxyWarn');
+  let st;
+  try {
+    st = await fetchJson('/api/proxy/status');
+  } catch {
+    return; // панель закрывается — не мигаем полосой на прощание
+  }
+
+  // null — панель поднята не из cli и не знает; тогда молчим, а не пугаем.
+  if (st.usable !== false) { w.style.display = 'none'; return; }
+
+  w.style.display = '';
+  w.textContent = 'Для работы требуется включить VPN. Пока он выключен, письма писаться '
+    + 'не будут: запросы к OpenRouter упрутся в блокировку провайдера. Поиск, одобрение '
+    + 'и отправка при этом работают. Как только VPN заработает, полоса пропадёт сама.';
+  w.title = st.checked && st.checked.length ? 'Проверены: ' + st.checked.join(', ') : '';
+}
+
+checkProxy();
+setInterval(checkProxy, 15000);
+
+fetchJson('/api/letters/status').then((st) => {
+  if (st.running) pollLetters();
+  else if (!st.canFillLetters) {
+    lettersAvailable = false;
+    setLettersBtns(true, 'Дописать письма');
+    lettersHint.textContent = 'Панель запущена без генерации — используй npm run letters.';
+  }
+});
+
+fetchJson('/api/send/status').then((st) => {
+  if (st.running) pollSend();
+  else if (!st.canSend) {
+    sendBtn.disabled = true;
+    sendHint.textContent = 'Панель запущена без адаптеров — отправляй через npm run send.';
+  }
+});
+
+// ============================================================================
+// Настройки (спека 3.8). Форма — это просто отражение data/settings.json:
+// рисуется из GET /api/settings, собирается обратно целиком и уходит одним
+// POST. Проверку делает сервер; его причина показывается как есть.
+// ============================================================================
+
+let settingsLoaded = null;
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+function lines(text) {
+  return text.split('\n').map((s) => s.trim()).filter((s) => s !== '');
+}
+
+// ----------------------------------------------------------------------------
+// Модель для писем (2026-09-20). Ключ и выбор модели лежат в настройках, а не
+// в config.json и .env: копию проекта отдают другому человеку, у него свой
+// ключ, и лезть ради этого в файлы, лежащие в git, ему незачем.
+//
+// Список — подсказка, а не белый список: сервер принимает любой id модели
+// OpenRouter (вариант «другая»), потому что модели там появляются и исчезают
+// чаще, чем правится эта страница.
+// ----------------------------------------------------------------------------
+
+const MODEL_OTHER = '__other__';
+
+const MODEL_CHOICES = [
+  ['', 'по умолчанию — список letterModels из config.json'],
+  ['deepseek/deepseek-v4-flash', 'DeepSeek V4 Flash — дёшево и быстро'],
+  ['deepseek/deepseek-v4-pro', 'DeepSeek V4 Pro — умнее, дороже'],
+  ['anthropic/claude-sonnet-5', 'Claude Sonnet 5 — письма лучше всех, дороже всех'],
+  ['z-ai/glm-5.3', 'GLM 5.3 — середина по цене и качеству'],
+  ['z-ai/glm-5.2:free', 'GLM 5.2 — бесплатно, лимит общий на всех'],
+  ['google/gemma-4-31b-it:free', 'Gemma 4 31B — бесплатно, лимит общий на всех'],
+  ['openrouter/free', 'openrouter/free — любая бесплатная, какую дадут'],
+  [MODEL_OTHER, 'другая — вписать id вручную'],
+];
+
+/** Выбранная модель или null («по умолчанию»). Пустое поле «другая» — тоже null. */
+function chosenModel(selectValue, otherValue) {
+  const v = selectValue === MODEL_OTHER ? otherValue.trim() : selectValue;
+  return v === '' ? null : v;
+}
+
+function renderLlm(llm) {
+  const sel = document.getElementById('llmModel');
+  const other = document.getElementById('llmModelOther');
+  const known = MODEL_CHOICES.some(([id]) => id === llm.model);
+  sel.innerHTML = MODEL_CHOICES
+    .map(([id, label]) => `<option value="${esc(id)}">${esc(label)}</option>`).join('');
+  // Модель, вписанную руками (или оставшуюся от прежней версии списка),
+  // теряем только если не показать её в «другая»: иначе первое же сохранение
+  // молча вернуло бы человека к моделям из config.json.
+  sel.value = llm.model === null ? '' : (known ? llm.model : MODEL_OTHER);
+  other.value = known || llm.model === null ? '' : llm.model;
+  other.hidden = sel.value !== MODEL_OTHER;
+  document.getElementById('llmKey').value = llm.apiKey ?? '';
+}
+
+function skillRow(k) {
+  return `<tr class="skill" data-id="${esc(k.id ?? '')}">
+    <td><input type="text" data-k="name" value="${esc(k.name)}"></td>
+    <td><input type="text" data-k="synonyms" value="${esc(k.synonyms.join(', '))}"></td>
+    <td><input type="number" data-k="weight" min="0" max="100" step="1" value="${k.weight}"></td>
+    <td><input type="checkbox" data-k="core" ${k.core ? 'checked' : ''}></td>
+    <td><button class="del-skill" title="Удалить навык">×</button></td>
+  </tr>`;
+}
+
+function specCard(s) {
+  const el = document.createElement('div');
+  el.className = 'spec';
+  el.dataset.id = s.id ?? '';
+  el.dataset.legacy = String(s.legacyLetters === true);
+  el.innerHTML = `
+    <div class="row"><label>Название</label>
+      <div><input type="text" data-f="name" value="${esc(s.name)}" size="32">
+        <label><input type="checkbox" data-f="enabled" ${s.enabled ? 'checked' : ''}> искать</label>
+        <button class="del-spec">Удалить специальность</button></div></div>
+    <div class="row"><label>Фразы поиска<br><span class="hint">по одной в строке</span></label>
+      <textarea data-f="queries">${esc(s.queries.join('\n'))}</textarea></div>
+    <div class="row"><label>Слова заголовка<br><span class="hint">через запятую</span></label>
+      <input type="text" data-f="titleWords" value="${esc(s.titleWords.join(', '))}"></div>
+    <div class="row"><label>Мой опыт, лет</label>
+      <input type="number" data-f="experienceYears" min="0" max="50" step="1" value="${s.experienceYears}"></div>
+    <div class="row"><label>Резюме (PDF)<br><span class="hint">полный путь к файлу</span></label>
+      <input type="text" data-f="resumePdf" value="${esc(s.resumePdf ?? '')}"></div>
+    <div class="row"><label>Навыки<br><span class="hint">синонимы через запятую; вес 0–100; «ядро» — без него вакансия отсекается</span></label>
+      <div>
+        <table class="skills"><thead><tr><th>Навык</th><th>Синонимы</th><th>Вес</th><th>Ядро</th><th></th></tr></thead>
+          <tbody>${s.skills.map(skillRow).join('')}</tbody></table>
+        <button class="add-skill">Добавить навык</button>
+        <button class="suggest">Предложить</button>
+        <span class="hint suggest-note"></span>
+      </div></div>`;
+
+  el.querySelector('.add-skill').onclick = () => {
+    el.querySelector('tbody').insertAdjacentHTML('beforeend', skillRow({ name: '', synonyms: [], weight: 10, core: false }));
+  };
+  el.querySelector('.del-spec').onclick = () => {
+    if (confirm('Удалить специальность «' + el.querySelector('[data-f="name"]').value + '»? Сохранение — отдельной кнопкой.')) el.remove();
+  };
+  el.addEventListener('click', (e) => {
+    if (e.target.classList.contains('del-skill')) e.target.closest('tr').remove();
+  });
+  el.querySelector('.suggest').onclick = async () => {
+    const note = el.querySelector('.suggest-note');
+    note.textContent = 'Модель думает…';
+    const res = await post('/api/settings/suggest', {
+      name: el.querySelector('[data-f="name"]').value,
+      resumePdf: el.querySelector('[data-f="resumePdf"]').value,
+    });
+    const body = await res.json();
+    if (!res.ok) { note.textContent = 'Не вышло: ' + body.error; return; }
+    el.querySelector('[data-f="titleWords"]').value = body.suggestion.titleWords.join(', ');
+    el.querySelector('tbody').innerHTML = body.suggestion.skills.map(skillRow).join('');
+    note.textContent = 'Заполнено, но не сохранено — поправь и нажми «Сохранить».';
+  };
+  return el;
+}
+
+function renderSettings(s) {
+  settingsLoaded = s;
+  const list = document.getElementById('specList');
+  list.innerHTML = '';
+  for (const spec of s.specialties) list.appendChild(specCard(spec));
+  document.getElementById('stopWords').value = s.stopWords.join('\n');
+  const auto = s.autoApply ?? { enabled: false, minScore: null };
+  document.getElementById('autoApply').checked = auto.enabled;
+  document.getElementById('autoMinScore').value = auto.minScore === null ? '' : auto.minScore;
+  document.getElementById('autoBanner').hidden = !auto.enabled;
+  renderLlm(s.llm ?? { apiKey: null, model: null });
+  const tg = s.telegram ?? { chats: [], firstReadDays: 14 };
+  document.getElementById('tgChats').innerHTML = '';
+  for (const c of tg.chats) addChatRow(c);
+  document.getElementById('tgDays').value = tg.firstReadDays;
+}
+
+// ----------------------------------------------------------------------------
+// Telegram: чаты, где искать (спека 4.4). Строка чата несёт всё, что нужно
+// сохранить, в data-*; чекбокс — «искать здесь или нет».
+// ----------------------------------------------------------------------------
+
+function addChatRow(c) {
+  const box = document.getElementById('tgChats');
+  if (box.querySelector(`[data-chat-id="${CSS.escape(c.id)}"]`)) return;
+  const row = document.createElement('div');
+  row.className = 'tg-chat';
+  row.dataset.chatId = c.id;
+  row.dataset.title = c.title;
+  row.dataset.username = c.username ?? '';
+  row.dataset.kind = c.kind;
+  const who = c.username ? ` (@${esc(c.username)})` : ' (закрытый)';
+  row.innerHTML = `<label><input type="checkbox" ${c.enabled === false ? '' : 'checked'}>
+    ${esc(c.title)}${who}, ${c.kind === 'channel' ? 'канал' : 'группа'}</label>
+    <button class="del-chat" title="Убрать чат">×</button>`;
+  row.querySelector('.del-chat').onclick = () => row.remove();
+  box.appendChild(row);
+}
+
+function collectChats() {
+  return [...document.querySelectorAll('#tgChats .tg-chat')].map((row) => ({
+    id: row.dataset.chatId,
+    title: row.dataset.title,
+    username: row.dataset.username || null,
+    kind: row.dataset.kind,
+    enabled: row.querySelector('input[type=checkbox]').checked,
+  }));
+}
+
+document.getElementById('tgAdd').onclick = async () => {
+  const note = document.getElementById('tgNote');
+  const ref = document.getElementById('tgRef').value.trim();
+  if (ref === '') { note.textContent = 'Впиши @имя канала или ссылку t.me.'; return; }
+  note.textContent = 'Ищу чат…';
+  const res = await post('/api/telegram/resolve', { ref });
+  const body = await res.json();
+  if (!res.ok) { note.textContent = 'Не вышло: ' + body.error; return; }
+  addChatRow({ ...body.chat, enabled: true });
+  document.getElementById('tgRef').value = '';
+  note.textContent = 'Добавлен. Сохранение — кнопкой «Сохранить».';
+};
+
+document.getElementById('tgPick').onclick = async () => {
+  const note = document.getElementById('tgNote');
+  const picker = document.getElementById('tgPicker');
+  note.textContent = 'Читаю список чатов…';
+  const res = await fetch('/api/telegram/dialogs');
+  const body = await res.json();
+  if (!res.ok) { note.textContent = 'Не вышло: ' + body.error; return; }
+  note.textContent = '';
+  const have = new Set(collectChats().map((c) => c.id));
+  const fresh = body.chats.filter((c) => !have.has(c.id));
+  if (fresh.length === 0) { picker.innerHTML = '<span class="hint">Все твои каналы и группы уже в списке.</span>'; return; }
+  picker.innerHTML = fresh.map((c, i) => `<label><input type="checkbox" data-i="${i}">
+    ${esc(c.title)}${c.username ? ` (@${esc(c.username)})` : ''}, ${c.kind === 'channel' ? 'канал' : 'группа'}</label>`).join('')
+    + '<button id="tgPickAdd">Добавить отмеченные</button>';
+  document.getElementById('tgPickAdd').onclick = () => {
+    for (const box of picker.querySelectorAll('input[type=checkbox]:checked')) {
+      addChatRow({ ...fresh[Number(box.dataset.i)], enabled: true });
+    }
+    picker.innerHTML = '';
+    note.textContent = 'Добавлены. Сохранение — кнопкой «Сохранить».';
+  };
+};
+
+function collectSettings() {
+  const specialties = [...document.querySelectorAll('#specList .spec')].map((el) => {
+    const f = (name) => el.querySelector(`[data-f="${name}"]`);
+    return {
+      id: el.dataset.id || undefined,
+      name: f('name').value,
+      enabled: f('enabled').checked,
+      queries: lines(f('queries').value),
+      titleWords: f('titleWords').value.split(',').map((x) => x.trim()).filter(Boolean),
+      experienceYears: Number(f('experienceYears').value),
+      resumePdf: f('resumePdf').value.trim() || null,
+      legacyLetters: el.dataset.legacy === 'true',
+      skills: [...el.querySelectorAll('.skill')].map((tr) => ({
+        id: tr.dataset.id || undefined,
+        name: tr.querySelector('[data-k="name"]').value,
+        synonyms: tr.querySelector('[data-k="synonyms"]').value.split(',').map((x) => x.trim()).filter(Boolean),
+        weight: Number(tr.querySelector('[data-k="weight"]').value),
+        core: tr.querySelector('[data-k="core"]').checked,
+      })),
+    };
+  });
+  return {
+    version: 1,
+    specialties,
+    stopWords: lines(document.getElementById('stopWords').value),
+    telegram: { chats: collectChats(), firstReadDays: Number(document.getElementById('tgDays').value) },
+    autoApply: {
+      enabled: document.getElementById('autoApply').checked,
+      minScore: document.getElementById('autoMinScore').value.trim() === ''
+        ? null
+        : Number(document.getElementById('autoMinScore').value),
+    },
+    llm: {
+      apiKey: document.getElementById('llmKey').value.trim() || null,
+      model: chosenModel(
+        document.getElementById('llmModel').value,
+        document.getElementById('llmModelOther').value,
+      ),
+    },
+  };
+}
+
+async function loadSettings() {
+  const note = document.getElementById('settingsNote');
+  const res = await fetch('/api/settings');
+  const body = await res.json();
+  if (!res.ok) { note.textContent = body.error; return; }
+  renderSettings(body);
+}
+
+document.getElementById('llmModel').onchange = (e) => {
+  const other = document.getElementById('llmModelOther');
+  other.hidden = e.target.value !== MODEL_OTHER;
+  if (!other.hidden) other.focus();
+};
+
+// Ключ по умолчанию скрыт: панель открыта весь рабочий день, и показывать
+// ключ всем, кто пройдёт мимо экрана, незачем.
+document.getElementById('llmKeyShow').onclick = () => {
+  const field = document.getElementById('llmKey');
+  const shown = field.type === 'text';
+  field.type = shown ? 'password' : 'text';
+  document.getElementById('llmKeyShow').textContent = shown ? 'Показать' : 'Скрыть';
+};
+
+document.getElementById('addSpec').onclick = () => {
+  document.getElementById('specList').appendChild(specCard({
+    name: '', enabled: true, queries: [], titleWords: [], skills: [], experienceYears: 1, resumePdf: null,
+  }));
+};
+
+/**
+ * Включение автоотклика — через подтверждение (спека 7.1): после него отклики
+ * уходят без просмотра человеком, а отправленное не отозвать. Выключение
+ * подтверждения не требует.
+ */
+document.getElementById('autoApply').onchange = (e) => {
+  if (!e.target.checked) return;
+  const ok = confirm(
+    'Включить автоотклик?\n\n'
+    + 'После сохранения поиск будет сам одобрять подходящее и отправлять отклики — без твоего просмотра.\n\n'
+    + 'НЕ уйдёт автоматически (останется на ручной просмотр):\n'
+    + '• письмо не сгенерировалось (например, выключен VPN);\n'
+    + '• письмо не прошло проверку на выдуманные факты;\n'
+    + '• скор ниже порога автоотклика;\n'
+    + '• контакту в Telegram писали за последние 7 дней.\n\n'
+    + 'Продолжают действовать: лимиты и паузы площадок (Telegram — 40 в сутки, 1–3 минуты между сообщениями), '
+    + 'остановки при капче hh и ограничении Telegram, кнопка «Стоп».\n\n'
+    + 'Риски: неудачную фразу письма ты увидишь только после отправки; ложное срабатывание фильтров '
+    + 'станет настоящим откликом; жалобы «спам» в Telegram ограничивают аккаунт.',
+  );
+  if (!ok) e.target.checked = false;
+};
+
+document.getElementById('settingsSave').onclick = async () => {
+  const note = document.getElementById('settingsNote');
+  note.textContent = 'Сохраняю…';
+  const res = await post('/api/settings', collectSettings());
+  const body = await res.json();
+  if (!res.ok) { note.textContent = 'Не сохранено: ' + body.error; return; }
+  renderSettings(body.settings);
+  note.textContent = 'Сохранено. Действует со следующего поиска.';
+};
+
+loadSettings();
+</script>
+</body>
+</html>

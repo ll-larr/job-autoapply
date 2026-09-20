@@ -1,0 +1,39 @@
+{
+  "name": "job-autoapply",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "cli": "tsx src/cli.ts",
+    "search": "tsx src/cli.ts search",
+    "panel": "tsx src/cli.ts panel",
+    "send": "tsx src/cli.ts send",
+    "stop": "tsx src/cli.ts stop",
+    "status": "tsx src/cli.ts status",
+    "go": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1",
+    "panel:go": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/panel.ps1",
+    "login": "tsx scripts/login.ts",
+    "letters": "tsx src/cli.ts letters",
+    "bot": "tsx src/cli.ts bot",
+    "tg:login": "tsx scripts/tg-login.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3",
+    "playwright": "^1.56.0",
+    "telegram": "^2.26.22",
+    "undici": "^8.10.2",
+    "unpdf": "^1.8.1"
+  }
+}

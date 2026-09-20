@@ -1,0 +1,56 @@
+{
+  "minScore": 40,
+  "letterFullThreshold": 75,
+  "letterModels": [
+    "google/gemma-4-31b-it:free",
+    "deepseek/deepseek-v4-flash",
+    "openrouter/free"
+  ],
+  "searchQueries": [
+    {
+      "query": "аналитик бизнес-процессов"
+    },
+    {
+      "query": "аналитик бизнес процессов"
+    },
+    {
+      "query": "бизнес-аналитик"
+    },
+    {
+      "query": "бизнес аналитик"
+    },
+    {
+      "query": "системный аналитик",
+      "constraints": {
+        "juniorOnly": true
+      }
+    }
+  ],
+  "throttle": {
+    "hh": {
+      "minDelayMs": 3000,
+      "maxDelayMs": 3000
+    },
+    "hrge": {
+      "minDelayMs": 3000,
+      "maxDelayMs": 3000
+    },
+    "careerist": {
+      "minDelayMs": 3000,
+      "maxDelayMs": 3000
+    },
+    "tg": {
+      "maxPerDay": 40,
+      "minDelayMs": 60000,
+      "maxDelayMs": 180000
+    }
+  },
+  "maxConsecutiveFailures": 3,
+  "salaryExpectation": "180–260 тыс. ₽ на руки",
+  "bot": {
+    "profile": {
+      "github": "https://github.com/ll-larr",
+      "telegram": "@ll_larr"
+    }
+  }
+}
