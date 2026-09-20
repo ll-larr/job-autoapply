@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BotApi } from '../src/bot/api.js';
@@ -70,6 +70,52 @@ describe('BotApi — разбор ответов Telegram', () => {
     });
     await api.sendMessage(1, 'привет');
     expect(body['reply_markup']).toBeUndefined();
+  });
+
+  it('документ уходит готовым буфером с Content-Length, а не FormData', async () => {
+    // Живой прогон 2026-09-20: FormData поверх прокси-агента undici теряет
+    // файловую часть, Telegram отвечает «there is no document in the request».
+    // Проверяем форму запроса, потому что сломать её обратно легко, а увидеть
+    // поломку можно только живьём.
+    const dir = mkdtempSync(join(tmpdir(), 'jaa-doc-'));
+    const file = join(dir, 'cv.pdf');
+    writeFileSync(file, '%PDF-1.7 содержимое');
+    let seen: { headers: Record<string, string>; body: Buffer } | null = null;
+    const api = new BotApi('T', {
+      fetchImpl: async (_u, init) => {
+        seen = {
+          headers: init?.headers as Record<string, string>,
+          body: Buffer.from(init?.body as Uint8Array),
+        };
+        return json({ ok: true, result: { document: { file_id: 'FID' } } });
+      },
+    });
+
+    const r = await api.sendDocumentByPath(7, file, 'Резюме Артём.pdf', 'Резюме кандидата:');
+
+    expect(r.ok && r.value).toBe('FID');
+    const sent = seen as unknown as { headers: Record<string, string>; body: Buffer };
+    expect(sent.headers['content-type']).toMatch(/^multipart\/form-data; boundary=/);
+    expect(sent.headers['content-length']).toBe(String(sent.body.length));
+    const text = sent.body.toString('utf8');
+    expect(text).toContain('name="document"; filename="Резюме Артём.pdf"');
+    expect(text).toContain('%PDF-1.7 содержимое');
+    expect(text).toContain('Резюме кандидата:');
+  });
+
+  it('кавычки в имени файла не ломают заголовок части', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jaa-doc2-'));
+    const file = join(dir, 'cv.pdf');
+    writeFileSync(file, 'x');
+    let body = Buffer.alloc(0);
+    const api = new BotApi('T', {
+      fetchImpl: async (_u, init) => {
+        body = Buffer.from(init?.body as Uint8Array);
+        return json({ ok: true, result: { document: { file_id: 'F' } } });
+      },
+    });
+    await api.sendDocumentByPath(1, file, 'a"b\r\nc.pdf', 'подпись');
+    expect(body.toString('utf8')).toContain('filename="a_b__c.pdf"');
   });
 
   it('getFile без file_path — отказ, а не пустая строка пути', async () => {

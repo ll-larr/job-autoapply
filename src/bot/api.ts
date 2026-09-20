@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { createProxiedFetch } from '../core/proxy.js';
 import { BUTTONS } from './texts.js';
 import type { TgBotUpdate } from './types.js';
@@ -98,26 +99,50 @@ export class BotApi {
     return r.ok ? { ok: true, value: r.value.document?.file_id ?? fileId } : r;
   }
 
+  /**
+   * Файл уходит ОДНИМ буфером с рассчитанным Content-Length, а не через
+   * FormData. Живой прогон 2026-09-20: FormData поверх undici ProxyAgent
+   * (а весь трафик к Telegram идёт через прокси, см. core/proxy.ts) теряет
+   * файловую часть — Telegram отвечает «there is no document in the request»
+   * и на маленьком txt, и на резюме, с любым именем файла. Тот же запрос
+   * готовым буфером проходит. Файл у нас не больше 5 МБ, держать его в памяти
+   * дешевле, чем разбираться в стриминге через туннель.
+   */
   async sendDocumentByPath(
     chatId: number, path: string, filename: string, caption: string,
   ): Promise<ApiResult<string>> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const form = new FormData();
-      form.set('chat_id', String(chatId));
-      form.set('caption', caption);
-      form.set('document', new Blob([readFileSync(path)]), filename);
+      const boundary = `----jaa${randomUUID().replace(/-/g, '')}`;
+      const field = (name: string, value: string): string =>
+        `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`;
+      // В имени файла кавычки и переводы строк сломали бы заголовок части.
+      const safeName = filename.replace(/["\r\n]/g, '_');
+      const head = Buffer.from(
+        field('chat_id', String(chatId)) + field('caption', caption)
+        + `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${safeName}"\r\n`
+        + 'Content-Type: application/octet-stream\r\n\r\n',
+        'utf8',
+      );
+      const tail = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
+      const body = Buffer.concat([head, readFileSync(path), tail]);
       const res = await this.fetchImpl(this.url('sendDocument'), {
-        method: 'POST', body: form, signal: controller.signal,
+        method: 'POST',
+        headers: {
+          'content-type': `multipart/form-data; boundary=${boundary}`,
+          'content-length': String(body.length),
+        },
+        body,
+        signal: controller.signal,
       });
-      const body = await res.json() as {
+      const parsed = await res.json() as {
         ok?: boolean; result?: { document?: { file_id: string } }; description?: string;
         parameters?: { retry_after?: number };
       };
-      if (res.ok && body.ok === true) return { ok: true, value: body.result?.document?.file_id ?? '' };
-      const description = body.description ?? `HTTP ${res.status}`;
-      return { ok: false, failure: this.failureOf(res.status, description, body.parameters?.retry_after) };
+      if (res.ok && parsed.ok === true) return { ok: true, value: parsed.result?.document?.file_id ?? '' };
+      const description = parsed.description ?? `HTTP ${res.status}`;
+      return { ok: false, failure: this.failureOf(res.status, description, parsed.parameters?.retry_after) };
     } catch (e) {
       return { ok: false, failure: { kind: 'network', message: e instanceof Error ? e.message : String(e) } };
     } finally {
