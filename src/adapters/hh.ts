@@ -2,7 +2,8 @@ import type { BrowserContext, Frame, Locator, Page } from 'playwright';
 import { normalizeVacancy, type ExperienceLevel, type Vacancy } from '../core/vacancy.js';
 import { parseExperienceFromText } from '../core/screening.js';
 import type { Adapter, ApplyResult, SearchFilters } from './types.js';
-import { isExperienceAcceptable, isSeniorTitle } from '../core/screening.js';
+import { isAboveJuniorTitle, isExperienceWithin, isSeniorTitle } from '../core/screening.js';
+import { DEFAULT_EXPERIENCE_YEARS } from '../core/specialty-defaults.js';
 import { isLoggedIn, sharedProfile } from '../browser.js';
 import { scoreVacancy } from '../core/scorer.js';
 import type { QuestionOption, TestAnswer, TestQuestion } from '../core/questions.js';
@@ -680,9 +681,13 @@ export class HhAdapter implements Adapter {
       // Окно этого захода. Всё, что раньше skip, уже прочитано и посчитано
       // предыдущей порцией — второй раз в статистику не попадает.
       const window = collected.slice(skip);
+      const years = filters.experienceYears ?? DEFAULT_EXPERIENCE_YEARS;
       for (const it of window) {
-        if (!isExperienceAcceptable(it.experience ?? null)) { rejectedExperience++; continue; }
-        if (isSeniorTitle(it.title)) { rejectedGrade++; continue; }
+        if (!isExperienceWithin(it.experience ?? null, years)) { rejectedExperience++; continue; }
+        if (isSeniorTitle(it.title) || (years < 1 && isAboveJuniorTitle(it.title))) {
+          rejectedGrade++;
+          continue;
+        }
         if (filters.seenThisRun?.has(`${this.name}:${it.sourceId}`)) { duplicatesSkipped++; continue; }
         wanted.push(it);
       }

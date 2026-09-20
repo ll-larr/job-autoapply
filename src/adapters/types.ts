@@ -40,10 +40,19 @@ export interface SearchFilters {
    * the run would stall rather than break. Both current adapters honour it.
    */
   skip?: number;
+  /**
+   * «Мой опыт, лет» специальности, по которой идёт этот запрос (спека
+   * 2026-09-18, 3.4). Адаптер, который отсеивает по опыту до дочитки описания
+   * (hh.ru), обязан брать порог отсюда, а не из общего значения: иначе запрос
+   * системного аналитика (опыт 0) пропускал бы «1–3 года». undefined — порог по
+   * умолчанию, DEFAULT_EXPERIENCE_YEARS.
+   */
+  experienceYears?: number;
 }
 
 export type ApplyResult =
-  | { status: 'sent' }
+  /** warning — отправлено, но с оговоркой (Telegram: текст ушёл, резюме не приложилось). */
+  | { status: 'sent'; warning?: string }
   | { status: 'already_applied' }
   | { status: 'captcha' }
   | { status: 'auth_required' }
@@ -52,18 +61,36 @@ export type ApplyResult =
    * поломки площадки: в счётчик «N отказов подряд» не идёт.
    */
   | { status: 'closed' }
+  /**
+   * Площадка ограничила аккаунт: Telegram ответил PEER_FLOOD или долгим
+   * FloodWait (спека 2026-09-18, 5.3). Останавливает площадку, как капча.
+   */
+  | { status: 'account_limited' }
   | { status: 'failed'; reason: string };
+
+/** Что Sender знает о строке очереди сверх вакансии и письма. */
+export interface ApplyContext {
+  /** id специальности строки — по нему Telegram находит PDF резюме. */
+  specialty: string;
+}
 
 export interface Adapter {
   readonly name: string;
+  /**
+   * Адаптер не ищет по фразам: Telegram читает ленту выбранных чатов целиком.
+   * Конвейер вызывает такой адаптер один раз за прогон со `skip: 0`; при
+   * `skip > 0` search обязан вернуть пустой список.
+   */
+  readonly queryless?: boolean;
   search(filters: SearchFilters): Promise<Vacancy[]>;
-  apply(vacancy: Vacancy, letter: string): Promise<ApplyResult>;
+  /** ctx необязателен: адаптерам площадок он не нужен, Telegram берёт из него резюме. */
+  apply(vacancy: Vacancy, letter: string, ctx?: ApplyContext): Promise<ApplyResult>;
 }
 
 /**
- * captcha и auth_required требуют человека. Всё остальное — обычный исход
- * одной подачи, очередь продолжает работу.
+ * captcha, auth_required и account_limited требуют человека. Всё остальное —
+ * обычный исход одной подачи, очередь продолжает работу.
  */
 export function isHaltingResult(r: ApplyResult): boolean {
-  return r.status === 'captcha' || r.status === 'auth_required';
+  return r.status === 'captcha' || r.status === 'auth_required' || r.status === 'account_limited';
 }

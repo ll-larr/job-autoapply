@@ -1,17 +1,16 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeVacancy, type ExperienceLevel } from '../src/core/vacancy.js';
+import { normalizeVacancy } from '../src/core/vacancy.js';
 import {
   screenVacancy,
-  isExperienceAcceptable,
   parseExperienceFromText,
   isSeniorTitle,
-  is1cCentric,
-  isJuniorExperience,
-  JUNIOR_EXPERIENCE,
-  isAnalystTitle,
   isInternshipTitle,
   isAboveJuniorTitle,
-  isBitrixCentric,
+  isExperienceWithin,
+  findStopWord,
+  hasTitleWord,
+  DEFAULT_SCREENING,
+  STOPWORD_DESCRIPTION_THRESHOLD,
 } from '../src/core/screening.js';
 
 function v(over: Partial<Parameters<typeof normalizeVacancy>[0]> = {}) {
@@ -27,63 +26,6 @@ function v(over: Partial<Parameters<typeof normalizeVacancy>[0]> = {}) {
     ...over,
   });
 }
-
-// ============================================================================
-// experience
-// ============================================================================
-
-describe('isExperienceAcceptable', () => {
-  it('пропускает noExperience и between1And3', () => {
-    expect(isExperienceAcceptable('noExperience')).toBe(true);
-    expect(isExperienceAcceptable('between1And3')).toBe(true);
-  });
-
-  it('отклоняет between3And6 и moreThan6', () => {
-    expect(isExperienceAcceptable('between3And6')).toBe(false);
-    expect(isExperienceAcceptable('moreThan6')).toBe(false);
-  });
-
-  it('неизвестное/непроставленное требование пропускает, а не режет', () => {
-    expect(isExperienceAcceptable(null)).toBe(true);
-  });
-
-  it('второй параметр переопределяет допустимый набор бакетов', () => {
-    const onlySenior = new Set<ExperienceLevel>(['moreThan6']);
-    expect(isExperienceAcceptable('moreThan6', onlySenior)).toBe(true);
-    expect(isExperienceAcceptable('noExperience', onlySenior)).toBe(false);
-    // null по-прежнему проходит независимо от переданного набора.
-    expect(isExperienceAcceptable(null, onlySenior)).toBe(true);
-  });
-});
-
-// ============================================================================
-// junior-only per-query constraint (config.json → searchQueries[].constraints)
-// ============================================================================
-
-describe('isJuniorExperience / JUNIOR_EXPERIENCE', () => {
-  it('пропускает только noExperience — строже общего ACCEPTABLE_EXPERIENCE', () => {
-    expect(isJuniorExperience('noExperience')).toBe(true);
-  });
-
-  it('отклоняет between1And3, хотя он проходит общий гейт isExperienceAcceptable', () => {
-    expect(isExperienceAcceptable('between1And3')).toBe(true); // общий гейт: проходит
-    expect(isJuniorExperience('between1And3')).toBe(false); // junior-only: не проходит
-  });
-
-  it('отклоняет between3And6 и moreThan6', () => {
-    expect(isJuniorExperience('between3And6')).toBe(false);
-    expect(isJuniorExperience('moreThan6')).toBe(false);
-  });
-
-  it('null (сигнал неизвестен) проходит — та же философия, что и общий гейт', () => {
-    expect(isJuniorExperience(null)).toBe(true);
-  });
-
-  it('стажировки проходят: на hh.ru они структурно размечены как noExperience', () => {
-    expect(isJuniorExperience('noExperience')).toBe(true);
-    expect(JUNIOR_EXPERIENCE.has('noExperience')).toBe(true);
-  });
-});
 
 describe('parseExperienceFromText — русские фразы, structured-сигнала нет', () => {
   it('"от 3 лет" — верхняя граница диапазона 1-3, проходит', () => {
@@ -104,6 +46,12 @@ describe('parseExperienceFromText — русские фразы, structured-си
 
   it('"не менее 4 лет" — минимум выше 3', () => {
     expect(parseExperienceFromText('Опыт работы не менее 4 лет')).toBe('between3And6');
+  });
+
+  it('"от 3 – лет" — тире между числом и «лет» (живой пост Telegram, 2026-09-19)', () => {
+    expect(parseExperienceFromText('Опыт работы: от 3 – лет')).toBe('between1And3');
+    // Диапазон с тире по-прежнему диапазон, а не «от 3».
+    expect(parseExperienceFromText('Опыт от 3 – 6 лет')).toBe('between3And6');
   });
 
   it('"опыт работы от ..." — общий шаблон с числом', () => {
@@ -221,63 +169,134 @@ describe('screenVacancy — grade', () => {
   });
 });
 
-// ============================================================================
-// 1С
-// ============================================================================
-
-describe('is1cCentric', () => {
-  it('заголовок "Аналитик 1С" — 1С в подлежащем, отклоняем', () => {
-    expect(is1cCentric({ title: 'Аналитик 1С', description: '' })).toBe(true);
+describe('isExperienceWithin — минимум бакета против «мой опыт»', () => {
+  it.each([
+    ['noExperience', 0, true], ['between1And3', 0, false],
+    ['between1And3', 1, true], ['between1And3', 2, true], ['between3And6', 2, false],
+    ['between3And6', 3, true], ['moreThan6', 5, false], ['moreThan6', 6, true],
+  ] as const)('%s при опыте %i → %s', (level, years, expected) => {
+    expect(isExperienceWithin(level, years)).toBe(expected);
   });
 
-  it('латинская "1C" в заголовке тоже считается', () => {
-    expect(is1cCentric({ title: 'Программист 1C', description: '' })).toBe(true);
+  it('требование неизвестно — проходит при любом опыте', () => {
+    expect(isExperienceWithin(null, 0)).toBe(true);
   });
 
-  it('единичное упоминание 1С в списке систем — не центральная тема, проходит', () => {
-    // Ровно случай из tests/fixtures/hh-search.html (карточка №5, БЦ Уралсиб):
-    // "...ИТ-системы для логистических объектов ... и бэк-офиса (TOS.Solvo, 1С, ELMA...)"
-    const description =
-      'Развивать и внедрять ИТ-системы для логистических объектов ' +
-      '(контейнерные терминалы, порты, складские комплексы) и бэк-офиса (TOS.Solvo, 1С, ELMA...).';
-    expect(is1cCentric({ title: 'Бизнес-аналитик', description })).toBe(false);
-  });
-
-  it('многократные упоминания 1С в описании — центральная тема, отклоняем', () => {
-    const description =
-      'Опыт работы аналитиком 1С. Знание одной из конфигураций 1С. ' +
-      'Линейка программных продуктов 1С для разработки модулей: 1С:ERP, 1С:Управление торговлей.';
-    expect(is1cCentric({ title: 'Аналитик', description })).toBe(true);
-  });
-
-  it('не путает "1 сотрудник"/"1 секция" с 1С — цифра 1 плюс кириллическая "с" внутри слова', () => {
-    const description = 'Ищем 1 сотрудника в команду из 5 секций для срочного проекта.';
-    expect(is1cCentric({ title: 'Бизнес-аналитик', description })).toBe(false);
-  });
-
-  it('не путает "1С" внутри числа "21С" (например, температуры/индекса)', () => {
-    const description = 'Индекс изделия 21С применяется только во внутренней документации.';
-    expect(is1cCentric({ title: 'Бизнес-аналитик', description })).toBe(false);
-  });
-
-  it('BITRIX24 в заголовке не считается 1С (другой продукт)', () => {
-    expect(is1cCentric({ title: 'Бизнес-аналитик (BITRIX24 / Разработка процессов)', description: '' })).toBe(false);
+  it('опыт 2 — ровно прежний ACCEPTABLE_EXPERIENCE', () => {
+    expect(DEFAULT_SCREENING.experienceYears).toBe(2);
   });
 });
 
-describe('screenVacancy — платформы, которыми владелец не владеет', () => {
-  it('отклоняет 1С-центричную вакансию с причиной platform', () => {
-    const r = screenVacancy(v({ title: 'Аналитик 1С' }));
-    expect(r.passed).toBe(false);
-    if (!r.passed) expect(r.reason).toBe('platform');
+describe('findStopWord — заголовок или 2+ упоминаний в описании', () => {
+  const words = ['1С', 'Битрикс', 'Bitrix'];
+
+  it('порог описания — 2', () => expect(STOPWORD_DESCRIPTION_THRESHOLD).toBe(2));
+
+  it('«Аналитик 1С» — в заголовке, сразу', () => {
+    expect(findStopWord(v({ title: 'Аналитик 1С', description: 'x' }), words)).toBe('1С');
   });
 
-  it('пропускает вакансию, где 1С — одна из систем среди прочих', () => {
+  it('латинская «1C» в заголовке тоже', () => {
+    expect(findStopWord(v({ title: 'Аналитик 1C', description: 'x' }), words)).toBe('1С');
+  });
+
+  it('одно упоминание в списке систем — проходит', () => {
+    expect(findStopWord(v({ description: 'Системы: TOS.Solvo, 1С, ELMA, Jira.' }), words)).toBeNull();
+  });
+
+  it('два упоминания в описании — отсев (было три до 2026-09-18, спека 3.5)', () => {
+    expect(findStopWord(v({ description: 'Внедрение 1С:ERP. Интеграции с 1С.' }), words)).toBe('1С');
+  });
+
+  it('«1 сотрудник» и «21С» — не 1С', () => {
+    expect(findStopWord(v({ description: '1 сотрудник, 1 секция, 21С, 21С' }), words)).toBeNull();
+  });
+
+  it('«Системный аналитик Bitrix24» и «Интегратор/аналитик Битрикс24» — по заголовку', () => {
+    expect(findStopWord(v({ title: 'Системный аналитик Bitrix24' }), words)).toBe('Bitrix');
+    expect(findStopWord(v({ title: 'Интегратор/аналитик Битрикс24' }), words)).toBe('Битрикс');
+  });
+
+  it('Битрикс один раз среди систем — проходит', () => {
+    expect(findStopWord(v({ description: 'Работали с amoCRM, Битрикс24, Jira' }), words)).toBeNull();
+  });
+
+  it('пустой список — ничего не отсекает', () => {
+    expect(findStopWord(v({ title: 'Аналитик 1С' }), [])).toBeNull();
+  });
+});
+
+describe('hasTitleWord', () => {
+  const words = ['аналитик', 'analyst', 'BA', 'SA'];
+
+  it.each([
+    'Менеджер по операционному консалтингу',
+    'Менеджер по повышению эффективности бизнеса (направление lean)',
+    'Управляющий директор по развитию эффективности сегментов',
+  ])('отсекает «%s»', (title) => expect(hasTitleWord(title, words)).toBe(false));
+
+  it.each([
+    'Бизнес-аналитик', 'Системный аналитик', 'Business Analyst', 'BA / SA', 'Аналитик бизнес-процессов',
+  ])('пропускает «%s»', (title) => expect(hasTitleWord(title, words)).toBe(true));
+});
+
+describe('screenVacancy — профиль специальности', () => {
+  const profile = { titleWords: ['продакт', 'product'], experienceYears: 3, stopWords: ['вахта'] };
+
+  it('слова заголовка берутся из профиля', () => {
+    expect(screenVacancy(v({ title: 'Product manager' }), profile)).toEqual({ passed: true });
+    const r = screenVacancy(v({ title: 'Бизнес-аналитик' }), profile);
+    expect(r.passed === false && r.reason).toBe('not_title');
+  });
+
+  it('стаж — из профиля: 3–6 лет проходит при опыте 3', () => {
+    expect(screenVacancy(v({ title: 'Product manager', experience: 'between3And6' }), profile).passed).toBe(true);
+  });
+
+  it('стоп-слово называет себя в причине', () => {
+    const r = screenVacancy(v({ title: 'Product manager вахта' }), profile);
+    expect(r).toMatchObject({ passed: false, reason: 'stopword', stopWord: 'вахта' });
+  });
+
+  it('опыт 0 отсекает «Старший …» по грейду — прежний juniorOnly', () => {
+    const r = screenVacancy(v({ title: 'Старший системный аналитик' }), { ...DEFAULT_SCREENING, experienceYears: 0 });
+    expect(r.passed === false && r.reason).toBe('grade');
+  });
+
+  it('опыт 2 «Старший ИТ аналитик» пропускает', () => {
+    expect(screenVacancy(v({ title: 'Старший ИТ аналитик' })).passed).toBe(true);
+  });
+
+  it('skipTitleGate снимает проверку заголовка', () => {
+    expect(screenVacancy(v({ title: 'Пост из канала' }), { ...profile, skipTitleGate: true }).passed).toBe(true);
+  });
+});
+
+describe('screenVacancy — стоп-слова по умолчанию (1С, Битрикс)', () => {
+  it('«Аналитик 1С» — отсев с причиной stopword', () => {
+    expect(screenVacancy(v({ title: 'Аналитик 1С' }))).toMatchObject({ passed: false, reason: 'stopword', stopWord: '1С' });
+  });
+
+  it('1С и Битрикс по разу среди систем — проходит', () => {
     const r = screenVacancy(v({
       title: 'Бизнес-аналитик',
       description: 'Работаем со стеком: SAP, 1С, Oracle, Bitrix24.',
     }));
     expect(r.passed).toBe(true);
+  });
+
+  it('карточка №5 из фикстуры hh (TOS.Solvo, 1С, ELMA) — одно упоминание, проходит', () => {
+    const description =
+      'Развивать и внедрять ИТ-системы для логистических объектов ' +
+      '(контейнерные терминалы, порты, складские комплексы) и бэк-офиса (TOS.Solvo, 1С, ELMA...).';
+    expect(screenVacancy(v({ description })).passed).toBe(true);
+  });
+
+  it('1С везде в описании — отсев', () => {
+    const description =
+      'Опыт работы аналитиком 1С. Знание одной из конфигураций 1С. ' +
+      'Линейка программных продуктов 1С для разработки модулей: 1С:ERP, 1С:Управление торговлей.';
+    expect(screenVacancy(v({ title: 'Аналитик', description })).passed).toBe(false);
   });
 });
 
@@ -300,61 +319,33 @@ describe('screenVacancy — обычная вакансия без наруше�
  * и не должны были.
  */
 describe('правила по разбору отменённых 2026-09-01', () => {
-  describe('Битрикс — платформа, которой владелец не владеет', () => {
-    it('отсекает «Системный аналитик Bitrix24» по заголовку', () => {
+  describe('Битрикс и «не аналитик» — через стоп-слова и слова заголовка', () => {
+    it('«Системный аналитик Bitrix24» — причина stopword с названным словом', () => {
       const r = screenVacancy(v({ title: 'Системный аналитик Bitrix24' }));
-      expect(r.passed).toBe(false);
-      if (!r.passed) expect(r.reason).toBe('platform');
+      expect(r).toMatchObject({ passed: false, reason: 'stopword', stopWord: 'Bitrix' });
     });
 
-    it('отсекает «Интегратор/аналитик Битрикс24» — кириллицей тоже', () => {
-      expect(screenVacancy(v({ title: 'Интегратор/аналитик Битрикс24' })).passed).toBe(false);
-    });
-
-    it('отсекает по описанию, когда вакансия про Битрикс, а заголовок молчит', () => {
-      expect(isBitrixCentric(v({
+    it('по описанию, когда вакансия про Битрикс, а заголовок молчит', () => {
+      const r = screenVacancy(v({
         title: 'Системный аналитик',
         description: 'Портал на Битрикс24, дорабатываем Битрикс под задачи заказчика.',
-      }))).toBe(true);
+      }));
+      expect(r).toMatchObject({ passed: false, reason: 'stopword' });
     });
 
-    it('НЕ отсекает вакансию, где Битрикс упомянут единожды среди систем', () => {
-      // Тот же принцип, что у 1С: одно упоминание в перечислении систем —
-      // не повод считать вакансию про эту платформу.
-      expect(isBitrixCentric(v({
-        title: 'Бизнес-аналитик',
-        description: 'Интеграции: SAP, Битрикс24, самописная CRM, шина данных.',
-      }))).toBe(false);
-    });
-  });
-
-  describe('заголовок обязан называть аналитика', () => {
-    it('отсекает «Менеджер по операционному консалтингу»', () => {
+    it('«Менеджер по операционному консалтингу» — причина not_title', () => {
       // Скор у неё был проходной: процессная лексика в описании честно есть.
       // Гейт отвечает на другой вопрос — кем зовут, а не чем занимаются.
       const r = screenVacancy(v({ title: 'Менеджер по операционному консалтингу' }));
-      expect(r.passed).toBe(false);
-      if (!r.passed) expect(r.reason).toBe('not_analyst');
+      expect(r).toMatchObject({ passed: false, reason: 'not_title' });
     });
 
-    it('отсекает «Менеджер по повышению эффективности бизнеса (направление lean)»', () => {
-      expect(isAnalystTitle('Менеджер по повышению эффективности бизнеса (направление lean)')).toBe(false);
-    });
-
-    it('отсекает «Управляющий директор по развитию эффективности сегментов»', () => {
-      expect(isAnalystTitle('Управляющий директор по развитию эффективности сегментов')).toBe(false);
-    });
-
-    it('пропускает настоящие аналитические заголовки из очереди', () => {
+    it('настоящие аналитические заголовки из очереди проходят', () => {
       for (const t of [
-        'Бизнес-аналитик',
-        'Системный аналитик',
-        'Старший ИТ аналитик',
-        'Аналитик проектного отдела',
-        'Бизнес-аналитик / Специалист по моделированию',
-        'Customer Business Analyst',
+        'Бизнес-аналитик', 'Системный аналитик', 'Старший ИТ аналитик', 'Аналитик проектного отдела',
+        'Бизнес-аналитик / Специалист по моделированию', 'Customer Business Analyst',
       ]) {
-        expect(isAnalystTitle(t), t).toBe(true);
+        expect(screenVacancy(v({ title: t })).passed, t).toBe(true);
       }
     });
   });

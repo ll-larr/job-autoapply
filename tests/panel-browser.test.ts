@@ -6,6 +6,7 @@ import { chromium, type Browser, type Page } from 'playwright';
 import { startPanel, type PanelDeps } from '../src/ui/server.js';
 import { Queue } from '../src/core/queue.js';
 import { normalizeVacancy } from '../src/core/vacancy.js';
+import { seedSettings, validateSettings, type Settings } from '../src/core/settings.js';
 import { clearStop } from '../src/core/sender.js';
 import type { Adapter, ApplyResult } from '../src/adapters/types.js';
 import type { Config } from '../src/core/config.js';
@@ -311,4 +312,145 @@ describe('панель в браузере — уведомление про VPN
       expect(await page.isVisible('#proxyWarn')).toBe(false);
     });
   }, 40000);
+});
+
+describe('вкладка «Настройки» в настоящем браузере', () => {
+  let stored: Settings;
+  let sp: { port: number; close(): Promise<void> };
+
+  beforeEach(async () => {
+    stored = seedSettings(undefined, null);
+    sp = await startPanel(q, 0, {
+      settings: {
+        get: () => stored,
+        save: async (raw) => { const r = validateSettings(raw); if (r.ok) stored = r.settings; return r; },
+        suggest: async () => ({
+          ok: true,
+          suggestion: { titleWords: ['менеджер продукта'], skills: [{ name: 'Роадмап', synonyms: ['роадмап'], weight: 25, core: true }] },
+        }),
+      },
+    });
+  });
+  afterEach(async () => { await sp.close(); });
+
+  it('правка веса навыка сохраняется', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    const weight = page.locator('.spec').first().locator('.skill').first().locator('[data-k="weight"]');
+    await weight.fill('30');
+    await page.click('#settingsSave');
+    await expect.poll(() => stored.specialties[0]!.skills[0]!.weight).toBe(30);
+    await expect.poll(() => page.textContent('#settingsNote')).toMatch(/Сохранено/);
+  });
+
+  it('стоп-слово добавляется через поле списка', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    await page.fill('#stopWords', '1С\nБитрикс\nBitrix\nвахта');
+    await page.click('#settingsSave');
+    await expect.poll(() => stored.stopWords).toEqual(['1С', 'Битрикс', 'Bitrix', 'вахта']);
+  });
+
+  it('новая специальность: «Предложить» заполняет, сохранение с названием', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    await page.click('#addSpec');
+    const card = page.locator('.spec').last();
+    await card.locator('[data-f="name"]').fill('Менеджер продукта');
+    await card.locator('.suggest').click();
+    await expect.poll(() => card.locator('.skill [data-k="name"]').first().inputValue()).toBe('Роадмап');
+    await page.click('#settingsSave');
+    await expect.poll(() => stored.specialties.map((s) => s.name)).toContain('Менеджер продукта');
+    expect(stored.specialties.at(-1)!.legacyLetters).toBe(false);
+  });
+
+  it('ошибка проверки показывается человеку, а не глотается', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    await page.locator('.spec').first().locator('[data-f="name"]').fill('');
+    await page.click('#settingsSave');
+    await expect.poll(() => page.textContent('#settingsNote')).toMatch(/название/);
+  });
+});
+
+describe('Telegram во вкладке «Настройки»', () => {
+  const CHATS = [
+    { id: '-1001', title: 'Работа в ИТ', username: 'workayte', kind: 'channel' as const },
+    { id: '-1002', title: 'Закрытый чат аналитиков', username: null, kind: 'group' as const },
+  ];
+  let stored: Settings;
+  let tp: { port: number; close(): Promise<void> };
+
+  beforeEach(async () => {
+    stored = seedSettings(undefined, null);
+    stored.autoApply = { enabled: true, minScore: 60 };
+    tp = await startPanel(q, 0, {
+      settings: {
+        get: () => stored,
+        save: async (raw) => { const r = validateSettings(raw); if (r.ok) stored = r.settings; return r; },
+        suggest: async () => ({ ok: false, error: 'не нужен' }),
+      },
+      telegram: {
+        dialogs: async () => ({ ok: true, chats: CHATS }),
+        resolve: async (ref) => (ref === '@нет' ? { ok: false, error: 'канал не найден' } : { ok: true, chat: CHATS[0]! }),
+      },
+    });
+  });
+  afterEach(async () => { await tp.close(); });
+
+  it('«Выбрать из моих чатов» добавляет отмеченное, сохранение кладёт чаты в настройки', async () => {
+    await page.goto(`http://127.0.0.1:${tp.port}/#settings`);
+    await page.click('#tgPick');
+    await page.locator('#tgPicker input[data-i="1"]').check();
+    await page.click('#tgPickAdd');
+    await page.fill('#tgDays', '7');
+    await page.click('#settingsSave');
+    await expect.poll(() => stored.telegram.chats.map((c) => c.id)).toEqual(['-1002']);
+    expect(stored.telegram.firstReadDays).toBe(7);
+  });
+
+  it('ошибка «Добавить» показывается человеку', async () => {
+    await page.goto(`http://127.0.0.1:${tp.port}/#settings`);
+    await page.fill('#tgRef', '@нет');
+    await page.click('#tgAdd');
+    await expect.poll(() => page.textContent('#tgNote')).toMatch(/канал не найден/);
+  });
+
+  it('включение автоотклика — только через подтверждение; отказ оставляет выключенным', async () => {
+    stored.autoApply = { enabled: false, minScore: null };
+    await page.goto(`http://127.0.0.1:${tp.port}/#settings`);
+    expect(await page.locator('#autoBanner').isHidden()).toBe(true);
+
+    page.once('dialog', (d) => { void d.dismiss(); });
+    await page.locator('#autoApply').click();
+    await expect.poll(() => page.locator('#autoApply').isChecked()).toBe(false);
+
+    page.once('dialog', (d) => {
+      expect(d.message()).toMatch(/без твоего просмотра/);
+      void d.accept();
+    });
+    await page.locator('#autoApply').click();
+    await page.fill('#autoMinScore', '55');
+    await page.click('#settingsSave');
+    await expect.poll(() => stored.autoApply).toEqual({ enabled: true, minScore: 55 });
+    await expect.poll(() => page.locator('#autoBanner').isVisible()).toBe(true);
+  });
+
+  it('вкладка «Отправлено» помечает отправленное автооткликом', async () => {
+    q.insertPending(normalizeVacancy({
+      source: 'tg', sourceId: '-1001:9', title: 'Системный аналитик', company: '', url: 'https://t.me/x/9',
+      description: 'd', geo: '', postedAt: '2026-09-19T00:00:00Z', contact: 'hr_a',
+    }), 70, [], 'Здравствуйте!', 'dm');
+    const row = q.listByStatus('pending').find((r) => r.sourceId === '-1001:9')!;
+    q.approve(row.id, undefined, 'auto');
+    q.markSent(row.id);
+
+    await page.goto(`http://127.0.0.1:${tp.port}/#sent`);
+    await expect.poll(() => page.locator('#sentList .card').count()).toBe(1);
+    expect(await page.locator('#sentList .card .meta').innerText()).toMatch(/АВТО.*@hr_a/);
+  });
+
+  it('сохранение специальностей не трогает автоотклик', async () => {
+    await page.goto(`http://127.0.0.1:${tp.port}/#settings`);
+    await page.locator('.spec').first().locator('.skill').first().locator('[data-k="weight"]').fill('29');
+    await page.click('#settingsSave');
+    await expect.poll(() => stored.specialties[0]!.skills[0]!.weight).toBe(29);
+    expect(stored.autoApply).toEqual({ enabled: true, minScore: 60 });
+  });
 });

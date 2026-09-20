@@ -58,7 +58,17 @@ export interface SendReport {
    * неотличимо от поломки отправки.
    */
   skippedEmptyLetter: string[];
+  /**
+   * Отложено правилом «одному контакту — не чаще раза в 7 дней» (спека 5.5):
+   * строка осталась approved и уйдёт первым прогоном после until.
+   */
+  deferredContacts: Array<{ contact: string; until: number; title: string }>;
+  /** «Отправлено, но…»: текст в Telegram ушёл, а резюме не приложилось. */
+  warnings: string[];
 }
+
+/** Одному контакту — не чаще раза в 7 дней (спека 2026-09-18, 5.5). */
+export const CONTACT_COOLDOWN_MS = 7 * 86_400_000;
 
 /**
  * Почему прогон по площадке (или весь прогон, в случае `killed`) прекращён.
@@ -66,7 +76,7 @@ export interface SendReport {
  * нажал стоп, и продолжать «по другим площадкам» тут было бы прямым
  * неподчинением.
  */
-export type HaltReason = 'captcha' | 'auth_required' | 'killed' | 'too_many_failures';
+export type HaltReason = 'captcha' | 'auth_required' | 'account_limited' | 'killed' | 'too_many_failures';
 
 interface Deps {
   sleep?: (ms: number) => Promise<void>;
@@ -99,7 +109,7 @@ export class Sender {
   async run(): Promise<SendReport> {
     const report: SendReport = {
       sent: 0, failed: 0, halted: null, unthrottledSources: [], haltedSources: [],
-      skippedEmptyLetter: [],
+      skippedEmptyLetter: [], deferredContacts: [], warnings: [],
     };
     const rows = this.queue.listByStatus('approved');
     const consecutiveFailures = new Map<string, number>();
@@ -191,6 +201,19 @@ export class Sender {
         continue;
       }
 
+      // Одному человеку — не чаще раза в 7 дней (спека 5.5). Строка не уходит
+      // в failed (оттуда нет выхода), а ждёт: первый прогон после срока
+      // отправит её сам.
+      if (row.contact !== null) {
+        const last = this.queue.lastSentTo(row.contact);
+        if (last !== null && this.now() - last.at < CONTACT_COOLDOWN_MS) {
+          report.deferredContacts.push({
+            contact: row.contact, until: last.at + CONTACT_COOLDOWN_MS, title: row.vacancy.title,
+          });
+          continue;
+        }
+      }
+
       // Исключение из адаптера — отказ этой заявки, а не конец всей
       // отправки. 2026-09-19 клик по кнопке отклика архивной вакансии
       // выбросил таймаут, и остальные двадцать заявок так и не ушли. В
@@ -198,7 +221,7 @@ export class Sender {
       // ровно то, от чего он защищает.
       let result: ApplyResult;
       try {
-        result = await adapter.apply(row.vacancy, row.letter);
+        result = await adapter.apply(row.vacancy, row.letter, { specialty: row.specialty });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         result = { status: 'failed', reason: `адаптер ${row.source} упал: ${message.split('\n')[0]!.slice(0, 200)}` };
@@ -210,7 +233,7 @@ export class Sender {
         continue;
       }
 
-      if (result.status === 'captcha' || result.status === 'auth_required') {
+      if (result.status === 'captcha' || result.status === 'auth_required' || result.status === 'account_limited') {
         // Запись НЕ помечается failed — она остаётся approved и будет
         // обработана после того, как человек разберётся с капчей или логином.
         // Narrowed by an explicit tag comparison rather than
@@ -229,6 +252,9 @@ export class Sender {
       if (result.status === 'sent' || result.status === 'already_applied') {
         this.queue.markSent(row.id);
         report.sent++;
+        if (result.status === 'sent' && result.warning !== undefined) {
+          report.warnings.push(`${row.vacancy.title}: ${result.warning}`);
+        }
         // Успех сбрасывает счётчик: предохранитель ловит именно череду отказов
         // подряд, а не их общее число за прогон.
         consecutiveFailures.set(row.source, 0);

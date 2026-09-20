@@ -14,12 +14,18 @@
  * Здесь, при старте команды, только печатается, что нашлось.
  */
 
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { Queue, type Status } from './core/queue.js';
-import { loadConfig, type Config, type SearchQueryConfig } from './core/config.js';
-import { runSearch, type SearchReport } from './pipeline.js';
+import { loadConfig, type Config } from './core/config.js';
+import { runSearch, type SearchReport, type SearchQuery } from './pipeline.js';
+import {
+  loadSettings, seedSettings, saveSettings, validateSettings, enabledSpecialties, SETTINGS_PATH, type Settings,
+} from './core/settings.js';
+import type { Specialty } from './core/specialty.js';
+import { DEFAULT_SPECIALTY } from './core/specialty-defaults.js';
 import { Sender, requestStop, clearStop, isStopRequested } from './core/sender.js';
 import type { SendReport } from './core/sender.js';
 import { startPanel } from './ui/server.js';
@@ -28,8 +34,16 @@ import { HrGeAdapter } from './adapters/hrge.js';
 import { CareeristAdapter } from './adapters/careerist.js';
 import { generateLetter, pickTemplate, pickMode } from './core/letter.js';
 import { answerQuestions } from './core/questions.js';
+import { generateDm } from './core/dm.js';
 import { proxyResolver, type ProxyDiscovery, type ProxySource } from './core/proxy.js';
 import type { Adapter } from './adapters/types.js';
+import { extractPdfText, refreshResumeCache, resumeTextFor, LEGACY_RESUME_MD } from './core/resume.js';
+import { suggestSpecialty } from './core/suggest.js';
+import { autoApproveAfterSearch, type AutoSkipReason } from './core/autoapply.js';
+import { TelegramAdapter } from './adapters/telegram.js';
+import { openTelegram, type OpenResult } from './telegram/gramjs.js';
+import { classifyTgError, describeTgFailure } from './telegram/errors.js';
+import type { TgReader, TgSender } from './telegram/types.js';
 
 // 500 — число, которое пользователь выбрал 2026-08-30 сам, разобрав первую
 // живую очередь. С 2026-08-30 оно означает ЦЕЛЬ, а не потолок просмотра:
@@ -58,24 +72,68 @@ import type { Adapter } from './adapters/types.js';
  * заполняет пробел, а не переопределяет то, что человек задал явно.
  */
 function loadDotEnv(): void {
-  if (process.env['OPENROUTER_API_KEY']) return;
   try {
     // Путь относительный, как у config.json и templates/: весь CLI
     // рассчитан на запуск из корня проекта (так его зовут npm-скрипты).
+    //
+    // Файл читается всегда, а не только когда нет OPENROUTER_API_KEY: в нём
+    // же лежат TG_API_ID/TG_API_HASH (Telegram). loadEnvFile не перезаписывает
+    // уже заданные переменные (проверено на Node 24), так что явно
+    // выставленное человеком по-прежнему главнее файла.
     process.loadEnvFile('.env');
   } catch {
-    // Файла нет — это нормально, ключ может приходить из окружения.
+    // Файла нет — это нормально, ключи могут приходить из окружения.
   }
 }
 
 const DEFAULT_LIMIT = 500;
 const DB_PATH = 'data/queue.db';
-// Единственный постоянный источник резюме — файл в корне репозитория,
-// который пользователь положил и поддерживает сам (см. задание к этой
-// задаче и scripts/try-letter.ts, откуда взята эта же строка). Не рабочий
-// стол, не DOCX, не _generator/.
-const RESUME_PATH = 'CV кандидат Бизнес-аналитик.md';
 const PANEL_PORT = 4321;
+
+/**
+ * Обновляет кеш текста резюме у включённых специальностей перед поиском (см.
+ * core/resume.ts). Не извлёкся — письма этой специальности пойдут по резюме
+ * БА, и об этом надо сказать, а не молчать.
+ */
+async function refreshResumes(settings: Settings, log: (line: string) => void): Promise<void> {
+  for (const s of enabledSpecialties(settings)) {
+    const r = await refreshResumeCache(s);
+    if (!r.ok) log(`Резюме «${s.name}» не извлеклось (${r.error}) — письма пойдут по резюме БА.`);
+  }
+}
+
+/**
+ * PDF резюме БА для засева настроек (спека 2026-09-18, 3.7). Путь владельца;
+ * если файла нет — null, и в панели поле останется пустым.
+ */
+function defaultBaResumePdf(): string | null {
+  const p = join(homedir(), 'OneDrive', 'Рабочий стол', 'Резюме', 'CV_кандидат_Бизнес-аналитик.pdf');
+  return existsSync(p) ? p : null;
+}
+
+/**
+ * Настройки поиска на момент вызова (снимок на старте прогона, спека 3.1).
+ * Первый вызов засевает data/settings.json из config.json.
+ */
+function currentSettings(config: Config): Settings {
+  return loadSettings(SETTINGS_PATH, () => seedSettings(config.searchQueries, defaultBaResumePdf()));
+}
+
+/**
+ * Специальность строки очереди. Удалённая из настроек — бизнес-аналитик:
+ * письмо всё равно нужно дописать, а других сведений о ней не осталось.
+ */
+export function specialtyOf(settings: Settings, id: string): Specialty {
+  return settings.specialties.find((s) => s.id === id) ?? DEFAULT_SPECIALTY;
+}
+
+/** Предупреждение перед прогоном, когда автоотклик включён (спека 7.4). */
+export const AUTO_APPLY_BANNER: readonly string[] = [
+  '',
+  '  АВТООТКЛИК ВКЛЮЧЁН — поиск сам одобрит подходящее и отправит отклики.',
+  '  Выключить: панель → вкладка «Настройки».',
+  '',
+];
 
 const STATUS_ORDER: readonly Status[] = ['pending', 'approved', 'sent', 'failed', 'skipped'];
 
@@ -86,22 +144,40 @@ const STATUS_ORDER: readonly Status[] = ['pending', 'approved', 'sent', 'failed'
 // ============================================================================
 
 /**
- * Явный аргумент командной строки — это одна формулировка запроса, которая
- * целиком перекрывает список из config.json#searchQueries (удобно для
- * быстрой проверки одной фразы без per-query ограничений вроде juniorOnly —
- * см. задание к этой задаче). Без аргумента — настроенный пользователем
- * список формулировок как есть, constraints каждой формулировки сохраняются.
+ * Фразы поиска из настроек (спека 2026-09-18, раздел 3.2). Без аргументов —
+ * фразы всех включённых специальностей, каждая со своей специальностью. С
+ * аргументами — одна фраза для быстрой проверки; от чьего имени она ищет,
+ * задаёт `--specialty "<название>"`, иначе первая включённая.
  */
-export function resolveSearchQueries(
-  args: readonly string[],
-  configured: readonly SearchQueryConfig[],
-): SearchQueryConfig[] {
-  const q = args.join(' ').trim();
-  return q === '' ? [...configured] : [{ query: q }];
+export function buildSearchQueries(settings: Settings, args: readonly string[]): SearchQuery[] {
+  const enabled = enabledSpecialties(settings);
+  if (enabled.length === 0) {
+    throw new Error('Нет включённых специальностей — включи хотя бы одну во вкладке «Настройки».');
+  }
+
+  const i = args.indexOf('--specialty');
+  const wanted = i === -1 ? undefined : args[i + 1];
+  const words = args.filter((_, j) => i === -1 || (j !== i && j !== i + 1));
+  const text = words.join(' ').trim();
+
+  let specialty: Specialty = enabled[0]!;
+  if (wanted !== undefined) {
+    const found = settings.specialties.find((s) => s.name.toLowerCase() === wanted.trim().toLowerCase());
+    if (found === undefined) {
+      throw new Error(`Специальность «${wanted}» не найдена. Есть: ${settings.specialties.map((s) => s.name).join(', ')}`);
+    }
+    specialty = found;
+  }
+
+  if (text === '') {
+    const from = wanted === undefined ? enabled : [specialty];
+    return from.flatMap((s) => s.queries.map((query) => ({ query, specialty: s })));
+  }
+  return [{ query: text, specialty }];
 }
 
 /** Человекочитаемая метка списка запросов для заголовка отчёта — не про логику поиска. */
-export function formatQueryLabel(queries: readonly SearchQueryConfig[]): string {
+export function formatQueryLabel(queries: readonly SearchQuery[]): string {
   return queries.map((q) => q.query).join(' | ');
 }
 
@@ -124,6 +200,7 @@ export function formatSearchReport(
   emptyLetters: number,
   hasApiKey: boolean,
   letterFailure?: string,
+  auto?: { approved: number; skipped: number },
 ): string[] {
   const lines: string[] = [];
   lines.push(`=== Поиск: "${query}" ===`);
@@ -149,9 +226,16 @@ export function formatSearchReport(
   lines.push(`Отсеяно (core-гейт):     ${report.noCoreMatch}`);
   lines.push(`Отсеяно (опыт):          ${report.rejectedExperience}`);
   lines.push(`Отсеяно (грейд):         ${report.rejectedGrade}`);
-  lines.push(`Отсеяно (платформа):     ${report.rejectedPlatform}`);
-  lines.push(`Отсеяно (не аналитик):   ${report.rejectedNotAnalyst}`);
+  const hits = Object.entries(report.stopwordHits).map(([w, n]) => `${w}: ${n}`).join(', ');
+  lines.push(`Отсеяно (стоп-слова):   ${report.rejectedStopword}${hits === '' ? '' : ` (${hits})`}`);
+  lines.push(`Отсеяно (заголовок):    ${report.rejectedTitle}`);
   lines.push(`Отсеяно (стажировка):    ${report.rejectedInternship}`);
+  if (report.tgNotVacancy + report.tgNoContact + report.textDuplicates > 0) {
+    lines.push(
+      `Telegram: не вакансия ${report.tgNotVacancy}, без контакта ${report.tgNoContact}, репостов ${report.textDuplicates}`,
+    );
+  }
+  for (const c of report.tgSkippedChats) lines.push(`  Telegram, «${c.title}» пропущен: ${c.why}`);
   if (emptyLetters > 0 && letterFailure !== undefined) {
     lines.push(`Почему письма пустые:    ${letterFailure}`);
   }
@@ -160,6 +244,9 @@ export function formatSearchReport(
       (report.queued > 0 ? ` из ${report.queued} поставленных в очередь` : '') +
       (emptyLetters > 0 ? ' — допиши вручную в панели' : ''),
   );
+  if (auto !== undefined) {
+    lines.push(`Автоотклик:              одобрено ${auto.approved}, оставлено на просмотр ${auto.skipped}`);
+  }
   if (report.adapterErrors.length > 0) {
     lines.push(`Ошибки адаптеров:        ${report.adapterErrors.length}`);
     for (const e of report.adapterErrors) lines.push(`  - ${e.adapter}: ${e.message}`);
@@ -197,7 +284,11 @@ function explainHalt(halted: NonNullable<SendReport['halted']>): string {
     case 'captcha':
       return `площадка ${halted.source} показала капчу. Обход капчи не реализуется — пройди её руками в браузере, потом запусти send снова.`;
     case 'auth_required':
-      return `сессия на площадке ${halted.source} разлогинена. Залогинься заново (npx tsx scripts/login.ts), потом запусти send снова.`;
+      return halted.source === 'tg'
+        ? 'Telegram не подключён или сессия протухла. Войди заново (npm run tg:login), потом запусти send снова.'
+        : `сессия на площадке ${halted.source} разлогинена. Залогинься заново (npx tsx scripts/login.ts), потом запусти send снова.`;
+    case 'account_limited':
+      return `площадка ${halted.source}: аккаунт ограничен (Telegram: PEER_FLOOD или долгий FloodWait) — первые сообщения незнакомым сейчас не проходят. Подожди сутки; заявки остались approved.`;
     case 'too_many_failures':
       return `площадка ${halted.source}: несколько отказов подряд — похоже, что-то сломалось (капча, изменившаяся вёрстка, ограничение аккаунта). Разберись вручную перед повтором.`;
     default: {
@@ -222,6 +313,12 @@ export function formatSendResult(report: SendReport): { lines: string[]; exitCod
   for (const h of report.haltedSources.slice(1)) {
     lines.push(`ОСТАНОВЛЕНО: ${explainHalt(h)}`);
   }
+
+  for (const d of report.deferredContacts) {
+    const until = new Date(d.until).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+    lines.push(`Отложено до ${until}: @${d.contact} — ${d.title} (этому контакту писали меньше 7 дней назад)`);
+  }
+  for (const w of report.warnings) lines.push(`ВНИМАНИЕ: ${w}`);
 
   if (report.skippedEmptyLetter.length > 0) {
     lines.push(
@@ -263,7 +360,54 @@ export function formatStatusReport(
 // функции — чистая логика поверх переданных зависимостей.
 // ============================================================================
 
-export function buildAdapters(config?: Config): Adapter[] {
+/** Telegram для команд: чтение и отправка через одну сессию на процесс. */
+export interface TelegramSession {
+  reader(): Promise<TgReader | { error: string }>;
+  sender(): Promise<TgSender | { error: string }>;
+  close(): Promise<void>;
+}
+
+/**
+ * Сессия Telegram поднимается только по первому обращению: поиск без чатов
+ * в настройках и отправка без Telegram-строк её не трогают вовсе. Неудача
+ * (VPN выключен, сессия протухла) не запоминается — следующее обращение
+ * пробует снова: VPN включают, не перезапуская панель.
+ */
+export function lazyTelegram(open: () => Promise<OpenResult> = () => openTelegram()): TelegramSession {
+  let pending: Promise<OpenResult> | null = null;
+  const get = (): Promise<OpenResult> => {
+    pending ??= open().then((r) => {
+      if (!r.ok) pending = null;
+      return r;
+    });
+    return pending;
+  };
+  return {
+    async reader() { const r = await get(); return r.ok ? r.reader : { error: r.message }; },
+    async sender() { const r = await get(); return r.ok ? r.sender : { error: r.message }; },
+    async close() {
+      const p = pending;
+      pending = null;
+      if (p === null) return;
+      const r = await p;
+      if (r.ok) await r.close();
+    },
+  };
+}
+
+/** Что нужно адаптеру Telegram от команды: очередь (курсоры чатов), настройки, сессия. */
+export interface TelegramWiring {
+  queue: Queue;
+  settings: () => Settings;
+  session: TelegramSession;
+}
+
+/**
+ * config нужен только hh.ru — по нему собирается ответчик на анкету
+ * работодателя; без него (тесты) анкета честно отклоняется. tg — проводка
+ * Telegram, без неё площадки Telegram в наборе нет.
+ */
+export function buildAdapters(tg?: TelegramWiring, config?: Config): Adapter[] {
   // careerist.ru пока умеет только искать: отклик там требует регистрации, и
   // её adapter.apply честно объявляет `auth_required` (см. adapters/careerist.ts).
   // В очередь вакансии попадают наравне с остальными, а отправка обходит их
@@ -276,11 +420,29 @@ export function buildAdapters(config?: Config): Adapter[] {
     : new HhAdapter({
       answerTest: (questions, vacancy) => answerQuestions(
         questions,
-        { vacancy, resume: readFileSync(RESUME_PATH, 'utf8'), salaryExpectation: config.salaryExpectation },
+        // Анкета видит базовое резюме в markdown: у hh нет ctx со специальностью
+        // строки, а вопросы работодателя — про факты биографии, общие для всех
+        // специальностей (PDF специальности идёт отдельно, в отклик и в Telegram).
+        { vacancy, resume: readFileSync(LEGACY_RESUME_MD, 'utf8'), salaryExpectation: config.salaryExpectation },
         { models: config.letterModels },
       ),
     });
-  return [hh, new HrGeAdapter(), new CareeristAdapter()];
+  const adapters: Adapter[] = [hh, new HrGeAdapter(), new CareeristAdapter()];
+  if (tg !== undefined) {
+    // Настройки читаются на каждое обращение: выбор чатов в панели действует
+    // со следующего поиска без перезапуска.
+    adapters.push(new TelegramAdapter({
+      reader: () => tg.session.reader(),
+      sender: () => tg.session.sender(),
+      close: () => tg.session.close(),
+      queue: tg.queue,
+      chats: () => tg.settings().telegram.chats,
+      firstReadDays: () => tg.settings().telegram.firstReadDays,
+      titleWords: () => enabledSpecialties(tg.settings()).flatMap((s) => s.titleWords),
+      resumePdf: (id) => specialtyOf(tg.settings(), id).resumePdf,
+    }));
+  }
+  return adapters;
 }
 
 export function buildAdapterMap(adapters: readonly Adapter[]): Map<string, Adapter> {
@@ -291,8 +453,16 @@ export function buildAdapterMap(adapters: readonly Adapter[]): Map<string, Adapt
 export interface FillLettersDeps {
   queue: Queue;
   config: Config;
-  resume: string;
+  /** Текст резюме, по которому пишет письма специальность (core/resume.ts). */
+  resumeFor: (specialty: Specialty) => string;
+  /**
+   * Специальность строки очереди по её id. Удалённая из настроек — как БА:
+   * письмо всё равно нужно дописать, а других сведений о ней не осталось.
+   */
+  specialtyById: (id: string) => Specialty;
   generateLetterFn: typeof generateLetter;
+  /** Личное сообщение рекрутёру для постов Telegram (core/dm.ts). */
+  generateDmFn: typeof generateDm;
   pickTemplateFn: typeof pickTemplate;
   readTemplate: (name: string) => string;
   /** Куда сообщать о ходе. Команда пишет в консоль, панель — никуда. */
@@ -330,18 +500,28 @@ export async function fillEmptyLetters(deps: FillLettersDeps): Promise<FillLette
   let failure: string | undefined;
 
   for (const row of empty) {
-    const mode = pickMode(row.score, deps.config.letterFullThreshold);
-    const templateName = deps.pickTemplateFn(row.vacancy, row.matched);
-    const result = await deps.generateLetterFn(
-      {
-        vacancy: row.vacancy,
-        matched: row.matched,
-        mode,
-        resume: deps.resume,
-        template: deps.readTemplate(templateName),
-      },
-      { models: deps.config.letterModels },
-    );
+    // Та же развилка, что при поиске (pipeline.ts): скелеты и hybrid/full —
+    // только у засеянных специальностей, остальные пишут письмо целиком.
+    const specialty = deps.specialtyById(row.specialty);
+    const result = row.source === 'tg'
+      // Пост Telegram: не письмо, а личное сообщение рекрутёру (core/dm.ts).
+      ? await deps.generateDmFn(
+        { vacancy: row.vacancy, resume: deps.resumeFor(specialty), role: specialty.name },
+        { models: deps.config.letterModels },
+      )
+      : await deps.generateLetterFn(
+        {
+          vacancy: row.vacancy,
+          matched: row.matched,
+          mode: specialty.legacyLetters ? pickMode(row.score, deps.config.letterFullThreshold) : 'full',
+          template: specialty.legacyLetters
+            ? deps.readTemplate(deps.pickTemplateFn(row.vacancy, row.matched))
+            : '',
+          resume: deps.resumeFor(specialty),
+          role: specialty.legacyLetters ? undefined : specialty.name,
+        },
+        { models: deps.config.letterModels },
+      );
     if (result.letter.trim() === '') {
       failure = result.failure ?? failure;
       log(`  #${row.id} не удалось: ${row.vacancy.title.slice(0, 45)}`);
@@ -359,16 +539,28 @@ export interface SearchCommandDeps {
   queue: Queue;
   config: Config;
   adapters: Adapter[];
-  /** Формулировки запроса. Разные фразы находят разные вакансии. */
-  queries: SearchQueryConfig[];
+  /** Формулировки запроса, каждая со своей специальностью (см. buildSearchQueries). */
+  queries: SearchQuery[];
+  /** Стоп-слова из настроек. undefined — прежние 1С и Битрикс. */
+  stopWords?: readonly string[];
+  /** Включённые специальности — ими оцениваются посты Telegram (pipeline.ts). */
+  specialties?: Specialty[];
+  /**
+   * Настройки прогона. С ними после поиска срабатывает автоотклик (спека 7.2):
+   * годное одобряется само. Без них поиск только наполняет очередь.
+   */
+  settings?: Settings;
   /**
    * Сколько вакансий должно ЛЕЧЬ В ОЧЕРЕДЬ за прогон — цель, а не потолок
    * просмотра: прогон сам решает, сколько для этого прочитать (см.
    * RunSearchOptions.target). См. resolveLimit.
    */
   limit: number;
-  resume: string;
+  /** Текст резюме, по которому пишет письма специальность (core/resume.ts). */
+  resumeFor: (specialty: Specialty) => string;
   generateLetterFn: typeof generateLetter;
+  /** Личное сообщение рекрутёру для постов Telegram (core/dm.ts). */
+  generateDmFn: typeof generateDm;
   pickTemplateFn: typeof pickTemplate;
   readTemplate: (name: string) => string;
 }
@@ -384,7 +576,13 @@ export interface SearchCommandDeps {
  */
 export async function runSearchCommand(
   deps: SearchCommandDeps,
-): Promise<{ report: SearchReport; emptyLetters: number; letterFailure?: string }> {
+): Promise<{
+  report: SearchReport; emptyLetters: number; letterFailure?: string;
+  autoApproved: number; autoSkipped: Array<{ id: number; reason: AutoSkipReason }>;
+}> {
+  // Что одобрять автооткликом, считается по строкам ЭТОГО прогона: всё, что
+  // лежало в очереди раньше, человек уже видел и решения по нему не принял.
+  const startedAt = Date.now();
   let emptyLetters = 0;
   // Причина последнего провала генерации. Без неё пустые письма выглядят как
   // необъяснимое поведение системы: 2026-08-31 прогон вернул двадцать вакансий
@@ -395,20 +593,32 @@ export async function runSearchCommand(
     queue: deps.queue,
     config: deps.config,
     queries: deps.queries,
+    stopWords: deps.stopWords,
+    specialties: deps.specialties,
     target: deps.limit,
     adapters: deps.adapters,
-    generate: async (v, matched, mode) => {
-      const templateName = deps.pickTemplateFn(v, matched);
-      const result = await deps.generateLetterFn(
-        {
-          vacancy: v,
-          matched,
-          mode,
-          resume: deps.resume,
-          template: deps.readTemplate(templateName),
-        },
-        { models: deps.config.letterModels },
-      );
+    generate: async (v, matched, mode, specialty) => {
+      // Пост Telegram: не письмо, а короткое личное сообщение рекрутёру со
+      // ссылкой на пост (core/dm.ts, спека 5.1).
+      // Остальное — письмо. Скелеты — только у засеянных специальностей
+      // (legacyLetters); остальным конвейер уже выставил mode 'full', и скелет
+      // модели не показывается.
+      const result = v.source === 'tg'
+        ? await deps.generateDmFn(
+          { vacancy: v, resume: deps.resumeFor(specialty), role: specialty.name },
+          { models: deps.config.letterModels },
+        )
+        : await deps.generateLetterFn(
+          {
+            vacancy: v,
+            matched,
+            mode,
+            template: specialty.legacyLetters ? deps.readTemplate(deps.pickTemplateFn(v, matched)) : '',
+            resume: deps.resumeFor(specialty),
+            role: specialty.legacyLetters ? undefined : specialty.name,
+          },
+          { models: deps.config.letterModels },
+        );
       if (result.mode === 'none') {
         emptyLetters++;
         letterFailure = result.failure ?? letterFailure;
@@ -416,7 +626,10 @@ export async function runSearchCommand(
       return result;
     },
   });
-  return { report, emptyLetters, letterFailure };
+  const auto = deps.settings === undefined
+    ? { approved: 0, skipped: [] }
+    : autoApproveAfterSearch(deps.queue, startedAt, deps.settings, deps.config);
+  return { report, emptyLetters, letterFailure, autoApproved: auto.approved, autoSkipped: auto.skipped };
 }
 
 const PROXY_SOURCE_LABEL: Record<ProxySource, string> = {
@@ -530,35 +743,97 @@ async function main(): Promise<void> {
     // заново на каждый клик «Найти», и второй поиск подряд в одной и той же
     // панели гарантированно падал; теперь один и тот же адаптер просто
     // переиспользует уже открытый браузер (см. HhAdapter.getContext).
-    const adapters = buildAdapters(config);
+    // Telegram — одна сессия на всю жизнь панели, поднимается по первому
+    // обращению (поиск с чатами, выбор чатов, отправка Telegram-строк).
+    const tg = lazyTelegram();
+    const adapters = buildAdapters({ queue, settings: () => currentSettings(config), session: tg }, config);
     try {
       await startPanel(queue, PANEL_PORT, {
         adapters,
         config,
+        telegram: {
+          dialogs: async () => {
+            const reader = await tg.reader();
+            if ('error' in reader) return { ok: false, error: reader.error };
+            try {
+              return { ok: true, chats: await reader.dialogs() };
+            } catch (e) {
+              return { ok: false, error: describeTgFailure(classifyTgError(e)) };
+            }
+          },
+          resolve: async (ref) => {
+            const reader = await tg.reader();
+            if ('error' in reader) return { ok: false, error: reader.error };
+            try {
+              return { ok: true, chat: await reader.resolveChat(ref) };
+            } catch (e) {
+              return { ok: false, error: describeTgFailure(classifyTgError(e)) };
+            }
+          },
+        },
         // Панель показывает это полосой наверху: консоль, в которую она
         // пишет предупреждение, человек не смотрит.
         proxyStatus: () => proxyResolver.get(),
+        settings: {
+          get: () => currentSettings(config),
+          save: async (raw) => {
+            const checked = validateSettings(raw);
+            if (!checked.ok) return checked;
+            // PDF проверяется до записи: сохранённая специальность с битым
+            // резюме молча писала бы письма по резюме БА (спека 3.8).
+            for (const s of checked.settings.specialties) {
+              const r = await refreshResumeCache(s);
+              if (!r.ok) return { ok: false, error: `«${s.name}»: резюме не читается — ${r.error}` };
+            }
+            try {
+              return { ok: true, settings: saveSettings(SETTINGS_PATH, checked.settings) };
+            } catch (e) {
+              return { ok: false, error: e instanceof Error ? e.message : String(e) };
+            }
+          },
+          suggest: async (name, resumePdf) => {
+            let resume: string;
+            try {
+              resume = resumePdf === null ? readFileSync(LEGACY_RESUME_MD, 'utf8') : await extractPdfText(resumePdf);
+            } catch (e) {
+              return { ok: false, error: e instanceof Error ? e.message : String(e) };
+            }
+            return suggestSpecialty(name, resume, { models: config.letterModels });
+          },
+        },
         // Та же проводка, что у команды search: панель не собирает конвейер
         // заново, а зовёт ровно то, что вызывает npm run search.
         fillLetters: () => fillEmptyLetters({
           queue,
           config,
-          resume: readFileSync(RESUME_PATH, 'utf8'),
+          resumeFor: (s) => resumeTextFor(s),
+          specialtyById: (id) => specialtyOf(currentSettings(config), id),
           generateLetterFn: generateLetter,
+          generateDmFn: generateDm,
           pickTemplateFn: pickTemplate,
           readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
         }),
-        startSearch: (limit) => runSearchCommand({
-          queue,
-          config,
-          adapters,
-          queries: config.searchQueries,
-          limit,
-          resume: readFileSync(RESUME_PATH, 'utf8'),
-          generateLetterFn: generateLetter,
-          pickTemplateFn: pickTemplate,
-          readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
-        }),
+        // Настройки читаются на каждый запуск: правка во вкладке «Настройки»
+        // действует со следующего поиска без перезапуска панели.
+        startSearch: async (limit) => {
+          const settings = currentSettings(config);
+          await refreshResumes(settings, (line) => console.error(line));
+          return runSearchCommand({
+            queue,
+            config,
+            adapters,
+            queries: buildSearchQueries(settings, []),
+            stopWords: settings.stopWords,
+            specialties: enabledSpecialties(settings),
+            settings,
+            limit,
+            resumeFor: (s) => resumeTextFor(s),
+            generateLetterFn: generateLetter,
+            generateDmFn: generateDm,
+            pickTemplateFn: pickTemplate,
+            readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
+          });
+        },
       });
     } catch (e) {
       // Занятый порт и подобное — обычная бытовая ситуация, а не сбой,
@@ -591,8 +866,10 @@ async function main(): Promise<void> {
       const res = await fillEmptyLetters({
         queue,
         config,
-        resume: readFileSync(RESUME_PATH, 'utf8'),
+        resumeFor: (s) => resumeTextFor(s),
+        specialtyById: (id) => specialtyOf(currentSettings(config), id),
         generateLetterFn: generateLetter,
+        generateDmFn: generateDm,
         pickTemplateFn: pickTemplate,
         readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
         log: (line) => console.log(line),
@@ -617,31 +894,58 @@ async function main(): Promise<void> {
     await reportProxy();
     const config = loadConfig();
     const queue = new Queue(DB_PATH);
+    const tg = lazyTelegram();
     try {
       const limit = resolveLimit(rest);
-      const queries = resolveSearchQueries(
+      const settings = currentSettings(config);
+      if (settings.autoApply.enabled) {
+        for (const line of AUTO_APPLY_BANNER) console.log(line);
+      }
+      const queries = buildSearchQueries(
+        settings,
         rest.filter((a, i) => a !== '--limit' && rest[i - 1] !== '--limit'),
-        config.searchQueries,
       );
-      const resume = readFileSync(RESUME_PATH, 'utf8');
+      await refreshResumes(settings, (line) => console.error(line));
       const hasApiKey = Boolean(process.env['OPENROUTER_API_KEY']);
+      // Один набор адаптеров на поиск и на последующую автоотправку: у hh это
+      // один и тот же браузерный профиль, второй его не откроет.
+      const adapters = buildAdapters({ queue, settings: () => settings, session: tg });
 
-      const { report, emptyLetters, letterFailure } = await runSearchCommand({
+      const { report, emptyLetters, letterFailure, autoApproved, autoSkipped } = await runSearchCommand({
         queue,
         config,
-        adapters: buildAdapters(config),
+        adapters,
         queries,
+        stopWords: settings.stopWords,
+        specialties: enabledSpecialties(settings),
+        settings,
         limit,
-        resume,
+        resumeFor: (s) => resumeTextFor(s),
         generateLetterFn: generateLetter,
+        generateDmFn: generateDm,
         pickTemplateFn: pickTemplate,
         readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
       });
 
-      for (const line of formatSearchReport(formatQueryLabel(queries), report, emptyLetters, hasApiKey, letterFailure)) {
+      const auto = settings.autoApply.enabled
+        ? { approved: autoApproved, skipped: autoSkipped.length }
+        : undefined;
+      for (const line of formatSearchReport(formatQueryLabel(queries), report, emptyLetters, hasApiKey, letterFailure, auto)) {
         console.log(line);
       }
+
+      // Автоотклик: поиск одобрил — он же и отправляет, тем же Sender с теми
+      // же лимитами и предохранителями (спека 7.2).
+      if (autoApproved > 0) {
+        clearStop();
+        const sendReport = await new Sender(queue, buildAdapterMap(adapters), config).run();
+        const { lines, exitCode } = formatSendResult(sendReport);
+        for (const line of lines) console.log(line);
+        process.exitCode = exitCode;
+      }
     } finally {
+      // Без закрытия GramJS держит процесс живым своими соединениями.
+      await tg.close();
       queue.close();
     }
     return;
@@ -650,6 +954,7 @@ async function main(): Promise<void> {
   if (cmd === 'send') {
     const config = loadConfig();
     const queue = new Queue(DB_PATH);
+    const tg = lazyTelegram();
     try {
       // "До того, как что-либо сделать" — значит до clearStop() и до
       // Sender.run(), а не просто до подачи первой заявки.
@@ -657,19 +962,20 @@ async function main(): Promise<void> {
       for (const line of formatSendPreflight(approvedRows)) console.log(line);
 
       clearStop(); // прошлый kill switch не должен блокировать новый прогон
-      const adapterMap = buildAdapterMap(buildAdapters(config));
+      const adapterMap = buildAdapterMap(buildAdapters({ queue, settings: () => currentSettings(config), session: tg }, config));
       const report = await new Sender(queue, adapterMap, config).run();
 
       const { lines, exitCode } = formatSendResult(report);
       for (const line of lines) console.log(line);
       process.exitCode = exitCode;
     } finally {
+      await tg.close();
       queue.close();
     }
     return;
   }
 
-  console.error('Команды: search [запрос] | panel | send | stop | status');
+  console.error('Команды: search [запрос] [--specialty "название"] | panel | send | stop | status');
   process.exitCode = 1;
 }
 

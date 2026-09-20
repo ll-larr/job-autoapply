@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Vacancy } from './vacancy.js';
+import { BA_SPECIALTY_ID } from './specialty-defaults.js';
 
 export type Status = 'pending' | 'approved' | 'skipped' | 'sent' | 'failed';
 /**
@@ -12,8 +13,9 @@ export type Status = 'pending' | 'approved' | 'skipped' | 'sent' | 'failed';
  * `manual` — человек написал его руками в панели: это не режим генерации, но
  * и не отсутствие письма, и слепить его с остальными значило бы врать в
  * отчётах о том, что модель сделала.
+ * `dm` — личное сообщение рекрутёру в Telegram (core/dm.ts): не письмо, у него свой промпт.
  */
-export type LetterMode = 'hybrid' | 'full' | 'none' | 'manual';
+export type LetterMode = 'hybrid' | 'full' | 'none' | 'manual' | 'dm';
 
 export interface QueueRow {
   id: number;
@@ -26,12 +28,21 @@ export interface QueueRow {
   letterMode: LetterMode;
   status: Status;
   error: string | null;
+  /** id специальности из data/settings.json. У строк до 2026-09-18 — бизнес-аналитик. */
+  specialty: string;
+  /** @username рекрутёра без @, в нижнем регистре; только у Telegram. */
+  contact: string | null;
+  /** Кто одобрил; null — ещё не одобрена или одобрена до 2026-09-19. */
+  approvedBy: 'human' | 'auto' | null;
+  createdAt: number;
+  sentAt: number | null;
 }
 
 interface DbRow {
   id: number; source: string; source_id: string; vacancy_json: string;
   score: number; matched_json: string; letter: string; letter_mode: string;
-  status: string; error: string | null;
+  status: string; error: string | null; specialty: string | null;
+  contact: string | null; approved_by: string | null; created_at: number; sent_at: number | null;
 }
 
 export class Queue {
@@ -70,19 +81,49 @@ export class Queue {
     } catch {
       // колонка уже есть
     }
+    // Специальность строки (спека 2026-09-18, раздел 6): по ней дописываются
+    // письма и выбирается резюме. Та же схема миграции, что выше.
+    try {
+      this.db.exec('ALTER TABLE applications ADD COLUMN specialty TEXT');
+    } catch {
+      // колонка уже есть
+    }
+    // Telegram и автоотклик (спека 2026-09-18, разделы 5–7): контакт
+    // рекрутёра (в нижнем регистре — username в Telegram регистронезависим),
+    // хэш текста поста против репостов и кто одобрил строку.
+    for (const column of ['contact TEXT', 'content_hash TEXT', 'approved_by TEXT']) {
+      try {
+        this.db.exec(`ALTER TABLE applications ADD COLUMN ${column}`);
+      } catch {
+        // колонка уже есть
+      }
+    }
+    // Индексы — после ALTER TABLE: на старой базе колонок до него ещё нет.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS tg_cursors (
+        chat_id    TEXT PRIMARY KEY,
+        last_id    INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_contact ON applications(contact);
+      CREATE INDEX IF NOT EXISTS idx_hash ON applications(content_hash);
+    `);
   }
 
   insertPending(
     v: Vacancy, score: number, matched: string[], letter: string, letterMode: LetterMode,
+    specialty: string = BA_SPECIALTY_ID,
   ): boolean {
     if (this.has(v)) return false;
     this.db.prepare(`
       INSERT INTO applications
-        (source, source_id, vacancy_json, score, matched_json, letter, letter_mode, status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+        (source, source_id, vacancy_json, score, matched_json, letter, letter_mode, status, created_at,
+         specialty, contact, content_hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
     `).run(
       v.source, v.sourceId, JSON.stringify(v), score,
-      JSON.stringify(matched), letter, letterMode, Date.now(),
+      JSON.stringify(matched), letter, letterMode, Date.now(), specialty,
+      v.contact?.toLowerCase() ?? null, v.contentHash ?? null,
     );
     return true;
   }
@@ -101,15 +142,79 @@ export class Queue {
     return rows.map(this.toQueueRow);
   }
 
-  approve(id: number, letter?: string): void {
+  /**
+   * `by` — кто одобрил: человек в панели или автоотклик (спека 7.4: во
+   * вкладке «Отправлено» видно, что ушло без человеческого взгляда).
+   */
+  approve(id: number, letter?: string, by: 'human' | 'auto' = 'human'): void {
     const result = letter === undefined
       ? this.db.prepare(
-          "UPDATE applications SET status='approved', decided_at=? WHERE id=? AND status='pending'",
-        ).run(Date.now(), id)
+          "UPDATE applications SET status='approved', decided_at=?, approved_by=? WHERE id=? AND status='pending'",
+        ).run(Date.now(), by, id)
       : this.db.prepare(
-          "UPDATE applications SET status='approved', letter=?, decided_at=? WHERE id=? AND status='pending'",
-        ).run(letter, Date.now(), id);
+          "UPDATE applications SET status='approved', letter=?, decided_at=?, approved_by=? WHERE id=? AND status='pending'",
+        ).run(letter, Date.now(), by, id);
     this.requireTransitioned(id, 'pending', result.changes);
+  }
+
+  hasContentHash(hash: string): boolean {
+    return this.db.prepare('SELECT 1 AS found FROM applications WHERE content_hash = ? LIMIT 1').get(hash) !== undefined;
+  }
+
+  /**
+   * Последняя строка с этим контактом (спека 5.5): отправленная — по времени
+   * отправки, ждущая решения или отправки — по времени постановки. null —
+   * этому человеку мы ещё не писали и писать не собираемся.
+   */
+  lastContactAt(contact: string): { at: number; title: string; status: Status } | null {
+    const row = this.db.prepare(`
+      SELECT status, vacancy_json,
+             CASE WHEN status = 'sent' THEN sent_at ELSE created_at END AS at
+      FROM applications
+      WHERE contact = ? AND status IN ('sent', 'pending', 'approved')
+      ORDER BY at DESC LIMIT 1
+    `).get(contact.toLowerCase().replace(/^@/, '')) as unknown as
+      { status: string; vacancy_json: string; at: number } | undefined;
+    if (row === undefined) return null;
+    const title = (JSON.parse(row.vacancy_json) as { title: string }).title;
+    return { at: row.at, status: row.status as Status, title };
+  }
+
+  /**
+   * Когда этому контакту в последний раз ушло сообщение (спека 5.5). Отдельно
+   * от lastContactAt: та видит и саму ждущую строку, а правилу «раз в 7 дней»
+   * нужна именно последняя отправка.
+   */
+  lastSentTo(contact: string): { at: number; title: string } | null {
+    const row = this.db.prepare(`
+      SELECT sent_at AS at, vacancy_json FROM applications
+      WHERE contact = ? AND status = 'sent' ORDER BY sent_at DESC LIMIT 1
+    `).get(contact.toLowerCase().replace(/^@/, '')) as unknown as { at: number; vacancy_json: string } | undefined;
+    if (row === undefined) return null;
+    return { at: row.at, title: (JSON.parse(row.vacancy_json) as { title: string }).title };
+  }
+
+  /** Отправленное после момента — для вкладки «Отправлено». */
+  listSentSince(sinceMs: number): QueueRow[] {
+    const rows = this.db.prepare(
+      "SELECT * FROM applications WHERE status='sent' AND sent_at >= ? ORDER BY sent_at DESC",
+    ).all(sinceMs) as unknown as DbRow[];
+    return rows.map(this.toQueueRow);
+  }
+
+  /** Последний прочитанный id сообщения в чате Telegram (спека 4.5); 0 — чат ещё не читали. */
+  getTgCursor(chatId: string): number {
+    const row = this.db.prepare('SELECT last_id FROM tg_cursors WHERE chat_id = ?').get(chatId) as unknown as
+      { last_id: number } | undefined;
+    return row?.last_id ?? 0;
+  }
+
+  /** Курсор только растёт: прогон, прочитавший меньше, не откатывает прочитанное другим. */
+  setTgCursor(chatId: string, lastId: number): void {
+    this.db.prepare(`
+      INSERT INTO tg_cursors (chat_id, last_id, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(chat_id) DO UPDATE SET last_id = MAX(last_id, excluded.last_id), updated_at = excluded.updated_at
+    `).run(chatId, lastId, Date.now());
   }
 
   /**
@@ -304,6 +409,11 @@ export class Queue {
       letterMode: r.letter_mode as LetterMode,
       status: r.status as Status,
       error: r.error,
+      specialty: r.specialty ?? BA_SPECIALTY_ID,
+      contact: r.contact,
+      approvedBy: r.approved_by === 'auto' || r.approved_by === 'human' ? r.approved_by : null,
+      createdAt: r.created_at,
+      sentAt: r.sent_at,
     };
   };
 }

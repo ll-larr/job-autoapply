@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { scoreVacancy, DEFAULT_WEIGHTS } from '../src/core/scorer.js';
+import { scoreVacancy } from '../src/core/scorer.js';
+import { BA_SKILLS } from '../src/core/specialty-defaults.js';
+import type { Skill } from '../src/core/specialty.js';
 import { normalizeVacancy } from '../src/core/vacancy.js';
 
 function v(description: string, title = 'Бизнес-аналитик') {
@@ -52,7 +54,7 @@ describe('scoreVacancy', () => {
     // проходит через Math.min(100, total), а не просто совпадает с ним.
     const everyGroup = 'BPMN BRD LLM ROI Kafka UML REST SQL DWH';
     const r = scoreVacancy(v(everyGroup));
-    expect(r.matched).toHaveLength(Object.keys(DEFAULT_WEIGHTS).length);
+    expect(r.matched).toHaveLength(BA_SKILLS.length);
     expect(r.score).toBe(100);
   });
 
@@ -114,5 +116,34 @@ describe('scoreVacancy', () => {
       expect(scoreVacancy(v('Работаем по Definition of Ready')).matched)
         .toContain('requirements-docs');
     });
+  });
+});
+
+describe('scoreVacancy — любой профиль', () => {
+  const skills: Skill[] = [
+    { id: 'roadmap', name: 'Роадмап', synonyms: ['роадмап', 'roadmap'], weight: 30, core: true },
+    { id: 'metrics', name: 'Метрики', synonyms: ['метрик', 'retention'], weight: 10, core: false },
+  ];
+
+  it('скор нормируется на сумму весов профиля', () => {
+    // 30 из 40 → 30 × 113 / 40 = 84.75 → 85
+    expect(scoreVacancy(v('Ведём роадмап продукта'), skills).score).toBe(85);
+    expect(scoreVacancy(v('Роадмап, метрики, retention'), skills).score).toBe(100);
+  });
+
+  it('вес 0 выключает навык целиком — и из суммы, и из гейта ядра', () => {
+    const off: Skill[] = [{ ...skills[0]!, weight: 0 }, skills[1]!];
+    const r = scoreVacancy(v('Ведём роадмап и метрики'), off);
+    expect(r.matched).toEqual(['metrics']);
+    expect(r.score).toBe(100); // 10 из 10 → 113 → потолок
+    expect(r.hasCoreMatch).toBe(true); // ядер с весом > 0 не осталось — требовать нечего
+  });
+
+  it('сумма весов 0 — скор 0', () => {
+    expect(scoreVacancy(v('роадмап'), []).score).toBe(0);
+  });
+
+  it('ядро есть, но не совпало — hasCoreMatch false', () => {
+    expect(scoreVacancy(v('Считаем метрики'), skills).hasCoreMatch).toBe(false);
   });
 });

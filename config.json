@@ -38,6 +38,11 @@
     "careerist": {
       "minDelayMs": 3000,
       "maxDelayMs": 3000
+    },
+    "tg": {
+      "maxPerDay": 40,
+      "minDelayMs": 60000,
+      "maxDelayMs": 180000
     }
   },
   "maxConsecutiveFailures": 3,

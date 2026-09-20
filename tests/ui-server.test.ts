@@ -5,6 +5,8 @@ import { tmpdir, networkInterfaces } from 'node:os';
 import { startPanel, type PanelDeps } from '../src/ui/server.js';
 import { Queue } from '../src/core/queue.js';
 import { normalizeVacancy } from '../src/core/vacancy.js';
+import { seedSettings, validateSettings, type Settings } from '../src/core/settings.js';
+import { clearStop, isStopRequested } from '../src/core/sender.js';
 
 // Порт 0 = система выдаёт свободный. Фиксированный порт создавал гонку между
 // перезапусками панели в beforeEach: следующий тест мог не достучаться до
@@ -497,5 +499,226 @@ describe('панель — состояние прокси', () => {
   it('панель поднята не из cli — не знает и не пугает зря', async () => {
     // Так её поднимают тесты: настоящий поиск прокси тут не нужен.
     expect(await status(PORT)).toEqual({ usable: null });
+  });
+});
+
+describe('панель — настройки', () => {
+  let stored: Settings;
+  let settingsPanel: { port: number; close(): Promise<void> };
+  const suggestCalls: string[] = [];
+
+  beforeEach(async () => {
+    stored = seedSettings(undefined, null);
+    settingsPanel = await startPanel(q, 0, {
+      settings: {
+        get: () => stored,
+        save: async (raw) => {
+          const r = validateSettings(raw);
+          if (r.ok) stored = r.settings;
+          return r;
+        },
+        suggest: async (name) => {
+          suggestCalls.push(name);
+          return name === 'сбой'
+            ? { ok: false, error: 'VPN выключен' }
+            : { ok: true, suggestion: { titleWords: ['x'], skills: [{ name: 'A', synonyms: ['a'], weight: 10, core: true }] } };
+        },
+      },
+    });
+  });
+  afterEach(async () => { await settingsPanel.close(); });
+
+  const url = (p: string) => `http://127.0.0.1:${settingsPanel.port}${p}`;
+
+  it('GET /api/settings отдаёт настройки', async () => {
+    const body = await (await fetch(url('/api/settings'))).json() as Settings;
+    expect(body.specialties[0]!.name).toBe('Бизнес-аналитик');
+  });
+
+  it('POST /api/settings сохраняет правку веса', async () => {
+    const next = structuredClone(stored);
+    next.specialties[0]!.skills[0]!.weight = 30;
+    const res = await post(url('/api/settings'), next);
+    expect(res.status).toBe(200);
+    expect(stored.specialties[0]!.skills[0]!.weight).toBe(30);
+  });
+
+  it('плохие настройки — 400 с причиной, сохранённое не меняется', async () => {
+    const bad = structuredClone(stored);
+    bad.specialties[0]!.name = '';
+    const res = await post(url('/api/settings'), bad);
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toMatch(/название/);
+    expect(stored.specialties[0]!.name).toBe('Бизнес-аналитик');
+  });
+
+  it('POST /api/settings/suggest — предложение или 502 с причиной', async () => {
+    const ok = await post(url('/api/settings/suggest'), { name: 'Менеджер продукта', resumePdf: null });
+    expect(ok.status).toBe(200);
+    expect((await ok.json() as { suggestion: { titleWords: string[] } }).suggestion.titleWords).toEqual(['x']);
+    const fail = await post(url('/api/settings/suggest'), { name: 'сбой', resumePdf: null });
+    expect(fail.status).toBe(502);
+    expect((await fail.json() as { error: string }).error).toBe('VPN выключен');
+  });
+
+  it('suggest без названия — 400, модель не зовётся', async () => {
+    const before = suggestCalls.length;
+    const res = await post(url('/api/settings/suggest'), { name: '  ' });
+    expect(res.status).toBe(400);
+    expect(suggestCalls.length).toBe(before);
+  });
+});
+
+describe('панель без настроек', () => {
+  it('GET /api/settings — 409, а не падение', async () => {
+    const res = await fetch(`http://127.0.0.1:${PORT}/api/settings`);
+    expect(res.status).toBe(409);
+  });
+
+  it('Telegram-ручки без зависимости — 409', async () => {
+    expect((await fetch(`http://127.0.0.1:${PORT}/api/telegram/dialogs`)).status).toBe(409);
+    expect((await post(`http://127.0.0.1:${PORT}/api/telegram/resolve`, { ref: '@x' })).status).toBe(409);
+  });
+});
+
+describe('панель — Telegram', () => {
+  const CHAT = { id: '-1001', title: 'Работа в ИТ', username: 'workayte', kind: 'channel' as const };
+  let tgPanel: { port: number; close(): Promise<void> };
+  beforeEach(async () => {
+    tgPanel = await startPanel(q, 0, {
+      telegram: {
+        dialogs: async () => ({ ok: true, chats: [CHAT] }),
+        resolve: async (ref) => (ref === 'bad' ? { ok: false, error: 'не найден' } : { ok: true, chat: CHAT }),
+      },
+    });
+  });
+  afterEach(async () => { await tgPanel.close(); });
+  const url = (p: string) => `http://127.0.0.1:${tgPanel.port}${p}`;
+
+  it('dialogs и resolve отдаются; ошибка — 502 с причиной', async () => {
+    expect(await (await fetch(url('/api/telegram/dialogs'))).json()).toEqual({ chats: [CHAT] });
+    expect(await (await post(url('/api/telegram/resolve'), { ref: '@workayte' })).json()).toEqual({ chat: CHAT });
+    const bad = await post(url('/api/telegram/resolve'), { ref: 'bad' });
+    expect(bad.status).toBe(502);
+    expect((await bad.json() as { error: string }).error).toBe('не найден');
+  });
+
+  it('строка с контактом, которому уже писали, приходит с предупреждением; первая — без', async () => {
+    function tg(id: string, title: string) {
+      return normalizeVacancy({
+        source: 'tg', sourceId: `-1001:${id}`, title, company: '', url: `https://t.me/workayte/${id}`,
+        description: 'd', geo: '', postedAt: '2026-09-19T00:00:00Z', contact: 'hr_a', channel: 'Работа в ИТ',
+      });
+    }
+    q.insertPending(tg('1', 'Первая'), 60, [], 'п', 'dm');
+    const first = q.listByStatus('pending').find((r) => r.sourceId === '-1001:1')!;
+    q.approve(first.id);
+    q.markSent(first.id);
+    q.insertPending(tg('2', 'Вторая'), 60, [], 'п', 'dm');
+
+    const rows = await (await fetch(url('/api/pending'))).json() as Array<{ sourceId: string; contactWarning: string | null }>;
+    const second = rows.find((r) => r.sourceId === '-1001:2')!;
+    expect(second.contactWarning).toMatch(/@hr_a/);
+    expect(second.contactWarning).toMatch(/«Первая»/);
+    // Строки без контакта (hh) — без предупреждения.
+    expect(rows.find((r) => r.sourceId === '1')!.contactWarning).toBeNull();
+  });
+});
+
+describe('панель — автоотклик (спека 7.2–7.4)', () => {
+  const CONFIG = {
+    minScore: 40, letterFullThreshold: 75, letterModels: ['m'],
+    throttle: { hh: { minDelayMs: 0, maxDelayMs: 0 } },
+  };
+
+  function spyAdapter(hold?: Promise<void>) {
+    const applied: string[] = [];
+    return {
+      applied,
+      adapter: {
+        name: 'hh',
+        async search() { return []; },
+        async apply(v: { sourceId: string }) {
+          applied.push(v.sourceId);
+          if (hold !== undefined) await hold;
+          return { status: 'sent' as const };
+        },
+      },
+    };
+  }
+
+  function approvedRow(sourceId: string): void {
+    q.insertPending(normalizeVacancy({
+      source: 'hh', sourceId, title: 'Бизнес-аналитик', company: 'C', url: 'u',
+      description: 'd', geo: 'Москва', postedAt: '2026-09-19T00:00:00Z',
+    }), 60, [], 'письмо', 'full');
+    const row = q.listByStatus('pending').find((r) => r.sourceId === sourceId)!;
+    q.approve(row.id, undefined, 'auto');
+  }
+
+  it('поиск одобрил сам — отправка стартует без кнопки', async () => {
+    const spy = spyAdapter();
+    const auto = await startPanel(q, 0, {
+      adapters: [spy.adapter], config: CONFIG,
+      startSearch: async () => { approvedRow('auto-1'); return { report: {}, emptyLetters: 0, autoApproved: 1 }; },
+    });
+    await post(`http://127.0.0.1:${auto.port}/api/search/start`, { limit: 5 });
+    await expect.poll(() => spy.applied).toEqual(['auto-1']);
+    await expect.poll(async () => (await (await fetch(`http://127.0.0.1:${auto.port}/api/send/status`)).json() as { running: boolean }).running).toBe(false);
+    await auto.close();
+  });
+
+  it('поиск ничего не одобрил — отправка не стартует', async () => {
+    const spy = spyAdapter();
+    const auto = await startPanel(q, 0, {
+      adapters: [spy.adapter], config: CONFIG,
+      startSearch: async () => { approvedRow('manual-1'); return { report: {}, emptyLetters: 0, autoApproved: 0 }; },
+    });
+    await post(`http://127.0.0.1:${auto.port}/api/search/start`, { limit: 5 });
+    await expect.poll(async () => (await (await fetch(`http://127.0.0.1:${auto.port}/api/search/status`)).json() as { running: boolean }).running).toBe(false);
+    expect(spy.applied).toEqual([]);
+    await auto.close();
+  });
+
+  it('выключение тумблера посреди автоматической отправки останавливает её', async () => {
+    clearStop();
+    let release = (): void => {};
+    const hold = new Promise<void>((r) => { release = r; });
+    const spy = spyAdapter(hold);
+    let stored = seedSettings(undefined, null);
+    stored.autoApply = { enabled: true, minScore: null };
+    approvedRow('auto-2');
+    approvedRow('auto-3');
+
+    const auto = await startPanel(q, 0, {
+      adapters: [spy.adapter], config: CONFIG,
+      startSearch: async () => ({ report: {}, emptyLetters: 0, autoApproved: 2 }),
+      settings: {
+        get: () => stored,
+        save: async (raw) => { const r = validateSettings(raw); if (r.ok) stored = r.settings; return r; },
+        suggest: async () => ({ ok: false, error: 'не нужен' }),
+      },
+    });
+    await post(`http://127.0.0.1:${auto.port}/api/search/start`, { limit: 5 });
+    await expect.poll(() => spy.applied.length).toBe(1);
+
+    const off = structuredClone(stored);
+    off.autoApply = { enabled: false, minScore: null };
+    await post(`http://127.0.0.1:${auto.port}/api/settings`, off);
+    release();
+    await expect.poll(async () => (await (await fetch(`http://127.0.0.1:${auto.port}/api/send/status`)).json() as { running: boolean }).running).toBe(false);
+    // Вторая заявка не подавалась: прогон остановился по флагу.
+    expect(spy.applied).toEqual(['auto-2']);
+    expect(isStopRequested()).toBe(true);
+    clearStop();
+    await auto.close();
+  });
+
+  it('GET /api/sent — отправленное с пометкой, кто одобрил', async () => {
+    approvedRow('sent-1');
+    const row = q.listByStatus('approved')[0]!;
+    q.markSent(row.id);
+    const rows = await (await fetch(`http://127.0.0.1:${PORT}/api/sent`)).json() as Array<{ sourceId: string; approvedBy: string }>;
+    expect(rows.map((r) => [r.sourceId, r.approvedBy])).toEqual([['sent-1', 'auto']]);
   });
 });

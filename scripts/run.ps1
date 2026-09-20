@@ -63,7 +63,27 @@ if ($stale) {
 # --- 4. Поиск -----------------------------------------------------------
 if (-not $SkipSearch) {
     Step "Поиск: «$Query», не больше $Limit вакансий"
-    Ok "откроется браузер, страницы только читаются, ничего не отправляется"
+    # Автоотклик меняет смысл поиска: он становится отправкой (спека
+    # 2026-09-18, 7.4). Молчать об этом нельзя — человек запускает лаунчер,
+    # ожидая, что ничего не уйдёт без его одобрения.
+    $settingsPath = Join-Path $PSScriptRoot '..\data\settings.json'
+    $autoApply = $false
+    if (Test-Path $settingsPath) {
+        try {
+            $s = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($s.autoApply -and $s.autoApply.enabled) { $autoApply = $true }
+        } catch {
+            Bad "data/settings.json не читается — не могу проверить, включён ли автоотклик."
+        }
+    }
+    if ($autoApply) {
+        Write-Host ''
+        Write-Host '  АВТООТКЛИК ВКЛЮЧЁН — поиск сам одобрит подходящее и отправит отклики.' -ForegroundColor White -BackgroundColor DarkRed
+        Write-Host '  Выключить: панель, вкладка «Настройки».' -ForegroundColor White -BackgroundColor DarkRed
+        Write-Host ''
+    } else {
+        Ok "откроется браузер, страницы только читаются, ничего не отправляется"
+    }
     npm run search -- $Query --limit $Limit
     if ($LASTEXITCODE -ne 0) {
         Bad "поиск завершился с ошибкой. Панель всё равно открою: в очереди может лежать прошлое."

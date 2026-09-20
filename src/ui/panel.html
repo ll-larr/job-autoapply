@@ -51,6 +51,29 @@
     textarea { width: 100%; min-height: 260px; font: 13px/1.5 ui-monospace, monospace; }
     button { padding: 6px 14px; cursor: pointer; }
     .empty { padding: 40px 20px; color: #666; }
+
+    .spec { background: #fff; margin: 16px 20px; padding: 16px; border: 1px solid #ddd; border-radius: 8px; }
+    .spec .row { display: grid; grid-template-columns: 170px 1fr; gap: 8px; align-items: start; margin-bottom: 8px; }
+    .spec .row > label { font-size: 13px; color: #555; padding-top: 5px; }
+    .spec input[type=text], .spec input[type=number] {
+      font: inherit; font-size: 14px; padding: 4px 6px; border: 1px solid #ccc; border-radius: 4px;
+    }
+    .spec input[data-f="titleWords"], .spec input[data-f="resumePdf"] { width: 100%; box-sizing: border-box; }
+    .spec input[data-f="experienceYears"] { width: 72px; justify-self: start; }
+    .spec textarea { min-height: 60px; font: 13px/1.4 system-ui, sans-serif; }
+    .skills { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 6px; }
+    .skills th { text-align: left; font-weight: 500; color: #666; padding: 4px; }
+    .skills td { padding: 3px 4px; vertical-align: top; }
+    .skills input[data-k="synonyms"] { width: 100%; box-sizing: border-box; }
+    .skills input[data-k="weight"] { width: 64px; }
+    .settings-block { background: #fff; margin: 16px 20px; padding: 16px; border: 1px solid #ddd; border-radius: 8px; }
+    .settings-block textarea { min-height: 110px; margin-top: 6px; font: 13px/1.4 system-ui, sans-serif; }
+    .contact-warn { margin: 6px 0; padding: 6px 10px; background: #fff3cd; border: 1px solid #e0c068;
+                    border-radius: 4px; font-size: 13px; color: #5a4500; }
+    .tg-chat { display: flex; gap: 8px; align-items: center; font-size: 14px; margin: 4px 0; }
+    #tgPicker label { display: block; font-size: 14px; margin: 2px 0; }
+    #autoBanner { margin: 8px 20px; padding: 10px 12px; background: #9b1c1c; color: #fff;
+                  border-radius: 4px; font-size: 14px; font-weight: 600; }
     [hidden] { display: none !important; }
   </style>
 </head>
@@ -66,11 +89,14 @@
     </div>
     <div id="proxyWarn" style="display:none; margin:8px 20px; padding:10px 12px;
          background:#fff3cd; border:1px solid #e0c068; border-radius:4px; font-size:13px; color:#5a4500;"></div>
+    <div id="autoBanner" hidden>АВТООТКЛИК ВКЛЮЧЁН — поиск сам одобряет подходящее и отправляет отклики</div>
     <div id="searchNote"></div>
     <nav role="tablist">
       <button class="tab" role="tab" id="tab-pending"  aria-selected="true"  aria-controls="pane-pending">В ожидании<span class="n" id="n-pending">0</span></button>
       <button class="tab" role="tab" id="tab-approved" aria-selected="false" aria-controls="pane-approved">Одобрено<span class="n" id="n-approved">0</span></button>
       <button class="tab" role="tab" id="tab-skipped"  aria-selected="false" aria-controls="pane-skipped">Отменённые<span class="n" id="n-skipped">0</span></button>
+      <button class="tab" role="tab" id="tab-sent"     aria-selected="false" aria-controls="pane-sent">Отправлено<span class="n" id="n-sent">0</span></button>
+      <button class="tab" role="tab" id="tab-settings" aria-selected="false" aria-controls="pane-settings">Настройки</button>
     </nav>
   </header>
 
@@ -100,8 +126,55 @@
     <div id="skippedList"></div>
   </section>
 
+  <section id="pane-sent" role="tabpanel" aria-labelledby="tab-sent" hidden>
+    <div class="actions">
+      <span class="hint">Что ушло за последние 30 дней. «Авто» — одобрено автооткликом, без твоего взгляда.</span>
+    </div>
+    <div id="sentList"></div>
+  </section>
+
+  <section id="pane-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+    <div class="actions">
+      <button id="settingsSave">Сохранить</button>
+      <button id="addSpec">Добавить специальность</button>
+      <span class="hint" id="settingsNote">Правка действует со следующего поиска.</span>
+    </div>
+    <div id="specList"></div>
+    <div class="settings-block">
+      <label for="stopWords"><strong>Стоп-слова</strong>
+        <span class="hint">по одному в строке. Отсекают вакансию, если слово в заголовке или 2+ раза в описании.</span></label>
+      <textarea id="stopWords" rows="5"></textarea>
+    </div>
+    <div class="settings-block" id="tgBlock">
+      <strong>Telegram</strong>
+      <span class="hint">каналы и группы, где искать вакансии. Нужен VPN и вход: npm run tg:login.</span>
+      <div id="tgChats"></div>
+      <div class="actions" style="padding-left:0; flex-wrap:wrap;">
+        <input type="text" id="tgRef" placeholder="@канал или ссылка t.me" size="28">
+        <button id="tgAdd">Добавить</button>
+        <button id="tgPick">Выбрать из моих чатов</button>
+        <label class="hint">Глубина первого чтения, дней
+          <input type="number" id="tgDays" min="1" max="90" step="1" style="width:64px;"></label>
+      </div>
+      <div id="tgPicker"></div>
+      <span class="hint" id="tgNote"></span>
+    </div>
+    <div class="settings-block" id="autoBlock">
+      <strong>Автоотклик</strong>
+      <span class="hint">поиск сам одобряет подходящее и отправляет — без твоего просмотра. По умолчанию выключен.</span>
+      <div style="margin-top:8px;">
+        <label><input type="checkbox" id="autoApply"> включить автоотклик</label>
+      </div>
+      <div style="margin-top:8px;">
+        <label class="hint">Отправлять при скоре не ниже
+          <input type="number" id="autoMinScore" min="0" max="100" step="1" style="width:72px;">
+          (пусто — общий порог minScore из config.json)</label>
+      </div>
+    </div>
+  </section>
+
 <script>
-const TABS = ['pending', 'approved', 'skipped'];
+const TABS = ['pending', 'approved', 'skipped', 'sent', 'settings'];
 
 function showTab(name) {
   for (const t of TABS) {
@@ -132,14 +205,16 @@ async function post(url, body) {
 }
 
 async function load() {
-  const [pendingRows, approvedRows, skippedRows] = await Promise.all([
+  const [pendingRows, approvedRows, skippedRows, sentRows] = await Promise.all([
     fetchJson('/api/pending'),
     fetchJson('/api/approved'),
     fetchJson('/api/skipped'),
+    fetchJson('/api/sent'),
   ]);
   renderPending(pendingRows);
   renderApproved(approvedRows);
   renderSkipped(skippedRows);
+  renderSent(Array.isArray(sentRows) ? sentRows : []);
 
   // Кнопка «Дописать письма» имеет смысл, только когда есть что дописывать.
   // Считаем по обеим вкладкам сразу: пустое письмо мешает и в ожидании, и в
@@ -151,6 +226,51 @@ async function load() {
 
 function setCount(name, n) {
   document.getElementById('n-' + name).textContent = n;
+}
+
+/**
+ * Строка Telegram в карточке: кому уйдёт сообщение, из какого чата пост, и
+ * предупреждение, если этому рекрутёру уже писали (спека 5.2, 5.5). У вакансий
+ * площадок контакта нет — строки нет.
+ */
+function tgMeta(r) {
+  if (!r.contact) return '';
+  const warn = r.contactWarning
+    ? `<div class="contact-warn">${esc(r.contactWarning)}</div>`
+    : '';
+  return `<div class="meta">Telegram: @${esc(r.contact)}${r.vacancy.channel ? ' · ' + esc(r.vacancy.channel) : ''}
+    · справа — сообщение рекрутёру, к нему приложится PDF резюме</div>${warn}`;
+}
+
+/**
+ * Вкладка «Отправлено» (спека 7.4): что ушло, кому и кто это одобрил. Нужна
+ * именно из-за автоотклика: отправленное без человеческого взгляда он должен
+ * иметь возможность прочитать хотя бы потом.
+ */
+function renderSent(rows) {
+  setCount('sent', rows.length);
+  const list = document.getElementById('sentList');
+  list.innerHTML = '';
+  if (rows.length === 0) {
+    list.innerHTML = '<div class="empty">За последние 30 дней ничего не отправлено.</div>';
+    return;
+  }
+  for (const r of rows) {
+    const el = document.createElement('div');
+    el.className = 'card';
+    const when = r.sentAt ? new Date(r.sentAt).toLocaleString('ru-RU') : '';
+    const who = r.approvedBy === 'auto' ? 'АВТО' : 'одобрено вручную';
+    el.innerHTML = `
+      <div>
+        <div><a href="${r.vacancy.url}" target="_blank" rel="noopener">${esc(r.vacancy.title)}</a></div>
+        <div class="meta">${esc(when)} · ${esc(r.source)} · ${who}${r.contact ? ' · @' + esc(r.contact) : ''}</div>
+        <div class="desc"></div>
+      </div>
+      <div><div class="desc" style="max-height:none;"></div></div>`;
+    el.querySelectorAll('.desc')[0].textContent = r.vacancy.description;
+    el.querySelectorAll('.desc')[1].textContent = r.letter;
+    list.appendChild(el);
+  }
 }
 
 function renderPending(rows) {
@@ -174,6 +294,7 @@ function renderPending(rows) {
         <div class="meta">${r.vacancy.company} · ${r.vacancy.geo} · ${r.source}</div>
         <div class="meta">скор <span class="score">${r.score}</span> ·
              ${r.matched.join(', ') || 'без совпадений'} · режим ${r.letterMode}</div>
+        ${tgMeta(r)}
         <div class="desc"></div>
       </div>
       <div>
@@ -220,6 +341,7 @@ function renderApproved(rows) {
         <div><a href="${r.vacancy.url}" target="_blank" rel="noopener">${r.vacancy.title}</a></div>
         <div class="meta">${r.vacancy.company} · ${r.vacancy.geo} · ${r.source}</div>
         <div class="meta">скор <span class="score">${r.score}</span> · одобрено, ждёт отправки</div>
+        ${tgMeta(r)}
         <div class="desc"></div>
       </div>
       <div>
@@ -370,9 +492,13 @@ async function pollSearch() {
       if (r.belowThreshold) parts.push(`ниже порога ${r.belowThreshold}`);
       if (r.noCoreMatch) parts.push(`не по профилю ${r.noCoreMatch}`);
       const rejected = (r.rejectedExperience ?? 0) + (r.rejectedGrade ?? 0)
-        + (r.rejectedPlatform ?? 0) + (r.rejectedNotAnalyst ?? 0)
-        + (r.rejectedInternship ?? 0) + (r.rejectedJuniorOnly ?? 0);
+        + (r.rejectedStopword ?? 0) + (r.rejectedTitle ?? 0) + (r.rejectedInternship ?? 0);
       if (rejected) parts.push(`отсеяно фильтрами ${rejected}`);
+      const hits = Object.entries(r.stopwordHits ?? {}).map(([w, n]) => `${w} ${n}`).join(', ');
+      if (hits) parts.push(`стоп-слова: ${hits}`);
+      if (r.tgNoContact) parts.push(`tg без контакта ${r.tgNoContact}`);
+      if (r.textDuplicates) parts.push(`репостов ${r.textDuplicates}`);
+      for (const c of r.tgSkippedChats ?? []) parts.push(`«${c.title}»: ${c.why}`);
       if (st.result.emptyLetters) parts.push(`БЕЗ ПИСЬМА ${st.result.emptyLetters}`);
       searchNote.textContent = parts.join(' · ');
     }
@@ -512,7 +638,12 @@ function buildSendResultText(r) {
   const unthrottled = (r.unthrottledSources && r.unthrottledSources.length)
     ? `, ПРОПУЩЕНО БЕЗ ОТПРАВКИ (нет записи в config.throttle): ${r.unthrottledSources.join(', ')}`
     : '';
-  return `Отправлено ${r.sent}, не удалось ${r.failed}${empty}${halted}${unthrottled}.`;
+  // Telegram: «раз в 7 дней одному контакту» и «текст ушёл, резюме нет».
+  const deferred = (r.deferredContacts && r.deferredContacts.length)
+    ? `, отложено ${r.deferredContacts.length} (этим контактам писали меньше 7 дней назад)`
+    : '';
+  const warnings = (r.warnings && r.warnings.length) ? `. ВНИМАНИЕ: ${r.warnings.join('; ')}` : '';
+  return `Отправлено ${r.sent}, не удалось ${r.failed}${empty}${halted}${unthrottled}${deferred}${warnings}.`;
 }
 
 function resetSendButton(approved) {
@@ -660,6 +791,252 @@ fetchJson('/api/send/status').then((st) => {
     sendHint.textContent = 'Панель запущена без адаптеров — отправляй через npm run send.';
   }
 });
+
+// ============================================================================
+// Настройки (спека 3.8). Форма — это просто отражение data/settings.json:
+// рисуется из GET /api/settings, собирается обратно целиком и уходит одним
+// POST. Проверку делает сервер; его причина показывается как есть.
+// ============================================================================
+
+let settingsLoaded = null;
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+function lines(text) {
+  return text.split('\n').map((s) => s.trim()).filter((s) => s !== '');
+}
+
+function skillRow(k) {
+  return `<tr class="skill" data-id="${esc(k.id ?? '')}">
+    <td><input type="text" data-k="name" value="${esc(k.name)}"></td>
+    <td><input type="text" data-k="synonyms" value="${esc(k.synonyms.join(', '))}"></td>
+    <td><input type="number" data-k="weight" min="0" max="100" step="1" value="${k.weight}"></td>
+    <td><input type="checkbox" data-k="core" ${k.core ? 'checked' : ''}></td>
+    <td><button class="del-skill" title="Удалить навык">×</button></td>
+  </tr>`;
+}
+
+function specCard(s) {
+  const el = document.createElement('div');
+  el.className = 'spec';
+  el.dataset.id = s.id ?? '';
+  el.dataset.legacy = String(s.legacyLetters === true);
+  el.innerHTML = `
+    <div class="row"><label>Название</label>
+      <div><input type="text" data-f="name" value="${esc(s.name)}" size="32">
+        <label><input type="checkbox" data-f="enabled" ${s.enabled ? 'checked' : ''}> искать</label>
+        <button class="del-spec">Удалить специальность</button></div></div>
+    <div class="row"><label>Фразы поиска<br><span class="hint">по одной в строке</span></label>
+      <textarea data-f="queries">${esc(s.queries.join('\n'))}</textarea></div>
+    <div class="row"><label>Слова заголовка<br><span class="hint">через запятую</span></label>
+      <input type="text" data-f="titleWords" value="${esc(s.titleWords.join(', '))}"></div>
+    <div class="row"><label>Мой опыт, лет</label>
+      <input type="number" data-f="experienceYears" min="0" max="50" step="1" value="${s.experienceYears}"></div>
+    <div class="row"><label>Резюме (PDF)<br><span class="hint">полный путь к файлу</span></label>
+      <input type="text" data-f="resumePdf" value="${esc(s.resumePdf ?? '')}"></div>
+    <div class="row"><label>Навыки<br><span class="hint">синонимы через запятую; вес 0–100; «ядро» — без него вакансия отсекается</span></label>
+      <div>
+        <table class="skills"><thead><tr><th>Навык</th><th>Синонимы</th><th>Вес</th><th>Ядро</th><th></th></tr></thead>
+          <tbody>${s.skills.map(skillRow).join('')}</tbody></table>
+        <button class="add-skill">Добавить навык</button>
+        <button class="suggest">Предложить</button>
+        <span class="hint suggest-note"></span>
+      </div></div>`;
+
+  el.querySelector('.add-skill').onclick = () => {
+    el.querySelector('tbody').insertAdjacentHTML('beforeend', skillRow({ name: '', synonyms: [], weight: 10, core: false }));
+  };
+  el.querySelector('.del-spec').onclick = () => {
+    if (confirm('Удалить специальность «' + el.querySelector('[data-f="name"]').value + '»? Сохранение — отдельной кнопкой.')) el.remove();
+  };
+  el.addEventListener('click', (e) => {
+    if (e.target.classList.contains('del-skill')) e.target.closest('tr').remove();
+  });
+  el.querySelector('.suggest').onclick = async () => {
+    const note = el.querySelector('.suggest-note');
+    note.textContent = 'Модель думает…';
+    const res = await post('/api/settings/suggest', {
+      name: el.querySelector('[data-f="name"]').value,
+      resumePdf: el.querySelector('[data-f="resumePdf"]').value,
+    });
+    const body = await res.json();
+    if (!res.ok) { note.textContent = 'Не вышло: ' + body.error; return; }
+    el.querySelector('[data-f="titleWords"]').value = body.suggestion.titleWords.join(', ');
+    el.querySelector('tbody').innerHTML = body.suggestion.skills.map(skillRow).join('');
+    note.textContent = 'Заполнено, но не сохранено — поправь и нажми «Сохранить».';
+  };
+  return el;
+}
+
+function renderSettings(s) {
+  settingsLoaded = s;
+  const list = document.getElementById('specList');
+  list.innerHTML = '';
+  for (const spec of s.specialties) list.appendChild(specCard(spec));
+  document.getElementById('stopWords').value = s.stopWords.join('\n');
+  const auto = s.autoApply ?? { enabled: false, minScore: null };
+  document.getElementById('autoApply').checked = auto.enabled;
+  document.getElementById('autoMinScore').value = auto.minScore === null ? '' : auto.minScore;
+  document.getElementById('autoBanner').hidden = !auto.enabled;
+  const tg = s.telegram ?? { chats: [], firstReadDays: 14 };
+  document.getElementById('tgChats').innerHTML = '';
+  for (const c of tg.chats) addChatRow(c);
+  document.getElementById('tgDays').value = tg.firstReadDays;
+}
+
+// ----------------------------------------------------------------------------
+// Telegram: чаты, где искать (спека 4.4). Строка чата несёт всё, что нужно
+// сохранить, в data-*; чекбокс — «искать здесь или нет».
+// ----------------------------------------------------------------------------
+
+function addChatRow(c) {
+  const box = document.getElementById('tgChats');
+  if (box.querySelector(`[data-chat-id="${CSS.escape(c.id)}"]`)) return;
+  const row = document.createElement('div');
+  row.className = 'tg-chat';
+  row.dataset.chatId = c.id;
+  row.dataset.title = c.title;
+  row.dataset.username = c.username ?? '';
+  row.dataset.kind = c.kind;
+  const who = c.username ? ` (@${esc(c.username)})` : ' (закрытый)';
+  row.innerHTML = `<label><input type="checkbox" ${c.enabled === false ? '' : 'checked'}>
+    ${esc(c.title)}${who}, ${c.kind === 'channel' ? 'канал' : 'группа'}</label>
+    <button class="del-chat" title="Убрать чат">×</button>`;
+  row.querySelector('.del-chat').onclick = () => row.remove();
+  box.appendChild(row);
+}
+
+function collectChats() {
+  return [...document.querySelectorAll('#tgChats .tg-chat')].map((row) => ({
+    id: row.dataset.chatId,
+    title: row.dataset.title,
+    username: row.dataset.username || null,
+    kind: row.dataset.kind,
+    enabled: row.querySelector('input[type=checkbox]').checked,
+  }));
+}
+
+document.getElementById('tgAdd').onclick = async () => {
+  const note = document.getElementById('tgNote');
+  const ref = document.getElementById('tgRef').value.trim();
+  if (ref === '') { note.textContent = 'Впиши @имя канала или ссылку t.me.'; return; }
+  note.textContent = 'Ищу чат…';
+  const res = await post('/api/telegram/resolve', { ref });
+  const body = await res.json();
+  if (!res.ok) { note.textContent = 'Не вышло: ' + body.error; return; }
+  addChatRow({ ...body.chat, enabled: true });
+  document.getElementById('tgRef').value = '';
+  note.textContent = 'Добавлен. Сохранение — кнопкой «Сохранить».';
+};
+
+document.getElementById('tgPick').onclick = async () => {
+  const note = document.getElementById('tgNote');
+  const picker = document.getElementById('tgPicker');
+  note.textContent = 'Читаю список чатов…';
+  const res = await fetch('/api/telegram/dialogs');
+  const body = await res.json();
+  if (!res.ok) { note.textContent = 'Не вышло: ' + body.error; return; }
+  note.textContent = '';
+  const have = new Set(collectChats().map((c) => c.id));
+  const fresh = body.chats.filter((c) => !have.has(c.id));
+  if (fresh.length === 0) { picker.innerHTML = '<span class="hint">Все твои каналы и группы уже в списке.</span>'; return; }
+  picker.innerHTML = fresh.map((c, i) => `<label><input type="checkbox" data-i="${i}">
+    ${esc(c.title)}${c.username ? ` (@${esc(c.username)})` : ''}, ${c.kind === 'channel' ? 'канал' : 'группа'}</label>`).join('')
+    + '<button id="tgPickAdd">Добавить отмеченные</button>';
+  document.getElementById('tgPickAdd').onclick = () => {
+    for (const box of picker.querySelectorAll('input[type=checkbox]:checked')) {
+      addChatRow({ ...fresh[Number(box.dataset.i)], enabled: true });
+    }
+    picker.innerHTML = '';
+    note.textContent = 'Добавлены. Сохранение — кнопкой «Сохранить».';
+  };
+};
+
+function collectSettings() {
+  const specialties = [...document.querySelectorAll('#specList .spec')].map((el) => {
+    const f = (name) => el.querySelector(`[data-f="${name}"]`);
+    return {
+      id: el.dataset.id || undefined,
+      name: f('name').value,
+      enabled: f('enabled').checked,
+      queries: lines(f('queries').value),
+      titleWords: f('titleWords').value.split(',').map((x) => x.trim()).filter(Boolean),
+      experienceYears: Number(f('experienceYears').value),
+      resumePdf: f('resumePdf').value.trim() || null,
+      legacyLetters: el.dataset.legacy === 'true',
+      skills: [...el.querySelectorAll('.skill')].map((tr) => ({
+        id: tr.dataset.id || undefined,
+        name: tr.querySelector('[data-k="name"]').value,
+        synonyms: tr.querySelector('[data-k="synonyms"]').value.split(',').map((x) => x.trim()).filter(Boolean),
+        weight: Number(tr.querySelector('[data-k="weight"]').value),
+        core: tr.querySelector('[data-k="core"]').checked,
+      })),
+    };
+  });
+  return {
+    version: 1,
+    specialties,
+    stopWords: lines(document.getElementById('stopWords').value),
+    telegram: { chats: collectChats(), firstReadDays: Number(document.getElementById('tgDays').value) },
+    autoApply: {
+      enabled: document.getElementById('autoApply').checked,
+      minScore: document.getElementById('autoMinScore').value.trim() === ''
+        ? null
+        : Number(document.getElementById('autoMinScore').value),
+    },
+  };
+}
+
+async function loadSettings() {
+  const note = document.getElementById('settingsNote');
+  const res = await fetch('/api/settings');
+  const body = await res.json();
+  if (!res.ok) { note.textContent = body.error; return; }
+  renderSettings(body);
+}
+
+document.getElementById('addSpec').onclick = () => {
+  document.getElementById('specList').appendChild(specCard({
+    name: '', enabled: true, queries: [], titleWords: [], skills: [], experienceYears: 1, resumePdf: null,
+  }));
+};
+
+/**
+ * Включение автоотклика — через подтверждение (спека 7.1): после него отклики
+ * уходят без просмотра человеком, а отправленное не отозвать. Выключение
+ * подтверждения не требует.
+ */
+document.getElementById('autoApply').onchange = (e) => {
+  if (!e.target.checked) return;
+  const ok = confirm(
+    'Включить автоотклик?\n\n'
+    + 'После сохранения поиск будет сам одобрять подходящее и отправлять отклики — без твоего просмотра.\n\n'
+    + 'НЕ уйдёт автоматически (останется на ручной просмотр):\n'
+    + '• письмо не сгенерировалось (например, выключен VPN);\n'
+    + '• письмо не прошло проверку на выдуманные факты;\n'
+    + '• скор ниже порога автоотклика;\n'
+    + '• контакту в Telegram писали за последние 7 дней.\n\n'
+    + 'Продолжают действовать: лимиты и паузы площадок (Telegram — 40 в сутки, 1–3 минуты между сообщениями), '
+    + 'остановки при капче hh и ограничении Telegram, кнопка «Стоп».\n\n'
+    + 'Риски: неудачную фразу письма ты увидишь только после отправки; ложное срабатывание фильтров '
+    + 'станет настоящим откликом; жалобы «спам» в Telegram ограничивают аккаунт.',
+  );
+  if (!ok) e.target.checked = false;
+};
+
+document.getElementById('settingsSave').onclick = async () => {
+  const note = document.getElementById('settingsNote');
+  note.textContent = 'Сохраняю…';
+  const res = await post('/api/settings', collectSettings());
+  const body = await res.json();
+  if (!res.ok) { note.textContent = 'Не сохранено: ' + body.error; return; }
+  renderSettings(body.settings);
+  note.textContent = 'Сохранено. Действует со следующего поиска.';
+};
+
+loadSettings();
 </script>
 </body>
 </html>

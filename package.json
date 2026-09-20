@@ -19,7 +19,8 @@
     "go": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1",
     "panel:go": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/panel.ps1",
     "login": "tsx scripts/login.ts",
-    "letters": "tsx src/cli.ts letters"
+    "letters": "tsx src/cli.ts letters",
+    "tg:login": "tsx scripts/tg-login.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
@@ -29,6 +30,8 @@
   },
   "dependencies": {
     "playwright": "^1.56.0",
-    "undici": "^8.10.2"
+    "telegram": "^2.26.22",
+    "undici": "^8.10.2",
+    "unpdf": "^1.8.1"
   }
 }

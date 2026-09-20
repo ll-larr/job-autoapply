@@ -37,6 +37,33 @@ describe('pickTemplate', () => {
   });
 });
 
+describe('buildPrompt — снимок промпта писем', () => {
+  // Снимок снят 2026-09-19 ДО выноса общих правил в COMMON_WRITING_RULES
+  // (core/dm.ts берёт их для сообщений рекрутёру). Промпт писем не должен
+  // измениться ни на символ — ни в hybrid, ни в full.
+  it('hybrid и full — без изменений', () => {
+    for (const mode of ['hybrid', 'full'] as const) {
+      const p = buildPrompt({ vacancy: mk(), matched: ['sql'], mode, resume: RESUME, template: 'СКЕЛЕТ {{HOOK}} {{FIT}}' });
+      expect(p.messages[0].content).toMatchSnapshot(mode);
+    }
+  });
+});
+
+describe('buildPrompt — специальность', () => {
+  it('без role — прежняя первая строка про бизнес-аналитика', () => {
+    const p = buildPrompt({ vacancy: mk(), matched: [], mode: 'full', resume: RESUME, template: '' });
+    expect(p.messages[0].content).toMatch(/^Ты помогаешь кандидату откликаться на вакансии бизнес-аналитика\./);
+  });
+
+  it('с role — специальность в инструкции, и в hybrid, и в full', () => {
+    for (const mode of ['full', 'hybrid'] as const) {
+      const p = buildPrompt({ vacancy: mk(), matched: [], mode, resume: RESUME, template: 'С', role: 'Менеджер продукта' });
+      expect(p.messages[0].content).toContain('по специальности «Менеджер продукта»');
+      expect(p.messages[0].content).not.toContain('вакансии бизнес-аналитика.');
+    }
+  });
+});
+
 describe('buildPrompt — порядок сообщений для OpenRouter', () => {
   it('стабильный блок (инструкция + резюме) идёт первым, как system-сообщение', () => {
     const p = buildPrompt({

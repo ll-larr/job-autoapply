@@ -185,6 +185,44 @@ export function probeHttpProxy(address: ProxyAddress, timeoutMs = 5000): Promise
   });
 }
 
+/**
+ * Годится ли адрес как SOCKS5-прокси до Telegram (спека 2026-09-18, 4.1).
+ *
+ * Серверы Telegram с этой машины напрямую не отвечают, а GramJS умеет только
+ * SOCKS. У VPN-клиента рядом слушают SOCKS- и HTTP-порт (а у v2RayTun один
+ * порт смешанный), поэтому проверка — настоящее рукопожатие: приветствие без
+ * пароля и CONNECT к дата-центру Telegram DC2. Ответ «успех» на CONNECT
+ * значит, что прокси живой и сам дотянулся до Telegram.
+ */
+export function probeSocks5(address: ProxyAddress, timeoutMs = 5000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = connect({ host: address.host, port: address.port });
+    let settled = false;
+    let stage = 0;
+    const done = (ok: boolean): void => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(ok);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => socket.write(Buffer.from([5, 1, 0])));
+    socket.on('data', (buf) => {
+      if (stage === 0) {
+        if (buf.length < 2 || buf[0] !== 5 || buf[1] !== 0) return done(false);
+        stage = 1;
+        // CONNECT 149.154.167.51:443 (DC2), IPv4.
+        socket.write(Buffer.from([5, 1, 0, 1, 149, 154, 167, 51, 0x01, 0xbb]));
+        return;
+      }
+      done(buf.length >= 2 && buf[0] === 5 && buf[1] === 0);
+    });
+    socket.once('timeout', () => done(false));
+    socket.once('error', () => done(false));
+    socket.once('close', () => done(false));
+  });
+}
+
 export interface DiscoveryDeps {
   env?: NodeJS.ProcessEnv;
   windowsProxyPorts?: () => Promise<number[]>;
@@ -223,6 +261,11 @@ export async function discoverProxy(deps: DiscoveryDeps = {}): Promise<ProxyDisc
     if (await probe(c)) return { found: c, checked };
   }
   return { found: null, checked };
+}
+
+/** То же, что discoverProxy, но годность кандидата — SOCKS5 до Telegram. */
+export function discoverSocksProxy(deps: DiscoveryDeps = {}): Promise<ProxyDiscovery> {
+  return discoverProxy({ ...deps, probe: deps.probe ?? ((a) => probeSocks5(a)) });
 }
 
 export interface ProxyResolver {

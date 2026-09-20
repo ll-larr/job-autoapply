@@ -84,3 +84,22 @@ describe('panel.html — formatElapsed (задача task-review-fixes, нахо
     expect(formatElapsed(5000, 4999)).toBe(' (0 c)');
   });
 });
+
+describe('panel.html — buildSendResultText, Telegram', () => {
+  const buildSendResultText = extractFunction(html, 'buildSendResultText');
+
+  it('называет отложенные контакты и предупреждения', () => {
+    const text = buildSendResultText({
+      sent: 1, failed: 0, halted: null, unthrottledSources: [],
+      deferredContacts: [{ contact: 'hr_a', until: 0, title: 'БА' }],
+      warnings: ['БА: резюме не приложилось'],
+    });
+    expect(text).toContain('отложено 1');
+    expect(text).toContain('резюме не приложилось');
+  });
+
+  it('молчит, когда откладывать и предупреждать нечего', () => {
+    const text = buildSendResultText({ sent: 2, failed: 0, halted: null, unthrottledSources: [] });
+    expect(text).toBe('Отправлено 2, не удалось 0.');
+  });
+});

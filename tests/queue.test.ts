@@ -415,3 +415,93 @@ describe('Queue.setLetter — дозаполнение одобренных с �
     expect(() => q.setLetter(id, 'поздно', 'hybrid')).toThrow(/illegal transition/);
   });
 });
+
+describe('Queue — специальность строки', () => {
+  it('insertPending пишет специальность, по умолчанию — бизнес-аналитик', () => {
+    q.insertPending(mkVacancy('1'), 50, [], 'п', 'hybrid');
+    q.insertPending(mkVacancy('2'), 50, [], 'п', 'full', 'product-manager');
+    const rows = q.listByStatus('pending');
+    expect(rows.find((r) => r.sourceId === '1')!.specialty).toBe('business-analyst');
+    expect(rows.find((r) => r.sourceId === '2')!.specialty).toBe('product-manager');
+  });
+
+  it('база до 2026-09-18 без колонки specialty открывается, старые строки — бизнес-аналитик', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'jaa-q-old-')), 'old.db');
+    const db = new DatabaseSync(path);
+    db.exec(`CREATE TABLE applications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, source_id TEXT NOT NULL,
+      vacancy_json TEXT NOT NULL, score INTEGER NOT NULL, matched_json TEXT NOT NULL,
+      letter TEXT NOT NULL, letter_mode TEXT NOT NULL, status TEXT NOT NULL, error TEXT,
+      created_at INTEGER NOT NULL, decided_at INTEGER, sent_at INTEGER)`);
+    db.prepare(`INSERT INTO applications (source, source_id, vacancy_json, score, matched_json, letter,
+      letter_mode, status, created_at) VALUES ('hh', '9', ?, 50, '[]', 'п', 'hybrid', 'pending', 1)`)
+      .run(JSON.stringify(mkVacancy('9')));
+    db.close();
+    const old = new Queue(path);
+    expect(old.listByStatus('pending')[0]!.specialty).toBe('business-analyst');
+    old.close();
+  });
+});
+
+describe('Queue — Telegram и автоотклик', () => {
+  function tgVacancy(id: string, contact: string, hash = `h${id}`) {
+    return normalizeVacancy({
+      source: 'tg', sourceId: `-1001:${id}`, title: 'Бизнес-аналитик', company: '', url: `https://t.me/x/${id}`,
+      description: 'd', geo: '', postedAt: '2026-09-19T00:00:00Z', contact, contentHash: hash, channel: 'Работа в ИТ',
+    });
+  }
+
+  it('контакт и хэш пишутся и читаются', () => {
+    q.insertPending(tgVacancy('1', 'hr_a'), 60, [], 'п', 'dm');
+    expect(q.listByStatus('pending')[0]!.contact).toBe('hr_a');
+    expect(q.hasContentHash('h1')).toBe(true);
+    expect(q.hasContentHash('нет')).toBe(false);
+  });
+
+  it('approve помнит, кто одобрил', () => {
+    q.insertPending(tgVacancy('1', 'hr_a'), 60, [], 'п', 'dm');
+    const [row] = q.listByStatus('pending');
+    q.approve(row!.id, undefined, 'auto');
+    expect(q.listByStatus('approved')[0]!.approvedBy).toBe('auto');
+  });
+
+  it('lastContactAt — последняя строка с контактом, отправленная или в очереди', () => {
+    expect(q.lastContactAt('hr_a')).toBeNull();
+    q.insertPending(tgVacancy('1', 'hr_a'), 60, [], 'п', 'dm');
+    expect(q.lastContactAt('hr_a')).toMatchObject({ status: 'pending', title: 'Бизнес-аналитик' });
+    const [row] = q.listByStatus('pending');
+    q.approve(row!.id);
+    q.markSent(row!.id);
+    expect(q.lastContactAt('hr_a')!.status).toBe('sent');
+    expect(q.lastContactAt('HR_A')).not.toBeNull(); // username без учёта регистра
+  });
+
+  it('lastSentTo — только отправленное, ждущая строка не считается', () => {
+    q.insertPending(tgVacancy('1', 'hr_a'), 60, [], 'п', 'dm');
+    expect(q.lastSentTo('hr_a')).toBeNull();
+    const [row] = q.listByStatus('pending');
+    q.approve(row!.id);
+    q.markSent(row!.id);
+    q.insertPending(tgVacancy('2', 'hr_a'), 60, [], 'п', 'dm');
+    expect(q.lastSentTo('@HR_A')).toMatchObject({ title: 'Бизнес-аналитик' });
+    expect(q.lastSentTo('hr_a')!.at).toBe(q.listByStatus('sent')[0]!.sentAt);
+  });
+
+  it('курсоры чатов', () => {
+    expect(q.getTgCursor('-1001')).toBe(0);
+    q.setTgCursor('-1001', 4331);
+    q.setTgCursor('-1001', 4400);
+    expect(q.getTgCursor('-1001')).toBe(4400);
+  });
+
+  it('listSentSince — отправленные после момента', () => {
+    q.insertPending(tgVacancy('1', 'hr_a'), 60, [], 'п', 'dm');
+    const [row] = q.listByStatus('pending');
+    q.approve(row!.id, undefined, 'auto');
+    q.markSent(row!.id);
+    const sent = q.listSentSince(0);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.approvedBy).toBe('auto');
+    expect(sent[0]!.sentAt).toBeGreaterThan(0);
+  });
+});

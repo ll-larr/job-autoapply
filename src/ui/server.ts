@@ -1,11 +1,14 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { Queue } from '../core/queue.js';
+import type { Queue, QueueRow } from '../core/queue.js';
+import type { TgChat } from '../telegram/types.js';
 import type { ProxyDiscovery } from '../core/proxy.js';
 import type { Config } from '../core/config.js';
 import type { Adapter } from '../adapters/types.js';
-import { Sender, clearStop, type SendReport } from '../core/sender.js';
+import type { Settings } from '../core/settings.js';
+import type { SpecialtySuggestion } from '../core/suggest.js';
+import { Sender, clearStop, requestStop, type SendReport } from '../core/sender.js';
 
 /** Сколько времени отменённая вакансия остаётся во вкладке «Отменённые». */
 const SKIPPED_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -37,6 +40,11 @@ interface SendState {
   startedAt: number | null;
   report: SendReport | null;
   error: string | null;
+  /**
+   * Кто запустил: человек кнопкой или автоотклик после поиска (спека 7.2).
+   * Выключение тумблера останавливает только автоматическую отправку (7.3).
+   */
+  origin: 'human' | 'auto' | null;
 }
 
 /**
@@ -48,7 +56,7 @@ interface SendState {
 interface SearchState {
   running: boolean;
   startedAt: number | null;
-  result: { report: unknown; emptyLetters: number } | null;
+  result: { report: unknown; emptyLetters: number; autoApproved?: number } | null;
   error: string | null;
 }
 
@@ -72,7 +80,7 @@ export interface PanelDeps {
    *
    * Без неё кнопка поиска в панели недоступна.
    */
-  startSearch?: (limit: number) => Promise<{ report: unknown; emptyLetters: number }>;
+  startSearch?: (limit: number) => Promise<{ report: unknown; emptyLetters: number; autoApproved?: number }>;
   /**
    * Дозаполнение пустых писем. Без неё кнопка «Дописать письма» недоступна.
    *
@@ -92,25 +100,110 @@ export interface PanelDeps {
    * её поднимают тесты) ручка отвечает «не знаю», и полосы нет.
    */
   proxyStatus?: () => Promise<ProxyDiscovery>;
+  /**
+   * Вкладка «Настройки» (спека 2026-09-18, 3.8): чтение, сохранение с
+   * проверкой и «Предложить». Собирается в cli.ts: там знают путь файла,
+   * резюме и модели — панели как http-слою это знать незачем. Без неё вкладка
+   * отвечает «недоступно».
+   */
+  settings?: {
+    get(): Settings;
+    save(raw: unknown): Promise<{ ok: true; settings: Settings } | { ok: false; error: string }>;
+    suggest(name: string, resumePdf: string | null)
+      : Promise<{ ok: true; suggestion: SpecialtySuggestion } | { ok: false; error: string }>;
+  };
+  /**
+   * Выбор чатов Telegram во вкладке «Настройки» (спека 4.4): «Выбрать из моих
+   * чатов» и «Добавить по @имени». Только чтение — отправлять отсюда нечего.
+   */
+  telegram?: {
+    dialogs(): Promise<{ ok: true; chats: TgChat[] } | { ok: false; error: string }>;
+    resolve(ref: string): Promise<{ ok: true; chat: TgChat } | { ok: false; error: string }>;
+  };
+}
+
+/**
+ * Предупреждение карточки (спека 5.5): этому рекрутёру уже писали или он уже
+ * в очереди по другой вакансии. Сама строка — тоже «строка с контактом», её
+ * не считаем.
+ */
+function contactWarning(queue: Queue, row: QueueRow, now: number = Date.now()): string | null {
+  if (row.contact === null) return null;
+  const sent = queue.lastSentTo(row.contact);
+  if (sent !== null) {
+    const days = Math.floor((now - sent.at) / 86_400_000);
+    const when = days === 0 ? 'сегодня' : `${days} дн. назад`;
+    return `ты писал @${row.contact} ${when} по вакансии «${sent.title}»`;
+  }
+  const other = queue.listByStatus('pending').concat(queue.listByStatus('approved'))
+    .find((r) => r.id !== row.id && r.contact === row.contact);
+  return other === undefined ? null : `@${row.contact} уже в очереди по вакансии «${other.vacancy.title}»`;
+}
+
+function withContactWarnings(queue: Queue, rows: QueueRow[]): Array<QueueRow & { contactWarning: string | null }> {
+  return rows.map((row) => ({ ...row, contactWarning: contactWarning(queue, row) }));
 }
 
 export async function startPanel(
   queue: Queue, port: number, deps: PanelDeps = {},
 ): Promise<{ port: number; close(): Promise<void> }> {
-  const send: SendState = { running: false, startedAt: null, report: null, error: null };
+  const send: SendState = { running: false, startedAt: null, report: null, error: null, origin: null };
   const canSend = deps.adapters !== undefined && deps.config !== undefined;
   const search: SearchState = { running: false, startedAt: null, result: null, error: null };
   const canSearch = deps.startSearch !== undefined;
   const letters: LettersState = { running: false, startedAt: null, result: null, error: null };
   const canFillLetters = deps.fillLetters !== undefined;
 
+  // Отправка идёт минутами; запуск не ждёт её конца, панель опрашивает статус.
+  // Одна точка и для кнопки «Отправить всё», и для автоотклика после поиска:
+  // лимиты, паузы и остановки — те же самые.
+  const startSend = (origin: 'human' | 'auto'): void => {
+    send.running = true;
+    send.startedAt = Date.now();
+    send.report = null;
+    send.error = null;
+    send.origin = origin;
+    void (async () => {
+      try {
+        clearStop();
+        const sender = new Sender(
+          queue,
+          new Map((deps.adapters ?? []).map((a) => [a.name, a])),
+          deps.config!,
+        );
+        send.report = await sender.run();
+      } catch (e) {
+        send.error = e instanceof Error ? e.message : String(e);
+      } finally {
+        send.running = false;
+      }
+    })();
+  };
+
   const server = createServer(async (req, res) => {
     try {
       if (req.method === 'GET' && req.url === '/api/pending') {
-        return json(res, queue.listByStatus('pending'));
+        return json(res, withContactWarnings(queue, queue.listByStatus('pending')));
       }
       if (req.method === 'GET' && req.url === '/api/approved') {
-        return json(res, queue.listByStatus('approved'));
+        return json(res, withContactWarnings(queue, queue.listByStatus('approved')));
+      }
+
+      if (req.url === '/api/telegram/dialogs' || req.url === '/api/telegram/resolve') {
+        if (!deps.telegram) {
+          return json(res, { error: 'Панель запущена без Telegram — открой её через npm run panel.' }, 409);
+        }
+        if (req.method === 'GET' && req.url === '/api/telegram/dialogs') {
+          const r = await deps.telegram.dialogs();
+          return r.ok ? json(res, { chats: r.chats }) : json(res, { error: r.error }, 502);
+        }
+        if (req.method === 'POST' && req.url === '/api/telegram/resolve') {
+          const b = await readJson(req);
+          const ref = typeof b['ref'] === 'string' ? b['ref'].trim() : '';
+          if (ref === '') return json(res, { error: 'Впиши @имя канала или ссылку t.me.' }, 400);
+          const r = await deps.telegram.resolve(ref);
+          return r.ok ? json(res, { chat: r.chat }) : json(res, { error: r.error }, 502);
+        }
       }
       if (req.method === 'POST' && req.url === '/api/approve') {
         const b = await readJson(req);
@@ -120,6 +213,10 @@ export async function startPanel(
           return json(res, { error: e instanceof Error ? e.message : String(e) }, 409);
         }
         return json(res, { ok: true });
+      }
+      if (req.method === 'GET' && req.url === '/api/sent') {
+        // Вкладка «Отправлено» (спека 7.4): что ушло за 30 дней и кто одобрил.
+        return json(res, queue.listSentSince(Date.now() - 30 * 86_400_000));
       }
       if (req.method === 'GET' && req.url === '/api/skipped') {
         // Только за последние сутки: вкладка нужна для отмены промаха,
@@ -176,6 +273,9 @@ export async function startPanel(
           } finally {
             search.running = false;
           }
+          // Автоотклик (спека 7.2): поиск уже одобрил годное — отправка
+          // стартует сама, тем же путём, что кнопка.
+          if (canSend && (search.result?.autoApproved ?? 0) > 0 && !send.running) startSend('auto');
         })();
 
         return json(res, { started: true }, 202);
@@ -259,6 +359,7 @@ export async function startPanel(
           error: send.error,
           approved: queue.listByStatus('approved').length,
           startedAt: send.startedAt,
+          origin: send.origin,
         });
       }
 
@@ -278,28 +379,7 @@ export async function startPanel(
           return json(res, { error: 'Отправка уже идёт.' }, 409);
         }
 
-        send.running = true;
-        send.startedAt = Date.now();
-        send.report = null;
-        send.error = null;
-
-        // Намеренно не ждём: ответ уходит сразу, панель опрашивает статус.
-        void (async () => {
-          try {
-            clearStop();
-            const sender = new Sender(
-              queue,
-              new Map((deps.adapters ?? []).map((a) => [a.name, a])),
-              deps.config!,
-            );
-            send.report = await sender.run();
-          } catch (e) {
-            send.error = e instanceof Error ? e.message : String(e);
-          } finally {
-            send.running = false;
-          }
-        })();
-
+        startSend('human');
         return json(res, { started: true }, 202);
       }
 
@@ -333,6 +413,38 @@ export async function startPanel(
         }
         return json(res, { ok: true });
       }
+      if (req.url === '/api/settings' || req.url === '/api/settings/suggest') {
+        if (!deps.settings) {
+          return json(res, { error: 'Панель запущена без настроек — открой её через npm run panel.' }, 409);
+        }
+        if (req.method === 'GET' && req.url === '/api/settings') {
+          return json(res, deps.settings.get());
+        }
+        if (req.method === 'POST' && req.url === '/api/settings') {
+          const wasAuto = deps.settings.get().autoApply.enabled;
+          // Проверку делает save (core/settings.ts#validateSettings и PDF в
+          // cli.ts); её причина уходит в панель как есть — это текст для
+          // человека, а не код ошибки.
+          const r = await deps.settings.save(await readJson(req));
+          // Тумблер выключили посреди автоматической отправки — она
+          // останавливается так же, как по npm run stop (спека 7.3). Ручную,
+          // запущенную кнопкой, тумблер не трогает.
+          if (r.ok && wasAuto && !r.settings.autoApply.enabled && send.running && send.origin === 'auto') {
+            requestStop();
+          }
+          return r.ok ? json(res, { ok: true, settings: r.settings }) : json(res, { error: r.error }, 400);
+        }
+        if (req.method === 'POST' && req.url === '/api/settings/suggest') {
+          const b = await readJson(req);
+          const name = typeof b['name'] === 'string' ? b['name'].trim() : '';
+          if (name === '') return json(res, { error: 'Сначала впиши название специальности.' }, 400);
+          const pdf = typeof b['resumePdf'] === 'string' && b['resumePdf'].trim() !== '' ? b['resumePdf'].trim() : null;
+          const r = await deps.settings.suggest(name, pdf);
+          // 502: сама панель исправна, не ответила модель за ней.
+          return r.ok ? json(res, { suggestion: r.suggestion }) : json(res, { error: r.error }, 502);
+        }
+      }
+
       if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         return res.end(readFileSync(PANEL_HTML, 'utf8'));

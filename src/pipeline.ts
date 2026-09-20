@@ -1,10 +1,22 @@
 import type { Queue, LetterMode } from './core/queue.js';
-import type { Config, SearchQueryConfig } from './core/config.js';
+import type { Config } from './core/config.js';
 import type { Adapter } from './adapters/types.js';
+import type { Specialty } from './core/specialty.js';
 import { scoreVacancy } from './core/scorer.js';
-import { screenVacancy, isJuniorExperience, isAboveJuniorTitle } from './core/screening.js';
+import { screenVacancy, hasTitleWord, type ScreenResult } from './core/screening.js';
 import { pickMode } from './core/letter.js';
+import { DEFAULT_SPECIALTY, DEFAULT_STOP_WORDS } from './core/specialty-defaults.js';
 import { vacancyKey, type Vacancy } from './core/vacancy.js';
+
+/**
+ * Одна фраза поиска и специальность, от имени которой она ищет. Специальность
+ * решает, как вакансию оценивать: навыки и веса, слова заголовка, стаж
+ * (спека 2026-09-18, раздел 3.2). Без неё — бизнес-аналитик, как до этой даты.
+ */
+export interface SearchQuery {
+  query: string;
+  specialty?: Specialty;
+}
 
 /**
  * Необязательная статистика, которую адаптер МОЖЕТ выставить на себе после
@@ -19,9 +31,15 @@ import { vacancyKey, type Vacancy } from './core/vacancy.js';
  */
 interface AdapterSearchStats {
   read: number;
-  rejectedExperience: number;
-  rejectedGrade: number;
+  rejectedExperience?: number;
+  rejectedGrade?: number;
   duplicatesSkipped?: number;
+  /** Telegram (adapters/telegram.ts): пост не похож на вакансию. */
+  notVacancy?: number;
+  /** Telegram: вакансия, но написать некому — ни @username, ни ссылки на площадку. */
+  noContact?: number;
+  /** Telegram: чаты, которые не прочитались, и почему. */
+  skippedChats?: Array<{ title: string; why: string }>;
 }
 
 interface AdapterWithSearchStats {
@@ -65,36 +83,37 @@ export interface SearchReport {
    */
   noCoreMatch: number;
   /**
-   * Три жёстких фильтра-исключения (см. src/core/screening.ts), добавленных
-   * по разбору пользователем первой живой очереди — 2026-08-30. В отличие
-   * от noCoreMatch/belowThreshold выше, это не про скор: вакансия,
-   * споткнувшаяся об один из них, отбрасывается сразу, до scoreVacancy и до
-   * generate(), деньги на письмо не тратятся ни разу.
+   * Жёсткие фильтры-исключения (см. src/core/screening.ts). В отличие от
+   * noCoreMatch/belowThreshold выше, это не про скор: вакансия, споткнувшаяся
+   * об один из них, отбрасывается сразу, до scoreVacancy и до generate(),
+   * деньги на письмо не тратятся ни разу.
+   *
+   * С 2026-09-18 сюда же попадает то, что раньше считалось rejectedJuniorOnly:
+   * это теперь «опыт 0» у специальности — опыт или «старший» в заголовке.
    */
   rejectedExperience: number;
   rejectedGrade: number;
+  /** Сработало стоп-слово из настроек (спека 3.5). Раньше — rejectedPlatform для 1С/Битрикса. */
+  rejectedStopword: number;
+  /** Какое стоп-слово сколько раз сработало — отчёт называет слово, а не «платформу». */
+  stopwordHits: Record<string, number>;
   /**
-   * Вакансия построена вокруг платформы, которой владелец не владеет — 1С или
-   * Битрикс24. Поле звалось rejected1c, пока платформа была одна.
+   * Заголовок не называет специальность (слова заголовка). Раньше —
+   * rejectedNotAnalyst: 2026-09-01 «Менеджер по операционному консалтингу» и
+   * подобные набирали проходной скор описанием, но владелец их отменял — скор
+   * говорит, чем занимаются, а заголовок отвечает, кем при этом зовут.
    */
-  rejectedPlatform: number;
-  /**
-   * Заголовок не называет вакансию аналитической. Добавлено 2026-09-01 по
-   * разбору очереди: «Менеджер по операционному консалтингу» и подобные
-   * набирали проходной скор описанием, но владелец их отменял — скор говорит,
-   * чем занимаются, а заголовок отвечает, кем при этом зовут.
-   */
-  rejectedNotAnalyst: number;
+  rejectedTitle: number;
   /** Стажировки. */
   rejectedInternship: number;
-  /**
-   * Per-query ограничение "только junior" (config.json →
-   * searchQueries[].constraints.juniorOnly, добавлено 2026-08-30 для
-   * запроса "системный аналитик"). Считается и отбрасывается ДО
-   * screenVacancy/scoreVacancy/generate() — та же экономия, что и у трёх
-   * жёстких фильтров выше. См. core/screening.ts#isJuniorExperience.
-   */
-  rejectedJuniorOnly: number;
+  /** Telegram: прочитанные посты, не похожие на вакансию (спека 4.6). */
+  tgNotVacancy: number;
+  /** Telegram: вакансии, где некому писать. */
+  tgNoContact: number;
+  /** Telegram: чаты, пропущенные в этом прогоне, и почему (закрыт, FloodWait). */
+  tgSkippedChats: Array<{ title: string; why: string }>;
+  /** Репосты: тот же текст, что у уже виденного поста (спека 4.7). */
+  textDuplicates: number;
   adapterErrors: Array<{ adapter: string; message: string }>;
   /**
    * Почему прогон остановился. Нужно панели: «нашли 12 из 20» само по себе
@@ -113,13 +132,21 @@ export interface RunSearchOptions {
   config: Config;
   /**
    * Список формулировок запроса — разные фразы находят разные вакансии на
-   * одной и той же площадке (см. config.json#searchQueries и
-   * cli.ts#resolveSearchQueries). Каждая формулировка прогоняется через
+   * одной и той же площадке (см. cli.ts#buildSearchQueries: фразы берутся из
+   * специальностей data/settings.json). Каждая формулировка прогоняется через
    * каждый адаптер по очереди; результаты сливаются и дедуплицируются В
    * ПРЕДЕЛАХ этого прогона ДО screening — см. комментарий у seenThisRun
    * ниже.
    */
-  queries: SearchQueryConfig[];
+  queries: SearchQuery[];
+  /** Стоп-слова из настроек. undefined — прежние 1С и Битрикс. */
+  stopWords?: readonly string[];
+  /**
+   * Включённые специальности — для бесфразовых адаптеров (Telegram): пост
+   * найден не фразой, и оценивает его та специальность, чьи слова заголовка
+   * в нём есть. undefined — специальности, стоящие за фразами.
+   */
+  specialties?: Specialty[];
   /**
    * Сколько вакансий должно ЛЕЧЬ В ОЧЕРЕДЬ по итогам прогона. Это то число,
    * которое человек вводит в панели: попросил 20 — получил 20 карточек на
@@ -167,28 +194,45 @@ export interface RunSearchOptions {
    */
   batchSize?: number;
   adapters: Adapter[];
-  generate: (v: Vacancy, matched: string[], mode: LetterMode)
+  generate: (v: Vacancy, matched: string[], mode: LetterMode, specialty: Specialty)
     => Promise<{ letter: string; mode: LetterMode }>;
 }
 
 /**
  * Собирает вакансии со всех адаптеров по каждой формулировке запроса,
  * отсеивает дубли (и в пределах прогона, и по сравнению с прошлыми
- * прогонами через Queue), per-query ограничение "только junior", три
- * жёстких screening-фильтра (опыт/грейд/1С — см. core/screening.ts), мусор
+ * прогонами через Queue), жёсткие фильтры по профилю специальности фразы
+ * (опыт/грейд/стоп-слова/стажировка/заголовок — см. core/screening.ts), мусор
  * ниже minScore и вакансии без core-совпадения, генерирует письма только
  * для того, что прошло все фильтры, и складывает результат в очередь.
- * Порядок фильтров — от дешёвого к дорогому: дедуп → per-query junior-гейт
- * → screening → scoring → generate() — чем раньше вакансия выбывает, тем
+ * Порядок фильтров — от дешёвого к дорогому: дедуп → screening по профилю
+ * специальности → scoring навыками специальности → generate() — чем раньше вакансия выбывает, тем
  * меньше на неё потрачено. Падение одного адаптера не останавливает
  * остальные — частичный результат остаётся валидным результатом.
  */
 export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
   const report: SearchReport = {
     found: 0, queued: 0, duplicates: 0, belowThreshold: 0, noCoreMatch: 0,
-    rejectedExperience: 0, rejectedGrade: 0, rejectedPlatform: 0,
-    rejectedNotAnalyst: 0, rejectedInternship: 0, rejectedJuniorOnly: 0,
+    rejectedExperience: 0, rejectedGrade: 0, rejectedStopword: 0, stopwordHits: {},
+    rejectedTitle: 0, rejectedInternship: 0,
+    tgNotVacancy: 0, tgNoContact: 0, tgSkippedChats: [], textDuplicates: 0,
     adapterErrors: [], stoppedBecause: 'exhausted',
+  };
+  const stopWords = opts.stopWords ?? DEFAULT_STOP_WORDS;
+
+  // Каждая причина отсева считается своей строкой. Ссыпать их в одну кучу
+  // значило бы врать в отчёте: «отсеяно по 1С: 9» при девяти вакансиях, где
+  // 1С никто не упоминал.
+  const countReject = (screen: Extract<ScreenResult, { passed: false }>): void => {
+    if (screen.reason === 'experience') report.rejectedExperience++;
+    else if (screen.reason === 'grade') report.rejectedGrade++;
+    else if (screen.reason === 'not_title') report.rejectedTitle++;
+    else if (screen.reason === 'internship') report.rejectedInternship++;
+    else {
+      report.rejectedStopword++;
+      const word = screen.stopWord ?? '?';
+      report.stopwordHits[word] = (report.stopwordHits[word] ?? 0) + 1;
+    }
   };
 
   // Дедуп В ПРЕДЕЛАХ этого прогона: разные формулировки запроса находят одну
@@ -211,7 +255,7 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
   const seenThisRun = new Set<string>();
 
   interface Task {
-    qc: SearchQueryConfig;
+    qc: SearchQuery;
     adapter: Adapter;
     /** Индекс формулировки в opts.queries — по нему считается равномерность. */
     queryIndex: number;
@@ -224,9 +268,20 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
   const tasks: Task[] = [];
   opts.queries.forEach((qc, queryIndex) => {
     for (const adapter of opts.adapters) {
+      // Бесфразовый адаптер (Telegram) читает ленту, а не выдачу по фразе:
+      // одна задача на весь прогон, сколько бы фраз ни было.
+      if (adapter.queryless === true && queryIndex > 0) continue;
       tasks.push({ qc, adapter, queryIndex, skip: 0, done: false });
     }
   });
+  const specialtiesForQueryless = opts.specialties ?? [
+    ...new Map(opts.queries.map((q) => {
+      const s = q.specialty ?? DEFAULT_SPECIALTY;
+      return [s.id, s] as const;
+    })).values(),
+  ];
+  // Репосты (спека 4.7): хэши текстов, уже обработанных в этом прогоне.
+  const seenHashes = new Set<string>();
 
   const target = opts.target;
   const batchSize = opts.batchSize ?? DEFAULT_BATCH_SIZE;
@@ -271,6 +326,7 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
     try {
       vacancies = await task.adapter.search({
         query: task.qc.query,
+        experienceYears: (task.qc.specialty ?? DEFAULT_SPECIALTY).experienceYears,
         maxResults: budget,
         skip: task.skip,
         seenThisRun,
@@ -295,9 +351,12 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
     const read = stats ? stats.read : vacancies.length;
     if (stats) {
       report.found += stats.read;
-      report.rejectedExperience += stats.rejectedExperience;
-      report.rejectedGrade += stats.rejectedGrade;
+      report.rejectedExperience += stats.rejectedExperience ?? 0;
+      report.rejectedGrade += stats.rejectedGrade ?? 0;
       report.duplicates += stats.duplicatesSkipped ?? 0;
+      report.tgNotVacancy += stats.notVacancy ?? 0;
+      report.tgNoContact += stats.noContact ?? 0;
+      report.tgSkippedChats.push(...(stats.skippedChats ?? []));
     } else {
       report.found += vacancies.length;
     }
@@ -307,8 +366,9 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
     // прочитанное — следующая порция продолжит, а не перечитает то же самое.
     if (read === 0) task.done = true;
     else task.skip += read;
-    // Без цели пара опрашивается ровно один раз (прежнее поведение).
-    if (target === undefined) task.done = true;
+    // Без цели пара опрашивается ровно один раз (прежнее поведение). Лента
+    // Telegram читается за один заход целиком — повторять незачем.
+    if (target === undefined || task.adapter.queryless === true) task.done = true;
 
     for (const v of vacancies) {
       if (target !== undefined && report.queued >= target) break;
@@ -317,39 +377,69 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
       if (seenThisRun.has(key)) { report.duplicates++; continue; }
       seenThisRun.add(key);
 
-      // juniorOnly смотрит и на структурный опыт, и на ЗАГОЛОВОК. Опыт есть не
-      // везде: «Старший системный аналитик» пришёл с careerist без него
-      // вообще, isJuniorExperience(null) пропустил, и вакансия дошла до
-      // очереди. Владелец её отменил — системный аналитик он максимум младший.
-      if (task.qc.constraints?.juniorOnly === true
-        && (!isJuniorExperience(v.experience) || isAboveJuniorTitle(v.title))) {
-        report.rejectedJuniorOnly++;
-        continue;
-      }
-
       if (opts.queue.has(v)) { report.duplicates++; continue; }
 
-      const screen = screenVacancy(v);
-      if (!screen.passed) {
-        // Каждая причина считается своей строкой. Ссыпать их в одну кучу
-        // значило бы врать в отчёте: «отсеяно по 1С: 9» при девяти вакансиях,
-        // где 1С никто не упоминал.
-        if (screen.reason === 'experience') report.rejectedExperience++;
-        else if (screen.reason === 'grade') report.rejectedGrade++;
-        else if (screen.reason === 'not_analyst') report.rejectedNotAnalyst++;
-        else if (screen.reason === 'internship') report.rejectedInternship++;
-        else report.rejectedPlatform++;
-        continue;
+      // Один пост часто перепощен в несколько каналов (спека 4.7): ключ дубля —
+      // хэш текста, и в прогоне, и между прогонами.
+      if (v.contentHash !== null) {
+        if (seenHashes.has(v.contentHash) || opts.queue.hasContentHash(v.contentHash)) {
+          report.textDuplicates++;
+          continue;
+        }
+        seenHashes.add(v.contentHash);
       }
 
-      const { score, matched, hasCoreMatch } = scoreVacancy(v);
-      if (score < opts.config.minScore) { report.belowThreshold++; continue; }
-      if (!hasCoreMatch) { report.noCoreMatch++; continue; }
+      // Кто оценивает вакансию. Найденную фразой — специальность фразы. Пост
+      // Telegram фразой не найден: его оценивает та из включённых
+      // специальностей, чьи слова заголовка в нём есть, а если таких
+      // несколько — давшая лучший скор (при равенстве — первая в настройках).
+      const queryless = task.adapter.queryless === true;
+      const candidates = queryless
+        ? specialtiesForQueryless.filter((s) => hasTitleWord(`${v.title}\n${v.description}`, s.titleWords))
+        : [task.qc.specialty ?? DEFAULT_SPECIALTY];
+      if (candidates.length === 0) { report.rejectedTitle++; continue; }
 
-      const mode = pickMode(score, opts.config.letterFullThreshold);
-      const { letter, mode: usedMode } = await opts.generate(v, matched, mode);
+      let best: { specialty: Specialty; score: number; matched: string[] } | null = null;
+      let firstReject: ScreenResult | null = null;
+      let lowScore = false;
+      let noCore = false;
+      for (const candidate of candidates) {
+        // Опыт 0 (прежний juniorOnly) смотрит и на ЗАГОЛОВОК: «Старший
+        // системный аналитик» пришёл с careerist без маркера опыта вообще, и
+        // владелец его отменил — системный аналитик он максимум младший.
+        const screen = screenVacancy(v, {
+          titleWords: candidate.titleWords,
+          experienceYears: candidate.experienceYears,
+          stopWords,
+          // Гейт заголовка для поста уже сыграла проверка слов по всему посту
+          // выше, а заголовок из запасного правила может слов не содержать.
+          skipTitleGate: queryless,
+        });
+        if (!screen.passed) { firstReject ??= screen; continue; }
+        const s = scoreVacancy(v, candidate.skills);
+        if (s.score < opts.config.minScore) { lowScore = true; continue; }
+        if (!s.hasCoreMatch) { noCore = true; continue; }
+        if (best === null || s.score > best.score) best = { specialty: candidate, score: s.score, matched: s.matched };
+      }
+      if (best === null) {
+        // Причина — самая поздняя стадия, до которой дошёл хоть один кандидат:
+        // «ниже порога» честнее, чем «стоп-слово», если другой кандидат
+        // стоп-слово прошёл. У вакансии, найденной фразой, кандидат один, и
+        // это ровно прежний подсчёт.
+        if (noCore) report.noCoreMatch++;
+        else if (lowScore) report.belowThreshold++;
+        else if (firstReject !== null && !firstReject.passed) countReject(firstReject);
+        continue;
+      }
+      const { specialty, score, matched } = best;
 
-      if (opts.queue.insertPending(v, score, matched, letter, usedMode)) {
+      // Скелеты писем и выбор hybrid/full — только у засеянных специальностей
+      // (legacyLetters). У остальных скелетов нет, письмо пишется целиком
+      // (спека 3.7).
+      const mode = specialty.legacyLetters ? pickMode(score, opts.config.letterFullThreshold) : 'full';
+      const { letter, mode: usedMode } = await opts.generate(v, matched, mode, specialty);
+
+      if (opts.queue.insertPending(v, score, matched, letter, usedMode, specialty.id)) {
         report.queued++;
         deliveredByQuery[task.queryIndex]!++;
       } else {
