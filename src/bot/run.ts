@@ -104,6 +104,16 @@ export async function runBot(opts: RunBotOptions): Promise<void> {
   let idleRounds = 0;
   let lastLoggedAt = 0;
 
+  // Про незаданного владельца хватает одной строки за прогон: TG_OWNER_CHAT_ID
+  // читается на старте, и до перезапуска ничего не изменится. Раньше это
+  // предупреждение повторялось каждую минуту и заливало консоль.
+  const warned = new Set<string>();
+  const warnOnce = (line: string): void => {
+    if (warned.has(line)) return;
+    warned.add(line);
+    log(line);
+  };
+
   const logThrottled = (line: string): void => {
     const now = Date.now();
     if (now - lastLoggedAt < LOG_QUIET_MS) return;
@@ -168,7 +178,7 @@ export async function runBot(opts: RunBotOptions): Promise<void> {
     // последнее сообщение, но не потеряем его.
     store.kvSet('offset', String(offset));
 
-    await notifyMeetings(opts, logThrottled);
+    await notifyMeetings(opts, warnOnce);
 
     if (opts.stopAfterIdleRounds !== undefined && idleRounds >= opts.stopAfterIdleRounds) return;
   }
