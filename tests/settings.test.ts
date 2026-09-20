@@ -184,3 +184,36 @@ describe('settings — telegram и автоотклик', () => {
     expect(validateSettings(s).ok).toBe(false);
   });
 });
+
+describe('settings — ключ и модель OpenRouter', () => {
+  it('старый файл без секции llm — ключ из .env, модели из config.json', () => {
+    const s = seedSettings(undefined, null) as unknown as Record<string, unknown>;
+    delete s['llm'];
+    const r = validateSettings(s);
+    expect(r.ok && r.settings.llm).toEqual({ apiKey: null, model: null });
+  });
+
+  it('пробелы по краям чистятся, пустое поле — null', () => {
+    const s = seedSettings(undefined, null);
+    s.llm = { apiKey: '  sk-or-v1-abc  ', model: ' z-ai/glm-5.3 ' };
+    expect(validateSettings(s)).toMatchObject({ ok: true, settings: { llm: { apiKey: 'sk-or-v1-abc', model: 'z-ai/glm-5.3' } } });
+    s.llm = { apiKey: '   ', model: '' };
+    expect(validateSettings(s)).toMatchObject({ ok: true, settings: { llm: { apiKey: null, model: null } } });
+  });
+
+  it('название модели вместо id — ошибка, а не 400 от OpenRouter на каждом письме', () => {
+    const s = seedSettings(undefined, null);
+    s.llm = { apiKey: null, model: 'Claude Sonnet 5' };
+    const r = validateSettings(s);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toMatch(/id модели/);
+  });
+
+  it('ключ переживает запись и чтение файла', () => {
+    const path = tmp();
+    const s = seedSettings(undefined, null);
+    s.llm = { apiKey: 'sk-or-v1-abc', model: 'anthropic/claude-sonnet-5' };
+    saveSettings(path, s);
+    expect(loadSettings(path, () => s).llm).toEqual({ apiKey: 'sk-or-v1-abc', model: 'anthropic/claude-sonnet-5' });
+  });
+});

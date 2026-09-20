@@ -103,3 +103,27 @@ describe('panel.html — buildSendResultText, Telegram', () => {
     expect(text).toBe('Отправлено 2, не удалось 0.');
   });
 });
+
+describe('panel.html — выбор модели для писем (2026-09-20)', () => {
+  it('в списке есть DeepSeek, Sonnet и GLM', () => {
+    for (const id of ['deepseek/deepseek-v4-flash', 'anthropic/claude-sonnet-5', 'z-ai/glm-5.3']) {
+      expect(html).toContain(id);
+    }
+  });
+
+  it('поле ключа скрыто по умолчанию и не уходит в автозаполнение браузера', () => {
+    expect(html).toMatch(/id="llmKey"[^>]*type="password"|type="password"[^>]*id="llmKey"/);
+    expect(html).toMatch(/id="llmKey"[^>]*autocomplete="off"/);
+  });
+
+  it('chosenModel: пустой выбор и пустая «другая» — null, иначе id модели', () => {
+    // chosenModel читает MODEL_OTHER из области страницы; в new Function её
+    // нет, поэтому кладём ту же константу в глобальную область теста.
+    (globalThis as unknown as Record<string, string>)['MODEL_OTHER'] = '__other__';
+    const chosenModel = extractFunction(html, 'chosenModel');
+    expect(chosenModel('', '')).toBeNull();
+    expect(chosenModel('z-ai/glm-5.3', '')).toBe('z-ai/glm-5.3');
+    expect(chosenModel('__other__', '  ')).toBeNull();
+    expect(chosenModel('__other__', ' mistral/x ')).toBe('mistral/x');
+  });
+});

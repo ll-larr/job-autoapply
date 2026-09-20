@@ -83,10 +83,12 @@ export function describeHttpFailure(status: number, body: string): string {
       + 'заново, следующее уже пойдёт через него';
   }
   if (status === 401 || status === 403) {
-    return `ключ OpenRouter отвергнут (HTTP ${status}) — проверь OPENROUTER_API_KEY в .env`;
+    return `ключ OpenRouter отвергнут (HTTP ${status}) — проверь ключ в панели `
+      + '(«Настройки» → «Модель для писем») или OPENROUTER_API_KEY в .env';
   }
   if (status === 402) {
-    return 'на счету OpenRouter кончились деньги (HTTP 402) — пополни баланс или оставь в letterModels только бесплатные модели';
+    return 'на счету OpenRouter кончились деньги (HTTP 402) — пополни баланс или выбери бесплатную модель '
+      + 'в панели («Настройки» → «Модель для писем»)';
   }
   if (status === 429) {
     return 'лимит запросов (HTTP 429) — у бесплатных моделей он общий на всех, стоит подождать или добавить платную';
@@ -100,6 +102,42 @@ export function describeHttpFailure(status: number, body: string): string {
 const proxiedFetch = createProxiedFetch();
 
 /**
+ * Ключ, вписанный в панели (data/settings.json, секция llm). Хранится в
+ * модуле, а не в CompletionOptions, по той же причине, по которой там же
+ * читался process.env: `complete` зовут из пяти мест (письма, личные
+ * сообщения, анкета hh, «Предложить навыки», бот), и протаскивать ключ через
+ * все сигнатуры значило бы переписать их все ради значения, которое во всём
+ * процессе одно.
+ *
+ * null — ключ из панели не задан, берём из окружения (.env).
+ */
+let panelApiKey: string | null = null;
+
+/**
+ * Ставит ключ из настроек панели. Зовётся из core/llm.ts при старте команды и
+ * после каждого сохранения настроек.
+ */
+export function setApiKey(key: string | null): void {
+  panelApiKey = key === null || key.trim() === '' ? null : key.trim();
+}
+
+/**
+ * Ключ панели главнее OPENROUTER_API_KEY: его человек только что вписал
+ * руками, а переменная окружения могла остаться от прежнего владельца копии
+ * проекта — и молча писала бы письма с чужого счёта.
+ */
+export function resolveApiKey(): string | undefined {
+  if (panelApiKey !== null) return panelApiKey;
+  const fromEnv = process.env['OPENROUTER_API_KEY']?.trim();
+  return fromEnv === undefined || fromEnv === '' ? undefined : fromEnv;
+}
+
+/** Есть ли чем звать модель. Для отчёта поиска и команды letters. */
+export function hasApiKey(): boolean {
+  return resolveApiKey() !== undefined;
+}
+
+/**
  * Пробует модели по порядку, каждую — `attemptsPerModel` раз. `reject`
  * возвращает причину, по которой ответ негоден, или null: негодный ответ —
  * такая же неудача, как HTTP-ошибка, и перебор идёт дальше. Не бросает
@@ -111,9 +149,13 @@ export async function complete(
   options: CompletionOptions,
   reject: (text: string) => string | null = () => null,
 ): Promise<CompletionResult> {
-  const apiKey = process.env['OPENROUTER_API_KEY'];
-  if (!apiKey) {
-    return { ok: false, failure: 'OPENROUTER_API_KEY не найден — положи ключ в .env рядом с package.json' };
+  const apiKey = resolveApiKey();
+  if (apiKey === undefined) {
+    return {
+      ok: false,
+      failure: 'ключ OpenRouter не задан — впиши его в панели («Настройки» → «Модель для писем») '
+        + 'или положи OPENROUTER_API_KEY в .env рядом с package.json',
+    };
   }
 
   // Последняя увиденная причина. Именно последняя, а не первая: цепочка идёт

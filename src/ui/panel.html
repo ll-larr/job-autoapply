@@ -68,6 +68,13 @@
     .skills input[data-k="weight"] { width: 64px; }
     .settings-block { background: #fff; margin: 16px 20px; padding: 16px; border: 1px solid #ddd; border-radius: 8px; }
     .settings-block textarea { min-height: 110px; margin-top: 6px; font: 13px/1.4 system-ui, sans-serif; }
+    .llm-row { display: grid; grid-template-columns: 170px 1fr; gap: 8px; align-items: start; margin-top: 10px; }
+    .llm-row > label { font-size: 13px; color: #555; padding-top: 5px; }
+    .llm-row input[type=password], .llm-row input[type=text], .llm-row select {
+      font: inherit; font-size: 14px; padding: 4px 6px; border: 1px solid #ccc; border-radius: 4px;
+    }
+    .llm-row input[type=password], .llm-row input[type=text] { width: 320px; }
+    .llm-row .hint { display: block; margin-top: 4px; }
     .contact-warn { margin: 6px 0; padding: 6px 10px; background: #fff3cd; border: 1px solid #e0c068;
                     border-radius: 4px; font-size: 13px; color: #5a4500; }
     .tg-chat { display: flex; gap: 8px; align-items: center; font-size: 14px; margin: 4px 0; }
@@ -138,6 +145,28 @@
       <button id="settingsSave">Сохранить</button>
       <button id="addSpec">Добавить специальность</button>
       <span class="hint" id="settingsNote">Правка действует со следующего поиска.</span>
+    </div>
+    <div class="settings-block" id="llmBlock">
+      <strong>Модель для писем</strong>
+      <span class="hint">кто пишет письма, личные сообщения рекрутёрам и отвечает на анкеты.</span>
+      <div class="llm-row">
+        <label for="llmKey">Ключ OpenRouter</label>
+        <div>
+          <input type="password" id="llmKey" placeholder="sk-or-v1-…" autocomplete="off" spellcheck="false">
+          <button type="button" id="llmKeyShow">Показать</button>
+          <div class="hint">берётся на openrouter.ai/keys. Хранится в data/settings.json на этом компьютере —
+            в git этот каталог не попадает. Пусто — ключ берётся из файла .env.</div>
+        </div>
+      </div>
+      <div class="llm-row">
+        <label for="llmModel">Модель</label>
+        <div>
+          <select id="llmModel"></select>
+          <input type="text" id="llmModelOther" placeholder="например z-ai/glm-5.3" spellcheck="false" hidden>
+          <div class="hint">выбранная пробуется первой; если она откажет (лимит, кончились деньги),
+            пойдут запасные из config.json. Платные модели тратят деньги со счёта OpenRouter.</div>
+        </div>
+      </div>
     </div>
     <div id="specList"></div>
     <div class="settings-block">
@@ -808,6 +837,51 @@ function lines(text) {
   return text.split('\n').map((s) => s.trim()).filter((s) => s !== '');
 }
 
+// ----------------------------------------------------------------------------
+// Модель для писем (2026-09-20). Ключ и выбор модели лежат в настройках, а не
+// в config.json и .env: копию проекта отдают другому человеку, у него свой
+// ключ, и лезть ради этого в файлы, лежащие в git, ему незачем.
+//
+// Список — подсказка, а не белый список: сервер принимает любой id модели
+// OpenRouter (вариант «другая»), потому что модели там появляются и исчезают
+// чаще, чем правится эта страница.
+// ----------------------------------------------------------------------------
+
+const MODEL_OTHER = '__other__';
+
+const MODEL_CHOICES = [
+  ['', 'по умолчанию — список letterModels из config.json'],
+  ['deepseek/deepseek-v4-flash', 'DeepSeek V4 Flash — дёшево и быстро'],
+  ['deepseek/deepseek-v4-pro', 'DeepSeek V4 Pro — умнее, дороже'],
+  ['anthropic/claude-sonnet-5', 'Claude Sonnet 5 — письма лучше всех, дороже всех'],
+  ['z-ai/glm-5.3', 'GLM 5.3 — середина по цене и качеству'],
+  ['z-ai/glm-5.2:free', 'GLM 5.2 — бесплатно, лимит общий на всех'],
+  ['google/gemma-4-31b-it:free', 'Gemma 4 31B — бесплатно, лимит общий на всех'],
+  ['openrouter/free', 'openrouter/free — любая бесплатная, какую дадут'],
+  [MODEL_OTHER, 'другая — вписать id вручную'],
+];
+
+/** Выбранная модель или null («по умолчанию»). Пустое поле «другая» — тоже null. */
+function chosenModel(selectValue, otherValue) {
+  const v = selectValue === MODEL_OTHER ? otherValue.trim() : selectValue;
+  return v === '' ? null : v;
+}
+
+function renderLlm(llm) {
+  const sel = document.getElementById('llmModel');
+  const other = document.getElementById('llmModelOther');
+  const known = MODEL_CHOICES.some(([id]) => id === llm.model);
+  sel.innerHTML = MODEL_CHOICES
+    .map(([id, label]) => `<option value="${esc(id)}">${esc(label)}</option>`).join('');
+  // Модель, вписанную руками (или оставшуюся от прежней версии списка),
+  // теряем только если не показать её в «другая»: иначе первое же сохранение
+  // молча вернуло бы человека к моделям из config.json.
+  sel.value = llm.model === null ? '' : (known ? llm.model : MODEL_OTHER);
+  other.value = known || llm.model === null ? '' : llm.model;
+  other.hidden = sel.value !== MODEL_OTHER;
+  document.getElementById('llmKey').value = llm.apiKey ?? '';
+}
+
 function skillRow(k) {
   return `<tr class="skill" data-id="${esc(k.id ?? '')}">
     <td><input type="text" data-k="name" value="${esc(k.name)}"></td>
@@ -880,6 +954,7 @@ function renderSettings(s) {
   document.getElementById('autoApply').checked = auto.enabled;
   document.getElementById('autoMinScore').value = auto.minScore === null ? '' : auto.minScore;
   document.getElementById('autoBanner').hidden = !auto.enabled;
+  renderLlm(s.llm ?? { apiKey: null, model: null });
   const tg = s.telegram ?? { chats: [], firstReadDays: 14 };
   document.getElementById('tgChats').innerHTML = '';
   for (const c of tg.chats) addChatRow(c);
@@ -986,6 +1061,13 @@ function collectSettings() {
         ? null
         : Number(document.getElementById('autoMinScore').value),
     },
+    llm: {
+      apiKey: document.getElementById('llmKey').value.trim() || null,
+      model: chosenModel(
+        document.getElementById('llmModel').value,
+        document.getElementById('llmModelOther').value,
+      ),
+    },
   };
 }
 
@@ -996,6 +1078,21 @@ async function loadSettings() {
   if (!res.ok) { note.textContent = body.error; return; }
   renderSettings(body);
 }
+
+document.getElementById('llmModel').onchange = (e) => {
+  const other = document.getElementById('llmModelOther');
+  other.hidden = e.target.value !== MODEL_OTHER;
+  if (!other.hidden) other.focus();
+};
+
+// Ключ по умолчанию скрыт: панель открыта весь рабочий день, и показывать
+// ключ всем, кто пройдёт мимо экрана, незачем.
+document.getElementById('llmKeyShow').onclick = () => {
+  const field = document.getElementById('llmKey');
+  const shown = field.type === 'text';
+  field.type = shown ? 'password' : 'text';
+  document.getElementById('llmKeyShow').textContent = shown ? 'Показать' : 'Скрыть';
+};
 
 document.getElementById('addSpec').onclick = () => {
   document.getElementById('specList').appendChild(specCard({

@@ -15,6 +15,26 @@ import {
  */
 export type TgChatSetting = TgChat & { enabled: boolean };
 
+/**
+ * Ключ OpenRouter и модель, которой писать письма (2026-09-20). Лежит здесь, а
+ * не в config.json, по двум причинам: data/ не попадает в git, а копию проекта
+ * отдают другому человеку — у него свой ключ и свои предпочтения по модели, и
+ * трогать ради этого config.json (который в git) ему незачем.
+ */
+export interface LlmSettings {
+  /**
+   * null — ключа в настройках нет, берётся OPENROUTER_API_KEY из окружения или
+   * .env. Заданный здесь главнее окружения (см. openrouter.ts#resolveApiKey).
+   */
+  apiKey: string | null;
+  /**
+   * id модели OpenRouter, например `deepseek/deepseek-v4-flash`. null — модели
+   * из config.json letterModels, как было до появления этого поля. Заданная
+   * модель пробуется первой, остальные остаются запасными (core/llm.ts).
+   */
+  model: string | null;
+}
+
 export interface Settings {
   version: 1;
   specialties: Specialty[];
@@ -26,6 +46,8 @@ export interface Settings {
    * minScore из config.json, то есть уходит всё, что прошло фильтры.
    */
   autoApply: { enabled: boolean; minScore: number | null };
+  /** Ключ OpenRouter и модель для писем (правятся в панели). */
+  llm: LlmSettings;
 }
 
 export const SETTINGS_PATH = 'data/settings.json';
@@ -179,6 +201,21 @@ export function validateSettings(raw: unknown): Result {
     return { ok: false, error: 'Автоотклик: порог — целое от 0 до 100 или пусто' };
   }
 
+  // Секция llm появилась 2026-09-20; файла без неё это не ломает — пусто
+  // значит «ключ из .env, модели из config.json», то есть прежнее поведение.
+  const llmRaw = isRecord(raw['llm']) ? raw['llm'] : {};
+  const keyRaw = typeof llmRaw['apiKey'] === 'string' ? llmRaw['apiKey'].trim() : '';
+  const modelRaw = typeof llmRaw['model'] === 'string' ? llmRaw['model'].trim() : '';
+  // Пробел внутри id — почти наверняка вписано название модели («Claude
+  // Sonnet 5») вместо её id. Молча сохранить это значит получить 400 от
+  // OpenRouter на каждом письме и пустую очередь без внятной причины.
+  if (/\s/.test(modelRaw)) {
+    return {
+      ok: false,
+      error: 'Модель: нужен id модели OpenRouter без пробелов, например deepseek/deepseek-v4-flash',
+    };
+  }
+
   return {
     ok: true,
     settings: {
@@ -187,6 +224,7 @@ export function validateSettings(raw: unknown): Result {
       stopWords: cleanList(raw['stopWords']),
       telegram: { chats, firstReadDays: days },
       autoApply: { enabled: aaRaw['enabled'] === true, minScore: aaMin },
+      llm: { apiKey: keyRaw === '' ? null : keyRaw, model: modelRaw === '' ? null : modelRaw },
     },
   };
 }
@@ -215,6 +253,7 @@ export function seedSettings(
     stopWords: [...DEFAULT_STOP_WORDS],
     telegram: { chats: [], firstReadDays: DEFAULT_FIRST_READ_DAYS },
     autoApply: { enabled: false, minScore: null },
+    llm: { apiKey: null, model: null },
   };
 }
 
