@@ -9,6 +9,7 @@ import { TEXTS, BUTTONS } from './texts.js';
 import { buildVacancy, assessVacancy, isFetchableLink, MAX_VACANCY_CHARS } from './intake.js';
 import { buildVacancyMessages, buildQuestionMessages } from './reply.js';
 import { parseMeetTime } from './meet.js';
+import { isVacancyPost } from '../telegram/parse.js';
 
 /**
  * Вся логика бота: что ответить на сообщение и что записать. Функция не
@@ -67,11 +68,23 @@ function say(chatId: number, text: string, keyboard?: boolean): BotAction {
   return keyboard === true ? { kind: 'text', chatId, text, keyboard: true } : { kind: 'text', chatId, text };
 }
 
-/** Единственная ссылка в сообщении и ничего больше — повод сходить за текстом вакансии. */
-function loneLink(text: string): string | null {
-  const t = text.trim();
-  if (/\s/.test(t)) return null;
-  return isFetchableLink(t) ? t : null;
+/** Первая ссылка, за которой имеет смысл сходить: площадка или онлайн-документ. */
+function firstLink(text: string): string | null {
+  for (const url of text.match(/https?:\/\/\S+/g) ?? []) {
+    const clean = url.replace(/[),.;]+$/, '');
+    if (isFetchableLink(clean)) return clean;
+  }
+  return null;
+}
+
+/**
+ * Сообщение и есть вакансия, даже без /add_vacancy: рекрутёр кидает ссылку
+ * или текст, не читая инструкций. Живой прогон 2026-09-20: ссылка на hh без
+ * команды уходила в «свободный вопрос» и получала отказ «отвечаю только на
+ * вопросы по вакансиям» — ровно наоборот тому, чего человек ждал.
+ */
+function looksLikeVacancy(text: string): boolean {
+  return firstLink(text) !== null || isVacancyPost(text);
 }
 
 function isNonText(m: TgBotMessage): boolean {
@@ -106,7 +119,9 @@ export async function handleMessage(message: TgBotMessage, deps: HandlerDeps): P
 
   if (mode === 'await_meet') return handleMeetAnswer(text, chatId, now, day, deps);
   if (muted) return [say(chatId, TEXTS.limit(deps.profile.telegram))];
-  if (mode === 'await_vacancy') return handleVacancyText(text, message.message_id, chatId, username, day, deps);
+  if (mode === 'await_vacancy' || looksLikeVacancy(text)) {
+    return handleVacancyText(text, message.message_id, chatId, username, day, deps);
+  }
   return handleQuestion(text, chatId, day, deps);
 }
 
@@ -149,12 +164,16 @@ async function handleVacancyText(
   text: string, messageId: number, chatId: number, username: string | null,
   day: string, deps: HandlerDeps,
 ): Promise<BotAction[]> {
-  const link = loneLink(text);
+  const link = firstLink(text);
   if (link !== null) {
     const fetched = await deps.readLink(link);
     // Не вышло — режим сохраняется: человек просто пришлёт текст следующим
     // сообщением, и оно всё ещё будет считаться вакансией.
     if (fetched === null) return [say(chatId, TEXTS.askVacancy)];
+    // Прочиталось, но на вакансию не похоже — значит площадка отдала шапку
+    // сайта или страницу логина. Кормить этим модель нельзя: она ответит
+    // «не по теме», и виноватым будет выглядеть рекрутёр.
+    if (!isVacancyPost(fetched)) return [say(chatId, TEXTS.askVacancy)];
     return processVacancy(`${text}\n\n${fetched}`, messageId, chatId, username, day, deps);
   }
   return processVacancy(text, messageId, chatId, username, day, deps);

@@ -111,11 +111,58 @@ describe('вакансия', () => {
     expect(actions.some((a) => a.kind === 'owner' && a.text.includes('отсеяна'))).toBe(true);
   });
 
+  /** Текст, который площадка отдаёт, когда всё в порядке: по нему видно вакансию. */
+  const fetchedVacancy = [
+    'Бизнес-аналитик',
+    'Обязанности: собирать и описывать требования, рисовать процессы в BPMN,',
+    'ставить задачи разработке и сопровождать интеграции.',
+    'Требования: опыт работы от 2 лет, SQL, опыт работы с интеграциями и API.',
+    'Условия: офис или удалённо, оформление по ТК, обсуждаемая зарплата.',
+  ].join('\n');
+
   it('ссылка на разрешённый хост дочитывается', async () => {
-    deps.readLink = async () => 'Бизнес-аналитик. Требования: BPMN, SQL, интеграции.';
+    deps.readLink = async () => fetchedVacancy;
     await send({ text: '/add_vacancy' });
     await send({ message_id: 4, text: 'https://hh.ru/vacancy/12345' });
     expect(deps.queue.listByStatus('pending')).toHaveLength(1);
+  });
+
+  it('голая ссылка без /add_vacancy — это вакансия, а не свободный вопрос', async () => {
+    // Живой прогон 2026-09-20: рекрутёр прислал ссылку на hh без команды и
+    // получил «Я отвечаю только на вопросы по вакансиям» — ровно наоборот
+    // тому, чего он ждал.
+    deps.readLink = async () => fetchedVacancy;
+    const actions = await send({ message_id: 20, text: 'https://hh.ru/vacancy/137394462' });
+    expect(deps.queue.listByStatus('pending')).toHaveLength(1);
+    expect(actions.some((a) => a.kind === 'text' && a.text === 'ответ модели')).toBe(true);
+  });
+
+  it('ссылка внутри фразы тоже считается вакансией', async () => {
+    deps.readLink = async () => fetchedVacancy;
+    await send({ message_id: 21, text: 'посмотрите пожалуйста https://hh.ru/vacancy/137394462, подойдёт?' });
+    expect(deps.queue.listByStatus('pending')).toHaveLength(1);
+  });
+
+  it('текст, похожий на вакансию, без команды — тоже вакансия', async () => {
+    const actions = await send({ message_id: 22, text: fetchedVacancy });
+    expect(deps.queue.listByStatus('pending')).toHaveLength(1);
+    expect(actions.some((a) => a.kind === 'text' && a.text === 'ответ модели')).toBe(true);
+  });
+
+  it('обычный вопрос за вакансию не принимается', async () => {
+    await send({ message_id: 23, text: 'а вы рассматриваете офис в Москве?' });
+    expect(deps.queue.listByStatus('pending')).toHaveLength(0);
+    expect(modelCalls).toBe(1);
+  });
+
+  it('площадка отдала шапку сайта вместо вакансии — просим текст, модель не зовём', async () => {
+    // hh.ru без браузера отдаёт «Сервисы, Помощь, Войти…»; скормить это модели
+    // значит получить «не по теме» и оставить рекрутёра виноватым.
+    deps.readLink = async () => 'Сервисы Помощь Ещё Поиск Москва Войти Создать резюме '.repeat(6);
+    const actions = await send({ message_id: 24, text: 'https://hh.ru/vacancy/137394462' });
+    expect(actions[0]).toEqual({ kind: 'text', chatId: 77, text: TEXTS.askVacancy });
+    expect(modelCalls).toBe(0);
+    expect(deps.queue.listByStatus('pending')).toHaveLength(0);
   });
 
   it('ссылку прочитать не вышло — просьба повторить, режим сохраняется', async () => {

@@ -46,7 +46,8 @@ import { autoApproveAfterSearch, type AutoSkipReason } from './core/autoapply.js
 import { runBot, makeReadFile } from './bot/run.js';
 import { BotStore } from './bot/state.js';
 import { generateReply } from './bot/reply.js';
-import { fetchLinkText } from './bot/intake.js';
+import { fetchLinkText, needsBrowser } from './bot/intake.js';
+import { readVacancyPage } from './bot/page.js';
 import type { HandlerDeps } from './bot/handlers.js';
 import { BotApi } from './bot/api.js';
 import { TelegramAdapter } from './adapters/telegram.js';
@@ -1039,7 +1040,10 @@ async function main(): Promise<void> {
       salaryExpectation: config.salaryExpectation ?? 'готов обсудить на собеседовании',
       resume: () => resumeTextFor(mainSpecialty()),
       askModel: (messages) => generateReply(messages, { models: bot.models }),
-      readLink: (url) => fetchLinkText(url),
+      // Площадки рисует JS: голый fetch на hh.ru отдаёт шапку сайта, а не
+      // вакансию (снято 2026-09-20). Их читает отдельный браузер, документы —
+      // обычным запросом.
+      readLink: (url) => (needsBrowser(url) ? readVacancyPage(url) : fetchLinkText(url)),
       readFile: makeReadFile(api),
       now: () => new Date(),
     };

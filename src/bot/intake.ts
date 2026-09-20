@@ -25,6 +25,24 @@ const ALLOWED_HOSTS = new Set([
   'hr.ge', 'www.hr.ge', 't.me', 'docs.google.com', 'notion.so', 'www.notion.so', 'telegra.ph',
 ]);
 
+/**
+ * Площадки, чьи страницы рисует JS: голый fetch отдаёт шапку сайта, а не
+ * вакансию (снято на hh.ru 2026-09-20). Их читает браузер — src/bot/page.ts.
+ * Онлайн-документы (docs.google, notion, telegra.ph) отдаются текстом и
+ * браузера не требуют.
+ */
+const BROWSER_HOSTS = ['hh.ru', 'hh.kz', 'careerist.ru', 'hr.ge'];
+
+export function needsBrowser(url: string): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return BROWSER_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
+}
+
 export function isFetchableLink(url: string): boolean {
   let parsed: URL;
   try {
