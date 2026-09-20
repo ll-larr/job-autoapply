@@ -19,7 +19,7 @@ import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { Queue, type Status } from './core/queue.js';
-import { loadConfig, type Config } from './core/config.js';
+import { loadConfig, resolveBotConfig, type Config } from './core/config.js';
 import { runSearch, type SearchReport, type SearchQuery } from './pipeline.js';
 import {
   loadSettings, seedSettings, saveSettings, validateSettings, enabledSpecialties, SETTINGS_PATH, type Settings,
@@ -36,10 +36,18 @@ import { generateLetter, pickTemplate, pickMode } from './core/letter.js';
 import { answerQuestions } from './core/questions.js';
 import { generateDm } from './core/dm.js';
 import { proxyResolver, type ProxyDiscovery, type ProxySource } from './core/proxy.js';
+import { applyLlmSettings } from './core/llm.js';
+import { hasApiKey } from './core/openrouter.js';
 import type { Adapter } from './adapters/types.js';
 import { extractPdfText, refreshResumeCache, resumeTextFor, LEGACY_RESUME_MD } from './core/resume.js';
 import { suggestSpecialty } from './core/suggest.js';
 import { autoApproveAfterSearch, type AutoSkipReason } from './core/autoapply.js';
+import { runBot, makeReadFile } from './bot/run.js';
+import { BotStore } from './bot/state.js';
+import { generateReply } from './bot/reply.js';
+import { fetchLinkText } from './bot/intake.js';
+import type { HandlerDeps } from './bot/handlers.js';
+import { BotApi } from './bot/api.js';
 import { TelegramAdapter } from './adapters/telegram.js';
 import { openTelegram, type OpenResult } from './telegram/gramjs.js';
 import { classifyTgError, describeTgFailure } from './telegram/errors.js';
@@ -114,9 +122,17 @@ function defaultBaResumePdf(): string | null {
 /**
  * Настройки поиска на момент вызова (снимок на старте прогона, спека 3.1).
  * Первый вызов засевает data/settings.json из config.json.
+ *
+ * Заодно применяет ключ и модель из настроек (core/llm.ts). Именно здесь, а не
+ * отдельным вызовом в каждой команде: снимок настроек и есть тот момент, когда
+ * становится известно, чем звать модель, а панель читает настройки на каждый
+ * поиск и на каждое дозаполнение — значит, смена модели в панели действует со
+ * следующего поиска, как там и написано, без перезапуска.
  */
 function currentSettings(config: Config): Settings {
-  return loadSettings(SETTINGS_PATH, () => seedSettings(config.searchQueries, defaultBaResumePdf()));
+  const settings = loadSettings(SETTINGS_PATH, () => seedSettings(config.searchQueries, defaultBaResumePdf()));
+  applyLlmSettings(config, settings);
+  return settings;
 }
 
 /**
@@ -198,17 +214,18 @@ export function formatSearchReport(
   query: string,
   report: SearchReport,
   emptyLetters: number,
-  hasApiKey: boolean,
+  keyFound: boolean,
   letterFailure?: string,
   auto?: { approved: number; skipped: number },
 ): string[] {
   const lines: string[] = [];
   lines.push(`=== Поиск: "${query}" ===`);
   lines.push(
-    `OPENROUTER_API_KEY: ${
-      hasApiKey
+    `Ключ OpenRouter: ${
+      keyFound
         ? 'найден'
-        : 'НЕ найден — письма будут пустыми, вакансии всё равно попадут в очередь'
+        : 'НЕ найден — впиши его в панели («Настройки» → «Модель для писем») или в .env. '
+          + 'Письма будут пустыми, вакансии всё равно попадут в очередь'
     }`,
   );
   lines.push('');
@@ -733,6 +750,9 @@ async function main(): Promise<void> {
     // Конфиг нужен панели ради кнопки «Отправить всё»: отправка идёт через тот
     // же Sender, что и npm run send, с теми же лимитами и предохранителями.
     const config = loadConfig();
+    // Ключ и модель из настроек — до того, как что-либо позовёт модель.
+    // Дальше настройки перечитываются на каждый поиск и на каждое сохранение.
+    currentSettings(config);
     const queue = new Queue(DB_PATH);
     const stuck = queue.countStuckApproved();
     // Собираются РОВНО ОДИН РАЗ и переиспользуются для каждого поиска и для
@@ -855,9 +875,12 @@ async function main(): Promise<void> {
     const config = loadConfig();
     const queue = new Queue(DB_PATH);
     try {
-      if (!process.env['OPENROUTER_API_KEY']) {
-        console.error('OPENROUTER_API_KEY не найден — генерировать нечем.');
-        console.error('Положи ключ в файл .env рядом с package.json:');
+      // Читает настройки и применяет из них ключ с моделью (currentSettings).
+      currentSettings(config);
+      if (!hasApiKey()) {
+        console.error('Ключ OpenRouter не задан — генерировать нечем.');
+        console.error('Впиши его в панели: npm run panel, вкладка «Настройки» → «Модель для писем».');
+        console.error('Либо положи в файл .env рядом с package.json:');
         console.error('  OPENROUTER_API_KEY=sk-or-v1-...');
         process.exitCode = 1;
         return;
@@ -906,7 +929,9 @@ async function main(): Promise<void> {
         rest.filter((a, i) => a !== '--limit' && rest[i - 1] !== '--limit'),
       );
       await refreshResumes(settings, (line) => console.error(line));
-      const hasApiKey = Boolean(process.env['OPENROUTER_API_KEY']);
+      // Ключ уже применён из настроек (currentSettings выше) — спрашиваем
+      // openrouter.ts, а не окружение: ключ мог прийти из панели.
+      const keyFound = hasApiKey();
       // Один набор адаптеров на поиск и на последующую автоотправку: у hh это
       // один и тот же браузерный профиль, второй его не откроет.
       const adapters = buildAdapters({ queue, settings: () => settings, session: tg });
@@ -930,7 +955,7 @@ async function main(): Promise<void> {
       const auto = settings.autoApply.enabled
         ? { approved: autoApproved, skipped: autoSkipped.length }
         : undefined;
-      for (const line of formatSearchReport(formatQueryLabel(queries), report, emptyLetters, hasApiKey, letterFailure, auto)) {
+      for (const line of formatSearchReport(formatQueryLabel(queries), report, emptyLetters, keyFound, letterFailure, auto)) {
         console.log(line);
       }
 
@@ -953,6 +978,9 @@ async function main(): Promise<void> {
 
   if (cmd === 'send') {
     const config = loadConfig();
+    // Отправке модель нужна для анкеты работодателя на hh (core/questions.ts) —
+    // ключ и модель из настроек применяем до сборки адаптеров.
+    currentSettings(config);
     const queue = new Queue(DB_PATH);
     const tg = lazyTelegram();
     try {
@@ -975,7 +1003,69 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.error('Команды: search [запрос] [--specialty "название"] | panel | send | stop | status');
+  if (cmd === 'bot') {
+    const config = loadConfig();
+    const bot = resolveBotConfig(config);
+    const token = process.env['TG_BOT_TOKEN'];
+    if (token === undefined || token === '') {
+      console.error('нет TG_BOT_TOKEN в .env — возьми токен у @BotFather (/mybots → API Token)');
+      process.exitCode = 1;
+      return;
+    }
+    const ownerRaw = process.env['TG_OWNER_CHAT_ID'];
+    const owner = ownerRaw === undefined || ownerRaw.trim() === '' ? null : Number(ownerRaw);
+    if (owner !== null && !Number.isFinite(owner)) {
+      console.error('TG_OWNER_CHAT_ID в .env — не число; пинги владельцу отключены');
+    }
+
+    const settings = currentSettings(config);
+    await refreshResumes(settings, (line) => console.error(line));
+    const queue = new Queue(DB_PATH);
+    const store = new BotStore(DB_PATH);
+    const api = new BotApi(token);
+    // Резюме для /cv и для промпта — у специальности по умолчанию: рекрутёру
+    // уходит то же самое, о чём модель рассказывает в ответах.
+    const mainSpecialty = (): Specialty => enabledSpecialties(currentSettings(config))[0] ?? DEFAULT_SPECIALTY;
+    const deps: HandlerDeps = {
+      store,
+      queue,
+      settings: () => currentSettings(config),
+      limits: bot.limits,
+      profile: bot.profile,
+      salaryExpectation: config.salaryExpectation ?? 'готов обсудить на собеседовании',
+      resume: () => resumeTextFor(mainSpecialty()),
+      askModel: (messages) => generateReply(messages, { models: bot.models }),
+      readLink: (url) => fetchLinkText(url),
+      readFile: makeReadFile(api),
+      now: () => new Date(),
+    };
+
+    let stop = false;
+    process.on('SIGINT', () => {
+      // Не рвём текущую пачку: дообработаем и выйдем, иначе рекрутёр останется
+      // без ответа на уже прочитанное сообщение.
+      console.log('останавливаюсь после текущей пачки…');
+      stop = true;
+    });
+    console.log(`бот запущен${owner === null ? ' (TG_OWNER_CHAT_ID не задан — пинги пока некуда слать)' : ''}`);
+    try {
+      await runBot({
+        api,
+        store,
+        deps,
+        ownerChatId: owner !== null && Number.isFinite(owner) ? owner : null,
+        log: (line) => console.log(line),
+        resumePdf: () => mainSpecialty().resumePdf,
+        stopRequested: () => stop,
+      });
+    } finally {
+      store.close();
+      queue.close();
+    }
+    return;
+  }
+
+  console.error('Команды: search [запрос] [--specialty "название"] | panel | send | bot | stop | status');
   process.exitCode = 1;
 }
 

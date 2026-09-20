@@ -143,6 +143,14 @@ export class Sender {
       // остаются approved и дождутся следующего запуска.
       if (halted.has(row.source)) continue;
 
+      // Строку из бота отправлять нечем: адаптера tg-bot нет, бот писать
+      // первым не умеет, а ответ рекрутёру уже ушёл в самом боте. Молчаливый
+      // пропуск читался бы как поломка отправки, поэтому он в отчёте.
+      if (row.source === 'tg-bot') {
+        report.warnings.push(`${row.vacancy.title}: ответ уже отправлен ботом, отклик — руками`);
+        continue;
+      }
+
       const adapter = this.adapters.get(row.source);
       if (adapter === undefined) {
         this.queue.markFailed(row.id, `нет адаптера для площадки ${row.source}`);

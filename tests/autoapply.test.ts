@@ -32,6 +32,11 @@ describe('selectAutoApprovals (спека 7.2)', () => {
     const r = selectAutoApprovals([row({ contact: 'hr' })], { ...NONE, recentContact: () => true });
     expect(r.skipped[0]!.reason).toBe('recent_contact');
   });
+  it('вакансия из бота не одобряется никогда — её прислал незнакомый человек', () => {
+    const r = selectAutoApprovals([row({ source: 'tg-bot', score: 99, letter: 'письмо' })], NONE);
+    expect(r.approve).toEqual([]);
+    expect(r.skipped[0]!.reason).toBe('untrusted');
+  });
   it('два поста одного рекрутёра в одном прогоне — одобряется только первый по скору', () => {
     const r = selectAutoApprovals(
       [row({ id: 1, contact: 'hr', score: 50 }), row({ id: 2, contact: 'hr', score: 70 })],

@@ -210,6 +210,25 @@ describe('Sender троттлинг: fail-closed без правила', () => {
   });
 });
 
+describe('Sender — строка из бота (спека 2026-09-20, 5.7)', () => {
+  it('не отправляется ничем, но пропуск виден в отчёте, а не молчит', async () => {
+    seed(q, 1, 'tg-bot');
+    seed(q, 1, 'hh');
+    let hhCalls = 0;
+    const adapters = new Map<string, Adapter>([
+      ['hh', { name: 'hh', async search() { return []; }, async apply() { hhCalls++; return { status: 'sent' }; } }],
+    ]);
+
+    const rep = await new Sender(q, adapters, CONFIG, { sleep: async () => {} }).run();
+
+    expect(hhCalls).toBe(1);
+    expect(rep.warnings.some((w) => w.includes('ответ уже отправлен ботом'))).toBe(true);
+    // Строка остаётся approved, а не падает в failed: это не поломка.
+    expect(q.listByStatus('approved').map((r) => r.source)).toEqual(['tg-bot']);
+    expect(q.listByStatus('failed')).toHaveLength(0);
+  });
+});
+
 describe('Sender остановка', () => {
   it('капча останавливает очередь и возвращает запись в approved', async () => {
     seed(q, 3);
