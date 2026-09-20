@@ -168,7 +168,7 @@ export async function runBot(opts: RunBotOptions): Promise<void> {
     // последнее сообщение, но не потеряем его.
     store.kvSet('offset', String(offset));
 
-    await notifyMeetings(opts);
+    await notifyMeetings(opts, logThrottled);
 
     if (opts.stopAfterIdleRounds !== undefined && idleRounds >= opts.stopAfterIdleRounds) return;
   }
@@ -225,12 +225,14 @@ async function sendCv(chatId: number, opts: RunBotOptions): Promise<void> {
  * Пинги о собеседованиях. Запись сделана до отправки, поэтому сбой сети не
  * теряет договорённость: попытка повторится на следующем круге.
  */
-async function notifyMeetings(opts: RunBotOptions): Promise<void> {
+async function notifyMeetings(opts: RunBotOptions, warn: (line: string) => void): Promise<void> {
   const { api, store, deps, log } = opts;
   const pending = store.pendingMeetings();
   if (pending.length === 0) return;
   if (opts.ownerChatId === null) {
-    log(`есть ${pending.length} записей о собеседовании, но слать некуда — задай TG_OWNER_CHAT_ID в .env`);
+    // Через придушенный лог: круг цикла — это каждые полминуты, и без него
+    // одна несделанная настройка заливает консоль одной и той же строкой.
+    warn(`записей о собеседовании: ${pending.length}, но слать некуда — задай TG_OWNER_CHAT_ID в .env`);
     return;
   }
   for (const m of pending) {

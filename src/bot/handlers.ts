@@ -6,10 +6,12 @@ import type { BotLimits } from '../core/config.js';
 import type { ChatMessage } from '../core/openrouter.js';
 import type { ReplyResult } from './reply.js';
 import { TEXTS, BUTTONS } from './texts.js';
-import { buildVacancy, assessVacancy, isFetchableLink, MAX_VACANCY_CHARS } from './intake.js';
+import {
+  buildVacancy, assessVacancy, isFetchableLink, MAX_VACANCY_CHARS, MIN_VACANCY_CHARS,
+} from './intake.js';
 import { buildVacancyMessages, buildQuestionMessages } from './reply.js';
 import { parseMeetTime } from './meet.js';
-import { isVacancyPost } from '../telegram/parse.js';
+import { isVacancyPost, countVacancyMarkers } from '../telegram/parse.js';
 
 /**
  * Вся логика бота: что ответить на сообщение и что записать. Функция не
@@ -175,6 +177,14 @@ async function handleVacancyText(
     // «не по теме», и виноватым будет выглядеть рекрутёр.
     if (!isVacancyPost(fetched)) return [say(chatId, TEXTS.askVacancy)];
     return processVacancy(`${text}\n\n${fetched}`, messageId, chatId, username, day, deps);
+  }
+  // Живой прогон 2026-09-20: после «Прикрепить вакансию» пришла фраза в 29
+  // символов («Бизнес анализ процессов банка») и легла в очередь строкой со
+  // скором 0. Это название темы, а не вакансия. Судим по признакам, а не по
+  // длине: короткая настоящая вакансия («Ищем БА, BPMN, SQL, удалёнка, 250к»)
+  // проходить должна.
+  if (countVacancyMarkers(text) === 0 && text.trim().length < MIN_VACANCY_CHARS) {
+    return [say(chatId, TEXTS.askVacancy)];
   }
   return processVacancy(text, messageId, chatId, username, day, deps);
 }

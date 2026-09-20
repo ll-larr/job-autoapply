@@ -105,7 +105,10 @@ describe('вакансия', () => {
 
   it('отсеянная вакансия в очередь не идёт, но рекрутёр всё равно получает ответ', async () => {
     await send({ text: '/add_vacancy' });
-    const actions = await send({ message_id: 3, text: 'Бизнес-аналитик 1С\nДоработка 1С, отчёты 1С' });
+    const actions = await send({
+      message_id: 3,
+      text: 'Бизнес-аналитик 1С\nОбязанности: доработка 1С, отчёты 1С.\nТребования: опыт с 1С.',
+    });
     expect(deps.queue.listByStatus('pending')).toHaveLength(0);
     expect(actions.some((a) => a.kind === 'text' && a.text === 'ответ модели')).toBe(true);
     expect(actions.some((a) => a.kind === 'owner' && a.text.includes('отсеяна'))).toBe(true);
@@ -147,6 +150,18 @@ describe('вакансия', () => {
     const actions = await send({ message_id: 22, text: fetchedVacancy });
     expect(deps.queue.listByStatus('pending')).toHaveLength(1);
     expect(actions.some((a) => a.kind === 'text' && a.text === 'ответ модели')).toBe(true);
+  });
+
+  it('короткая фраза после команды — просьба прислать вакансию, а не строка со скором 0', async () => {
+    // Живой прогон 2026-09-20: «Бизнес анализ процессов банка» (29 символов)
+    // легло в очередь строкой со скором 0. Это название темы, а не вакансия.
+    await send({ text: '/add_vacancy' });
+    const actions = await send({ message_id: 25, text: 'Бизнес анализ процессов банка' });
+    expect(actions[0]).toEqual({ kind: 'text', chatId: 77, text: TEXTS.askVacancy });
+    expect(deps.queue.listByStatus('pending')).toHaveLength(0);
+    expect(modelCalls).toBe(0);
+    // Режим сохраняется: следующее сообщение всё ещё считается вакансией.
+    expect(deps.store.chat(77)?.mode).toBe('await_vacancy');
   });
 
   it('обычный вопрос за вакансию не принимается', async () => {

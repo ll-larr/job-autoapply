@@ -31,6 +31,18 @@ const MIN_MARKERS = 2;
 /** Признаки поста-резюме или дайджеста резюме: это не вакансия, писать некому. */
 export const RESUME_MARKERS: readonly string[] = ['резюме недели', 'ищу работу', 'ищу вакансию'];
 
+/**
+ * Сколько признаков вакансии нашлось в тексте, без гейта по длине. Нужен боту
+ * (src/bot/handlers.ts): рекрутёр присылает вакансию короче поста в канале —
+ * «Ищем БА, BPMN, SQL, удалёнка, 250к» это вакансия, а «Бизнес анализ
+ * процессов банка» (прислано живьём 2026-09-20) — название темы, и в очередь
+ * ему попадать незачем.
+ */
+export function countVacancyMarkers(text: string): number {
+  if (/#(вакансия|vacancy|job)(?![\p{L}\p{N}_])/iu.test(text)) return MIN_MARKERS;
+  return VACANCY_MARKERS.filter((m) => containsTerm(text, m)).length;
+}
+
 export function isVacancyPost(text: string): boolean {
   if (text.length < MIN_POST_LENGTH) return false;
   if (/#резюме|#resume|#ищу/i.test(text)) return false;
