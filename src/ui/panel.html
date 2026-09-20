@@ -146,6 +146,17 @@
       <button id="addSpec">Добавить специальность</button>
       <span class="hint" id="settingsNote">Правка действует со следующего поиска.</span>
     </div>
+    <div class="settings-block" id="profileBlock">
+      <strong>Кандидат</strong>
+      <span class="hint">имя подставляется в письма, сообщения рекрутёрам и ответы бота.</span>
+      <div class="llm-row">
+        <label for="profileName">Имя и фамилия</label>
+        <div>
+          <input type="text" id="profileName" placeholder="Иван Петров" spellcheck="false">
+          <div class="hint">пусто — модель пишет про «кандидата» и подписи не ставит.</div>
+        </div>
+      </div>
+    </div>
     <div class="settings-block" id="llmBlock">
       <strong>Модель для писем</strong>
       <span class="hint">кто пишет письма, личные сообщения рекрутёрам и отвечает на анкеты.</span>
@@ -954,6 +965,7 @@ function renderSettings(s) {
   document.getElementById('autoApply').checked = auto.enabled;
   document.getElementById('autoMinScore').value = auto.minScore === null ? '' : auto.minScore;
   document.getElementById('autoBanner').hidden = !auto.enabled;
+  document.getElementById('profileName').value = (s.profile ?? {}).name ?? '';
   renderLlm(s.llm ?? { apiKey: null, model: null });
   const tg = s.telegram ?? { chats: [], firstReadDays: 14 };
   document.getElementById('tgChats').innerHTML = '';
@@ -1052,6 +1064,7 @@ function collectSettings() {
   });
   return {
     version: 1,
+    profile: { name: document.getElementById('profileName').value.trim() || null },
     specialties,
     stopWords: lines(document.getElementById('stopWords').value),
     telegram: { chats: collectChats(), firstReadDays: Number(document.getElementById('tgDays').value) },

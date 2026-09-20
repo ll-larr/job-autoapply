@@ -1,6 +1,7 @@
 import type { Vacancy } from './vacancy.js';
 import type { LetterMode } from './queue.js';
 import { complete, type CompletionOptions } from './openrouter.js';
+import { candidateName, withCandidate } from './profile.js';
 
 // Разбор ответов HTTP переехал в openrouter.ts вместе с вызовом модели;
 // реэкспорт — чтобы вызывающие и тесты не искали его на новом месте.
@@ -110,9 +111,21 @@ const WRITING_RULES = [
  * Первая строка инструкции. Без роли — дословно прежняя: засеянные
  * специальности (legacyLetters) не передают роль, и их промпт не меняется.
  */
-const roleLine = (role?: string): string => (role === undefined
+const roleLine = (role?: string): string => withCandidate(role === undefined
   ? 'Ты помогаешь кандидату откликаться на вакансии бизнес-аналитика.'
   : `Ты помогаешь кандидату откликаться на вакансии по специальности «${role}».`);
+
+/**
+ * Чем закончить письмо. Имя не задано — подписи нет: выдуманная подпись хуже
+ * её отсутствия, отклик на hh и так уходит от известного работодателю
+ * человека.
+ */
+const signatureLine = (): string => {
+  const who = candidateName();
+  return who === null
+    ? 'Начни с обращения. Подпись не ставь.'
+    : `Начни с обращения, закончи подписью «${who}».`;
+};
 
 const instructionHybrid = (role?: string): string => `${roleLine(role)}
 Тебе дан скелет письма с плейсхолдерами {{HOOK}} и {{FIT}}.
@@ -144,7 +157,7 @@ const instructionFull = (role?: string): string => `${roleLine(role)}
 Опирайся только на факты из резюме — ничего не выдумывай.
 Пиши про работу, а не про работодателя: название компании не упоминай и не
 хвали её. Комплименты компании читаются как лесть и как машинный текст.
-Начни с обращения, закончи подписью «кандидат».
+${signatureLine()}
 Верни только письмо, без пояснений.
 
 ${WRITING_RULES}`;

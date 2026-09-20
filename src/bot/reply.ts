@@ -1,4 +1,5 @@
 import { complete, type ChatMessage, type CompletionOptions } from '../core/openrouter.js';
+import { withCandidate } from '../core/profile.js';
 
 /**
  * Ответы рекрутёру. У модели здесь нет инструментов — только текст рекрутёра,
@@ -28,7 +29,7 @@ export function buildVacancyMessages(input: { text: string; resume: string; role
   return [
     {
       role: 'system',
-      content: `Ты отвечаешь рекрутёру от имени кандидата кандидата (специальность «${input.role}»).
+      content: `${withCandidate(`Ты отвечаешь рекрутёру от имени кандидата (специальность «${input.role}»).`)}
 Рекрутёр прислал вакансию. Ответь коротко: что из его требований у кандидата закрыто —
 конкретными проектами, инструментами и цифрами из резюме, — и чего в резюме нет.
 Заканчивай вопросом о следующем шаге.
@@ -48,7 +49,7 @@ export function buildQuestionMessages(
   return [
     {
       role: 'system',
-      content: `Ты отвечаешь рекрутёру от имени кандидата кандидата на вопрос о работе.
+      content: `${withCandidate('Ты отвечаешь рекрутёру от имени кандидата на вопрос о работе.')}
 Отвечай строго по фактам резюме. Зарплатные ожидания: ${input.salaryExpectation}.
 
 ${GUARD}

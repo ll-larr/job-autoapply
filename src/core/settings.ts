@@ -37,6 +37,12 @@ export interface LlmSettings {
 
 export interface Settings {
   version: 1;
+  /**
+   * Кто откликается. Имя подставляется в промпты писем, личных сообщений,
+   * анкет и ответов бота (core/profile.ts). Пусто — модель говорит про
+   * «кандидата» и подписи не ставит.
+   */
+  profile: { name: string | null };
   specialties: Specialty[];
   stopWords: string[];
   /** Каналы и группы, где искать (спека 4.4). */
@@ -201,6 +207,11 @@ export function validateSettings(raw: unknown): Result {
     return { ok: false, error: 'Автоотклик: порог — целое от 0 до 100 или пусто' };
   }
 
+  // Секция profile появилась 2026-09-20 вместе с llm; старый файл её не
+  // содержит, и это значит «имя не задано», а не ошибка.
+  const profileRaw = isRecord(raw['profile']) ? raw['profile'] : {};
+  const personName = typeof profileRaw['name'] === 'string' ? profileRaw['name'].trim() : '';
+
   // Секция llm появилась 2026-09-20; файла без неё это не ломает — пусто
   // значит «ключ из .env, модели из config.json», то есть прежнее поведение.
   const llmRaw = isRecord(raw['llm']) ? raw['llm'] : {};
@@ -220,6 +231,7 @@ export function validateSettings(raw: unknown): Result {
     ok: true,
     settings: {
       version: 1,
+      profile: { name: personName === '' ? null : personName },
       specialties,
       stopWords: cleanList(raw['stopWords']),
       telegram: { chats, firstReadDays: days },
@@ -246,6 +258,7 @@ export function seedSettings(
     : searchQueries.filter((q) => q.constraints?.juniorOnly === true).map((q) => q.query);
   return {
     version: 1,
+    profile: { name: null },
     specialties: [
       makeBaSpecialty(baQueries, baResumePdf),
       makeSystemAnalystSpecialty(saQueries, baResumePdf),

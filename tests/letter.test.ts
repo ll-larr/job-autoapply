@@ -4,6 +4,7 @@ import {
   describeHttpFailure, isProxyBlockPage,
 } from '../src/core/letter.js';
 import type { LetterInput } from '../src/core/letter.js';
+import { setCandidateName } from '../src/core/profile.js';
 import { normalizeVacancy } from '../src/core/vacancy.js';
 
 function mk(over: Partial<Parameters<typeof normalizeVacancy>[0]> = {}) {
@@ -50,9 +51,25 @@ describe('buildPrompt — снимок промпта писем', () => {
 });
 
 describe('buildPrompt — специальность', () => {
-  it('без role — прежняя первая строка про бизнес-аналитика', () => {
+  it('без role — первая строка про бизнес-аналитика', () => {
     const p = buildPrompt({ vacancy: mk(), matched: [], mode: 'full', resume: RESUME, template: '' });
     expect(p.messages[0].content).toMatch(/^Ты помогаешь кандидату откликаться на вакансии бизнес-аналитика\./);
+  });
+
+  // Имя перестало быть вписанным в промпт 2026-09-20: копию проекта отдают
+  // другому человеку, и правка имени не должна требовать правки кода.
+  it('имя из настроек попадает в промпт и в подпись', () => {
+    setCandidateName('Иван Петров');
+    const p = buildPrompt({ vacancy: mk(), matched: [], mode: 'full', resume: RESUME, template: '' });
+    expect(p.messages[0].content).toContain('Кандидат: Иван Петров.');
+    expect(p.messages[0].content).toContain('закончи подписью «Иван Петров»');
+    setCandidateName(null);
+  });
+
+  it('имени нет — модель не выдумывает подпись', () => {
+    const p = buildPrompt({ vacancy: mk(), matched: [], mode: 'full', resume: RESUME, template: '' });
+    expect(p.messages[0].content).toContain('Подпись не ставь.');
+    expect(p.messages[0].content).not.toContain('Кандидат:');
   });
 
   it('с role — специальность в инструкции, и в hybrid, и в full', () => {

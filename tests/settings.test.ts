@@ -217,3 +217,20 @@ describe('settings — ключ и модель OpenRouter', () => {
     expect(loadSettings(path, () => s).llm).toEqual({ apiKey: 'sk-or-v1-abc', model: 'anthropic/claude-sonnet-5' });
   });
 });
+
+describe('settings — имя кандидата', () => {
+  it('старый файл без profile — имени нет, это не ошибка', () => {
+    const s = seedSettings(undefined, null) as unknown as Record<string, unknown>;
+    delete s['profile'];
+    const r = validateSettings(s);
+    expect(r.ok && r.settings.profile).toEqual({ name: null });
+  });
+
+  it('пробелы чистятся, пустая строка — null', () => {
+    const s = seedSettings(undefined, null);
+    s.profile = { name: '  Иван Петров ' };
+    expect(validateSettings(s)).toMatchObject({ ok: true, settings: { profile: { name: 'Иван Петров' } } });
+    s.profile = { name: '   ' };
+    expect(validateSettings(s)).toMatchObject({ ok: true, settings: { profile: { name: null } } });
+  });
+});

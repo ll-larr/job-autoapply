@@ -14,7 +14,7 @@ import type { Specialty } from './specialty.js';
  * должны поменяться от того, что текст теперь можно брать из PDF.
  */
 
-export const LEGACY_RESUME_MD = 'CV кандидат Бизнес-аналитик.md';
+export const LEGACY_RESUME_MD = 'resume.md';
 export const RESUME_CACHE_DIR = 'data/resumes';
 
 export async function extractPdfText(path: string): Promise<string> {

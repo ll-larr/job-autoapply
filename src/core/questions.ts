@@ -1,6 +1,7 @@
 import type { Vacancy } from './vacancy.js';
 import { createProxiedFetch } from './proxy.js';
 import { describeHttpFailure, extractText } from './letter.js';
+import { withCandidate } from './profile.js';
 
 /**
  * Вопросы работодателя («тест»), которые hh.ru требует пройти перед откликом.
@@ -64,7 +65,7 @@ const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 export const OPEN_VALUE = 'open';
 
 function instruction(salary: string): string {
-  return `Ты заполняешь за кандидата анкету работодателя на hh.ru перед откликом на вакансию.
+  return `${withCandidate('Ты заполняешь за кандидата анкету работодателя на hh.ru перед откликом на вакансию.')}
 Ответы уходят работодателю без проверки человеком, поэтому правило одно: не врать.
 
 Как отвечать:

@@ -29,7 +29,7 @@ const config = loadConfig();
 // Резюме лежит в корне проекта: пользователь положил актуальный .md туда
 // 2026-08-30, чтобы у конвейера был один постоянный источник вместо
 // вытаскивания текста из DOCX на рабочем столе.
-const resume = readFileSync('CV кандидат Бизнес-аналитик.md', 'utf8');
+const resume = readFileSync('resume.md', 'utf8');
 
 const vacancy = normalizeVacancy({
   source: 'hh',

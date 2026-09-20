@@ -7,3 +7,5 @@ browser-profile/
 .playwright-profile/
 data/
 .claude/worktrees/
+resume.md
+resume.pdf

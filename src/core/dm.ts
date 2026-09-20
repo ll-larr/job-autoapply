@@ -1,6 +1,7 @@
 import type { Vacancy } from './vacancy.js';
 import { complete, type ChatMessage, type CompletionOptions } from './openrouter.js';
 import { COMMON_WRITING_RULES, findForbiddenClaim } from './letter.js';
+import { candidateShortName, withCandidate } from './profile.js';
 
 /**
  * Первое личное сообщение рекрутёру в Telegram (спека 2026-09-18, 5.1). Не
@@ -13,14 +14,16 @@ import { COMMON_WRITING_RULES, findForbiddenClaim } from './letter.js';
 
 export const DM_MAX_LENGTH = 1200;
 
-const INSTRUCTION = (role: string): string => `Ты помогаешь кандидату написать первое личное сообщение
-рекрутёру в Telegram по вакансии (специальность «${role}»).
+const INSTRUCTION = (role: string): string => `${withCandidate(`Ты помогаешь кандидату написать первое личное сообщение
+рекрутёру в Telegram по вакансии (специальность «${role}»).`)}
 Сообщение короткое:
 - первой фразой назови вакансию и дай ссылку на пост — у рекрутёра их много;
 - потом 2–3 предложения о том, почему он подходит: конкретный проект, инструмент или цифра из резюме,
   привязанные к тому, что просит вакансия;
 - в конце — что резюме во вложении, и короткий вопрос или просьба.
-Обращение «Здравствуйте!» без имени. Подпись «Артём». Не длиннее ${DM_MAX_LENGTH} символов.
+Обращение «Здравствуйте!» без имени. ${candidateShortName() === null
+  ? 'Подпись не ставь.'
+  : `Подпись «${candidateShortName()}».`} Не длиннее ${DM_MAX_LENGTH} символов.
 Опирайся только на факты из резюме — ничего не выдумывай. Верни только текст сообщения.
 
 ${COMMON_WRITING_RULES}`;

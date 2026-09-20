@@ -37,6 +37,7 @@ import { answerQuestions } from './core/questions.js';
 import { generateDm } from './core/dm.js';
 import { proxyResolver, type ProxyDiscovery, type ProxySource } from './core/proxy.js';
 import { applyLlmSettings } from './core/llm.js';
+import { setCandidateName } from './core/profile.js';
 import { hasApiKey } from './core/openrouter.js';
 import type { Adapter } from './adapters/types.js';
 import { extractPdfText, refreshResumeCache, resumeTextFor, LEGACY_RESUME_MD } from './core/resume.js';
@@ -111,11 +112,13 @@ async function refreshResumes(settings: Settings, log: (line: string) => void): 
 }
 
 /**
- * PDF резюме БА для засева настроек (спека 2026-09-18, 3.7). Путь владельца;
- * если файла нет — null, и в панели поле останется пустым.
+ * PDF резюме для засева настроек (спека 2026-09-18, 3.7). Берём resume.pdf
+ * рядом с package.json, если он есть; иначе null — и поле в панели остаётся
+ * пустым, человек вписывает свой путь сам. До 2026-09-20 здесь был зашит путь
+ * к резюме владельца: в чужой копии проекта он просто не существовал.
  */
 function defaultBaResumePdf(): string | null {
-  const p = join(homedir(), 'OneDrive', 'Рабочий стол', 'Резюме', 'CV_кандидат_Бизнес-аналитик.pdf');
+  const p = resolve('resume.pdf');
   return existsSync(p) ? p : null;
 }
 
@@ -132,6 +135,7 @@ function defaultBaResumePdf(): string | null {
 function currentSettings(config: Config): Settings {
   const settings = loadSettings(SETTINGS_PATH, () => seedSettings(config.searchQueries, defaultBaResumePdf()));
   applyLlmSettings(config, settings);
+  setCandidateName(settings.profile.name);
   return settings;
 }
 
