@@ -196,7 +196,7 @@ async function processVacancy(
     deps.store.countModelCall(day, chatId);
     deps.store.countModelCall(day, 0);
     const reply = await deps.askModel(buildVacancyMessages({
-      text, resume: deps.resume(), role: specialty.title,
+      text, resume: deps.resume(), role: specialty.name,
     }));
     actions.push(say(chatId, replyText(reply, chatId, deps)));
   } else {
@@ -207,7 +207,7 @@ async function processVacancy(
     kind: 'owner',
     text: [
       `Вакансия от ${username === null ? `id ${chatId}` : `@${username}`}`,
-      `${vacancy.title} — скор ${score}, специальность «${specialty.title}»`,
+      `${vacancy.title} — скор ${score}, специальность «${specialty.name}»`,
       queueId === null ? note : `в очереди #${queueId}`,
       vacancy.url === '' ? '' : vacancy.url,
       '',
