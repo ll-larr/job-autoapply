@@ -45,18 +45,44 @@ function toDialogMessage(m: Api.Message): DialogMessage {
   };
 }
 
+/**
+ * Сырая история от client.getMessages вперемешку с Api.MessageService
+ * (закреп, звонок, скриншот — текста нет) и Api.MessageEmpty (сообщение
+ * удалили — даже даты нет). Отвечать там нечему, поэтому отбрасываем и их,
+ * и Api.Message без текста (медиа без подписи — ответчику тоже нечего
+ * сказать). Сиблинг TgReader делает то же самое (gramjs.ts, messages()).
+ */
+export function toDialogMessages(items: unknown[]): DialogMessage[] {
+  const out: DialogMessage[] = [];
+  for (const item of items) {
+    if (!(item instanceof Api.Message)) continue;
+    if (typeof item.message !== 'string' || item.message === '') continue;
+    out.push(toDialogMessage(item));
+  }
+  return out;
+}
+
 export async function openDialog(
   username: string,
 ): Promise<{ ok: true; dialog: TgDialog } | { ok: false; reason: string }> {
   const opened = await openTelegram();
   if (!opened.ok) return { ok: false, reason: opened.message };
   const client = opened.client;
-  const peer = await client.getInputEntity(username);
+  let peer: Api.TypeInputPeer;
+  try {
+    peer = await client.getInputEntity(username);
+  } catch (e) {
+    // Клиент уже подключён и авторизован — не закрыть его здесь значит
+    // держать сессию открытой без единого шанса её кем-то использовать.
+    await opened.close().catch(() => {});
+    const message = e instanceof Error ? e.message : String(e);
+    return { ok: false, reason: `не удалось найти собеседника @${username}: ${message}` };
+  }
 
   const dialog: TgDialog = {
     async history(minId: number) {
       const msgs = await client.getMessages(peer, { limit: 100, minId });
-      return msgs.map(toDialogMessage).reverse();
+      return toDialogMessages(msgs).reverse();
     },
     async send(text: string) {
       await client.sendMessage(peer, { message: text });

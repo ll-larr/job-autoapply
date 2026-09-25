@@ -1,5 +1,6 @@
+import { Api } from 'telegram';
 import { describe, it, expect } from 'vitest';
-import { fakeDialog } from '../src/telegram/interview-session.js';
+import { fakeDialog, toDialogMessages } from '../src/telegram/interview-session.js';
 
 describe('fakeDialog', () => {
   it('history отдаёт только сообщения новее minId, от старых к новым', async () => {
@@ -41,5 +42,36 @@ describe('fakeDialog', () => {
     const got = await d.history(0);
     expect(got[0]?.hasButtons).toBe(true);
     expect(got[0]?.out).toBe(false);
+  });
+});
+
+describe('toDialogMessages', () => {
+  it('оставляет только Api.Message с текстом; служебные, удалённые и медиа без подписи отбрасывает', () => {
+    const real = new Api.Message({ id: 10, peerId: undefined, date: 1_700_000_000, message: 'привет', out: false });
+    const service = new Api.MessageService({ id: 11, peerId: undefined, date: 1_700_000_000, action: undefined });
+    const empty = new Api.MessageEmpty({ id: 12 });
+    const noCaption = new Api.Message({ id: 13, peerId: undefined, date: 1_700_000_000, message: '' });
+    const noMessageField = new Api.Message({ id: 14, peerId: undefined, date: 1_700_000_000 });
+
+    const got = toDialogMessages([real, service, empty, noCaption, noMessageField]);
+
+    expect(got.map((m) => m.id)).toEqual([10]);
+    expect(got[0]?.text).toBe('привет');
+    expect(got[0]?.out).toBe(false);
+  });
+
+  it('отдаёт hasButtons: true для Api.Message с replyMarkup', () => {
+    const withButtons = new Api.Message({
+      id: 20, peerId: undefined, date: 1_700_000_000, message: 'выбери один из вариантов',
+      replyMarkup: new Api.ReplyInlineMarkup({ rows: [] }),
+    });
+
+    const got = toDialogMessages([withButtons]);
+
+    expect(got[0]?.hasButtons).toBe(true);
+  });
+
+  it('значения, которые вообще не Api.Message (null, объект, строка), не роняют функцию', () => {
+    expect(toDialogMessages([null, undefined, {}, 'строка', 42])).toEqual([]);
   });
 });
