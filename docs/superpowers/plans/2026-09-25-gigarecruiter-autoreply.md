@@ -44,6 +44,10 @@
 
 ### Task 1: База фактов и белый список чисел
 
+> **Поправки контроллера 2026-09-25 — обязательны и важнее кода ниже, где расходятся:**
+>
+> - **R1.** `data/` в `.gitignore` намеренно. `data/facts.md` создать на диске, но **не коммитить** — в нём личные данные. В коммит задачи идут только `src/core/facts.ts` и `tests/facts.test.ts`.
+
 **Files:**
 - Create: `data/facts.md`
 - Create: `src/core/facts.ts`
@@ -362,6 +366,10 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ### Task 3: Промпт и генерация ответа
 
+> **Поправки контроллера 2026-09-25 — обязательны и важнее кода ниже, где расходятся:**
+>
+> - **R3.** `complete()` без ключа OpenRouter отказывает ещё до `fetch`. В `tests/interview-generate.test.ts` поставить `setApiKey('sk-test-key')` в `beforeEach` и `setApiKey(null)` в `afterEach` (`setApiKey` экспортирует `src/core/openrouter.ts`).
+
 **Files:**
 - Modify: `src/core/interview.ts`
 - Test: `tests/interview-generate.test.ts`
@@ -553,6 +561,11 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ### Task 4: Управление VPN
 
+> **Поправки контроллера 2026-09-25 — обязательны и важнее кода ниже, где расходятся:**
+>
+> - **R4.** После запуска оболочки порт появляется не мгновенно. `restart` после `launch` ждёт порт до `VPN_WAIT_MS = 30_000`, опрашивая `discover` раз в `VPN_POLL_MS = 2_000` через `deps.sleep`. Только если за 30 с порт не появился — попытка провалена, дальше `sleep(VPN_BACKOFF_MS[attempt])` и новая попытка. Бэкофф 5/15/45 с остаётся между попытками. Без этого первая попытка всегда «проваливается», а вторая убивает только что поднимающийся VPN.
+> - Тесты из плана переписать под эту логику, сохранив проверяемое поведение: (1) порт сразу — одна пара kill/launch; (2) порт появился на N-м опросе в пределах 30 с — второго launch нет; (3) порт не появился ни разу — ровно 3 launch и `false`; (4) kill строго раньше launch; (5) между попытками выдержан бэкофф `VPN_BACKOFF_MS[0]`. Считать не сырые вызовы `discover`, а launch/kill/sleep.
+
 **Files:**
 - Create: `src/core/vpn.ts`
 - Test: `tests/vpn.test.ts`
@@ -713,6 +726,13 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ---
 
 ### Task 5: Диалог с одним собеседником
+
+> **Поправки контроллера 2026-09-25 — обязательны и важнее кода ниже, где расходятся:**
+>
+> - **R2.** Экспортировать `interface DialogMessage extends TgMessage { out: boolean; hasButtons: boolean }`. `history()` отдаёт `DialogMessage[]` (от старых к новым, id > minId), `onMessage` получает `DialogMessage`. В GramJS: `out` — `m.out === true`, `hasButtons` — `m.replyMarkup !== undefined && m.replyMarkup !== null`. Общий `TgMessage` в `src/telegram/types.ts` **не менять**.
+> - `fakeDialog(seed?: DialogMessage[])`: `push(text, opts?: { hasButtons?: boolean })` добавляет **входящее** (`out: false`); `send(text)` не только копит в `sent`, но и кладёт **исходящее** (`out: true`) в историю — как настоящий Telegram. Иначе цикл не отличит свои ответы от вопросов.
+> - Тесты: к трём из плана добавить — `send` появляется в `history` с `out: true`; `push` с `hasButtons: true` отдаётся с этим признаком.
+> - **Шаг 5 плана (клиент из `openTelegram`) обязателен**, приведение типа `as unknown as` в итоговом коде недопустимо.
 
 **Files:**
 - Create: `src/telegram/interview-session.ts`
@@ -901,6 +921,11 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ---
 
 ### Task 6: Цикл — окно, тишина, поллинг, повторы
+
+> **Поправки контроллера 2026-09-25 — обязательны и важнее кода ниже, где расходятся:**
+>
+> - **R5.** Тест шага 5 использует `dirname` — импортировать его из `node:path` вместе с `join`.
+> - `answerOnce` принимает вопрос как `DialogMessage` из задачи 5 (`import type { DialogMessage } from '../telegram/interview-session.js'`), а не `TgMessage`; фикстуры тестов дополнить полями `out: false, hasButtons: false`.
 
 **Files:**
 - Create: `src/core/interview-runner.ts`
@@ -1163,6 +1188,23 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ---
 
 ### Task 7: Сборка цикла, конфиг, команда, планировщик
+
+> **Поправки контроллера 2026-09-25 — обязательны и важнее кода ниже, где расходятся:**
+>
+> Задача 7 в плане содержит дефекты цикла. Реализовать `runInterview` **по этим правилам, а не по коду шага 5**:
+>
+> - **R6.** Импорты в `interview-runner.ts` слить: `readFileSync` уже импортирован в задаче 6, повторный импорт — ошибка компиляции.
+> - **R7.** Входящее с `hasButtons: true` не отвечается никогда: `lastMessageId` сдвигается за него без отправки, в журнал строка «пропущено сообщение с кнопками».
+> - **R8. Семантика запуска.**
+>   - `windowUntil > now` (окно открыто): сессия живёт до `windowUntil`; после **первого отправленного в этой сессии** ответа она гаснет ещё и по `idleMinutes` тишины. До первого ответа тишина её не гасит — окно ждёт первое сообщение.
+>   - `windowUntil <= now` (поллинг): если входящих новее `lastMessageId` нет — выход сразу, одна строка в журнал. Есть — отвечаем и живём до `idleMinutes` тишины.
+>   - «Тишина» — время с последнего входящего или отправленного сообщения.
+>   - CLI **не** открывает окно на каждом запуске. `npm run interview` — просто запуск. `npm run interview -- --window` — сначала `openWindow(now, windowMinutes)`, потом запуск.
+> - **R9. Цикл последовательный, без рекурсии и без гонки с `close()`.** Раз в 5 с `dialog.history(lastMessageId)`. Взять все подряд идущие входящие (`out: false`) без кнопок, склеить тексты через перевод строки в **один** вопрос — ГигаРекрутёр шлёт «Спасибо за ответ» и вопрос то одним сообщением, то двумя, отвечать надо один раз. `lastMessageId` после ответа — id последнего из группы. Транскрипт — вся история до группы (`out` → `me`, иначе `bot`). Исход `retry` — `sleep(backoffFor(round))`, `round += 1`, следующая итерация; исход `sent` — `round = 0`. Подписка `onMessage` не обязательна.
+>   - Для этого `answerOnce` расширить или добавить рядом функцию уровня группы — на твоё усмотрение, но с тестами на склейку двух входящих и на пропуск сообщения с кнопками.
+> - **R10. Один экземпляр.** `data/interview.lock` с pid процесса. Файл есть и pid жив (`process.kill(pid, 0)` не бросает) — строка в журнал и выход. pid мёртв — перехватить. Снимать в `finally`. Тест на захват, на отказ при живом pid и на перехват мёртвого.
+> - Все зависимости `runInterview` (время, сон, открытие диалога, VPN, генерация, пути состояния/журнала/блокировки) — внедряемые параметры с боевыми значениями по умолчанию, чтобы окно, тишину и поллинг проверить тестом на `fakeDialog` без сети и без реального ожидания. Минимум тестов: поллинг без новых — выход без отправки; окно ждёт первое сообщение дольше `idleMinutes`; после ответа тишина `idleMinutes` гасит сессию; своё исходящее не отвечается.
+> - Шаги 8 (скрипт планировщика) и 9 (живая проверка собеседника) **перенесены в задачу 8**. В коммит задачи 7 скрипт не входит.
 
 **Files:**
 - Modify: `src/core/interview-runner.ts`
@@ -1484,6 +1526,42 @@ git commit -m "feat: цикл автоответа целиком, команд�
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
+
+---
+
+### Task 8: Триггер от отклика и планировщик
+
+> Задача добавлена контроллером 2026-09-25 (R11, R12): спека, раздел 3, пункты 1 и 5, а в плане их не было.
+
+**Files:**
+- Create: `src/core/interview-trigger.ts`
+- Modify: `src/core/sender.ts` (внедряемый хук после успешного отклика)
+- Modify: `src/cli.ts` (передать хук в Sender там, где он создаётся для `send`)
+- Create: `scripts/interview-service.ps1`
+- Test: `tests/interview-trigger.test.ts`, дополнить тест Sender, если хук затрагивает его поведение
+
+**Interfaces:**
+- Consumes: `openWindow(now, minutes, path?)` из задачи 6; `GigarecruiterConfig` из задачи 7; `Vacancy` из `src/core/vacancy.ts` (поля `company`, `title`)
+- Produces: `isSberVacancy(v: Pick<Vacancy, 'company' | 'title'>): boolean`; `triggerInterview(v, deps: { config: GigarecruiterConfig | undefined; now(): number; openWindow(now: number, minutes: number): void; spawnInterview(): void }): boolean` — `true`, если окно открыто и запуск отдан
+
+**Требования:**
+
+1. `isSberVacancy` — `company` или `title` совпадает с `/сбер|sber/i`. Тест: «ПАО Сбербанк», «SberTech», «Сбер» в заголовке — да; «Озон Банк», «Тинькофф» — нет.
+2. `triggerInterview`: блока `gigarecruiter` нет или вакансия не Сбер — `false`, ничего не делает. Иначе `openWindow(now, config.windowMinutes)`, затем `spawnInterview()`, `true`. Тесты на все три ветки.
+3. Боевой `spawnInterview` — отсоединённый процесс, переживающий `npm run send`: `spawn('cmd.exe', ['/c', 'npm', 'run', 'interview'], { cwd: <корень репозитория>, detached: true, stdio: 'ignore', windowsHide: true }).unref()`. Второй экземпляр, если он уже идёт, сам выйдет по блокировке из задачи 7 — а продлённое окно подхватит.
+4. В `src/core/sender.ts` после ветки `result.status === 'sent'` (строка около 260; **не** для `'already_applied'`) вызвать внедрённый необязательный хук `onSent?.(vacancy)`. Хук не должен ронять отправку: исключение ловится и уходит в журнал отправки. По умолчанию хука нет — существующие тесты Sender не меняются. Как именно вакансия доступна в этой точке — прочитать код; если там строка очереди, а не `Vacancy`, передать то, что содержит `company` и `title`.
+5. В `src/cli.ts` для команды `send` передать хук, собранный из `triggerInterview` с боевыми зависимостями.
+6. `scripts/interview-service.ps1` — по образцу `scripts/bot-service.ps1` **в его текущем, исправленном виде** (прочитать файл): UTF-8 с BOM и CRLF, `conhost.exe --headless cmd.exe /c ...`, журнал `data\interview-service.log`, триггеры с `-User "$env:USERDOMAIN\$env:USERNAME"`, `Register-ScheduledTask ... -User $me -Force`. Две задачи:
+   - `job-autoapply-interview-window` — разово `2026-09-25T22:40:00`, аргумент `npm run interview -- --window`;
+   - `job-autoapply-interview-poll` — с `2026-09-26T00:40:00`, повтор раз в 4 часа без срока, аргумент `npm run interview`.
+   В шапке — как снять обе задачи. Проверить парсером PowerShell (`[System.Management.Automation.Language.Parser]::ParseFile`) — ноль ошибок. **Не регистрировать** задачи самому: это делает владелец.
+7. **Не выполнять** живую проверку собеседника и ничего не отправлять в Telegram — это делает контроллер после задачи.
+
+- [ ] Тесты `tests/interview-trigger.test.ts` — падают
+- [ ] Реализация — проходят
+- [ ] Хук в Sender и CLI, весь набор `npm test` и `npm run typecheck` зелёные
+- [ ] `scripts/interview-service.ps1`, парсер без ошибок
+- [ ] Коммит поимённо: `src/core/interview-trigger.ts src/core/sender.ts src/cli.ts scripts/interview-service.ps1 tests/interview-trigger.test.ts` (+ файл теста Sender, если трогал)
 
 ---
 
