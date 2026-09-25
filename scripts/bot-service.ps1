@@ -13,8 +13,12 @@
 $ErrorActionPreference = 'Stop'
 
 $repo = (Resolve-Path "$PSScriptRoot\..").Path
+$me = "$env:USERDOMAIN\$env:USERNAME"
 $action = New-ScheduledTaskAction -Execute 'npm.cmd' -Argument 'run bot' -WorkingDirectory $repo
-$trigger = New-ScheduledTaskTrigger -AtLogOn
+# Без -User триггер означает «при входе любого пользователя», а такую задачу
+# заводит только администратор: Register-ScheduledTask отвечает «Отказано в
+# доступе» (0x80070005). С именем пользователя задача ставится из обычной сессии.
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $me
 $settings = New-ScheduledTaskSettingsSet `
   -RestartCount 999 `
   -RestartInterval (New-TimeSpan -Minutes 1) `
@@ -22,7 +26,7 @@ $settings = New-ScheduledTaskSettingsSet `
   -AllowStartIfOnBatteries `
   -DontStopIfGoingOnBatteries
 
-Register-ScheduledTask -TaskName 'job-autoapply-bot' -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
+Register-ScheduledTask -TaskName 'job-autoapply-bot' -Action $action -Trigger $trigger -Settings $settings -User $me -Force | Out-Null
 
 Write-Host 'Задача job-autoapply-bot зарегистрирована: стартует при входе в систему.'
 Write-Host 'Проверить:  Get-ScheduledTask -TaskName job-autoapply-bot'
