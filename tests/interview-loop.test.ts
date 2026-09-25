@@ -303,6 +303,51 @@ describe('runInterview: провал моделей', () => {
     expect(h.generate).toHaveBeenCalledTimes(11);
     expect(h.now()).toBe(h.t0 + 120 * MIN);
   });
+
+  /** Окно на 120 минут: Q1 в 1:00 отвечается, Q2 приходит в 5:00. */
+  function afterFirstAnswer(failQ2Until: number) {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push('Первый вопрос'));
+    h.at(5 * MIN, () => h.dialog.push('Второй вопрос'));
+    h.generate.mockImplementation(async ({ question }) => (
+      question.includes('Второй') && h.now() < h.t0 + failQ2Until
+        ? { ok: false, failure: 'm: 429' }
+        : { ok: true, text: 'Ответ.' }));
+    const sentAt: number[] = [];
+    const send = h.dialog.send;
+    h.dialog.send = async (text) => { sentAt.push(h.now()); await send(text); };
+    return { h, sentAt };
+  }
+
+  it('после первого ответа модели легли на Q2 — повторы идут, пока открыто окно, а не 10 минут', async () => {
+    const { h, sentAt } = afterFirstAnswer(40 * MIN);
+    await h.run();
+    expect(h.dialog.sent).toHaveLength(2);
+    // Q2: 5:00, 5:30, 7:30, 12:30, 27:30 — брак; 42:30 — годный, после паузы уходит в 43:10.
+    expect(sentAt[1]).toBe(h.t0 + 43 * MIN + 10_000);
+    expect(h.journal()).not.toMatch(/сессия закрыта: ответов 1/);
+    expect(h.now()).toBe(h.t0 + 53 * MIN + 10_000);
+  });
+
+  it('после первого ответа модели лежат до конца — сессия гаснет по windowUntil, на Q2 не уходит ничего', async () => {
+    const { h } = afterFirstAnswer(Number.POSITIVE_INFINITY);
+    await h.run();
+    expect(h.dialog.sent).toHaveLength(1);
+    // 5:00, 5:30, 7:30, 12:30, дальше каждые 15 минут до 117:30; последний сон обрезан концом окна.
+    expect(h.generate.mock.calls.filter((c) => c[0].question.includes('Второй'))).toHaveLength(11);
+    expect(h.now()).toBe(h.t0 + 120 * MIN);
+  });
+
+  it('поллинг: модели лежат — сессия по-прежнему гаснет через idleMinutes', async () => {
+    const h = harness([msg(1, 'Вопрос')]);
+    h.generate.mockResolvedValue({ ok: false, failure: 'm: 429' });
+    await h.run();
+    expect(h.dialog.sent).toEqual([]);
+    // 0:00, 0:30, 2:30, 7:30 — брак; сон обрезан до 10:00, конец сессии.
+    expect(h.generate).toHaveBeenCalledTimes(4);
+    expect(h.now()).toBe(h.t0 + 10 * MIN);
+  });
 });
 
 describe('runInterview: один экземпляр и уборка', () => {

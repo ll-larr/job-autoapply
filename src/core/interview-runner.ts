@@ -299,14 +299,17 @@ async function converse(
   let lastActivity = now();
   let seenId = 0;
   let answered = false;
+  let pending = false;
   let sentCount = 0;
   let round = 0;
   let first = true;
   // Тишина — время с последнего входящего или отправленного. До первого
-  // ответа сессию держит окно, после — тишина (R8). Окно, закрывшееся посреди
-  // разговора, его не рвёт: дальше живём, как поллинг, до тишины.
+  // ответа сессию держит окно, после — тишина (R8). Неотвеченный вопрос —
+  // не конец разговора: пока он висит, окно держит сессию и после первого
+  // ответа, лестница повторов идёт до конца окна (спека 7). Окно,
+  // закрывшееся посреди разговора, его не рвёт: дальше живём до тишины.
   const endsAt = (windowUntil: number): number =>
-    (answered ? lastActivity + idleMs : Math.max(windowUntil, lastActivity + idleMs));
+    (answered && !pending ? lastActivity + idleMs : Math.max(windowUntil, lastActivity + idleMs));
 
   for (;;) {
     const t = now();
@@ -343,6 +346,7 @@ async function converse(
       group.push(m);
     }
     bump(group.length === 0 ? Math.max(floor, msgs.at(-1)?.id ?? 0) : floor);
+    pending = group.length > 0;
 
     if (first) {
       first = false;
@@ -361,6 +365,7 @@ async function converse(
       if (r === 'superseded') continue;
       if (r === 'sent') {
         answered = true;
+        pending = false;
         sentCount += 1;
         round = 0;
         lastActivity = now();
