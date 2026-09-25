@@ -7,7 +7,7 @@ import { readSession, readTelegramKeys, SESSION_PATH } from './session.js';
 import type { TgChat, TgMessage, TgPeer, TgReader, TgSender } from './types.js';
 
 export type OpenResult =
-  | { ok: true; reader: TgReader; sender: TgSender; close(): Promise<void> }
+  | { ok: true; client: TelegramClient; reader: TgReader; sender: TgSender; close(): Promise<void> }
   | { ok: false; reason: 'no_keys' | 'no_session' | 'no_proxy' | 'auth'; message: string };
 
 function chatOf(entity: Api.Channel | Api.Chat, id: string): TgChat {
@@ -110,5 +110,5 @@ export async function openTelegram(opts: { sessionPath?: string } = {}): Promise
     },
   };
 
-  return { ok: true, reader, sender, close: () => client.destroy() };
+  return { ok: true, client, reader, sender, close: () => client.destroy() };
 }

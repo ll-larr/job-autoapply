@@ -287,7 +287,7 @@ describe('lazyTelegram — одна сессия на процесс, по пе�
     const open = async () => {
       const r = results[Math.min(opened++, results.length - 1)];
       return r === 'ok'
-        ? { ok: true as const, reader: { tag: 'reader' } as never, sender: { tag: 'sender' } as never, close: async () => { closed++; } }
+        ? { ok: true as const, client: {} as never, reader: { tag: 'reader' } as never, sender: { tag: 'sender' } as never, close: async () => { closed++; } }
         : { ok: false as const, reason: 'no_proxy' as const, message: 'VPN выключен, Telegram пропущен' };
     };
     return { open, opened: () => opened, closed: () => closed };

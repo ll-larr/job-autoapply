@@ -1,0 +1,118 @@
+import { Api } from 'telegram';
+import { NewMessage } from 'telegram/events/index.js';
+import { openTelegram } from './gramjs.js';
+import type { TgMessage } from './types.js';
+
+/**
+ * Один личный диалог одним объектом (спека 2026-09-25, 4). Существующий
+ * TgReader тут не годится: он намеренно не отдаёт личные переписки, а
+ * resolveChat знает только каналы и группы.
+ *
+ * Интерфейс узкий сознательно: цикл не должен уметь ничего, кроме как читать
+ * историю одного собеседника, писать ему и показывать «печатает». Ни списка
+ * чатов, ни рассылки, ни кнопок.
+ */
+
+/**
+ * Сообщение личного диалога: TgMessage плюс то, что нужно циклу интервью,
+ * чтобы отличить свой ответ от вопроса собеседника и не наступить на кнопки.
+ */
+export interface DialogMessage extends TgMessage {
+  /** true — сообщение отправили мы (Api.Message.out). */
+  out: boolean;
+  /** true — у сообщения есть клавиатура/кнопки (Api.Message.replyMarkup). Кнопки не нажимаем никогда. */
+  hasButtons: boolean;
+}
+
+export interface TgDialog {
+  /** Сообщения новее minId, от старых к новым. */
+  history(minId: number): Promise<DialogMessage[]>;
+  send(text: string): Promise<void>;
+  setTyping(): Promise<void>;
+  /** Подписка на входящие. Возвращает функцию отписки. */
+  onMessage(cb: (m: DialogMessage) => void): () => void;
+  close(): Promise<void>;
+}
+
+function toDialogMessage(m: Api.Message): DialogMessage {
+  return {
+    id: m.id,
+    date: new Date(m.date * 1000),
+    text: m.message ?? '',
+    urls: [],
+    out: m.out === true,
+    hasButtons: m.replyMarkup !== undefined && m.replyMarkup !== null,
+  };
+}
+
+export async function openDialog(
+  username: string,
+): Promise<{ ok: true; dialog: TgDialog } | { ok: false; reason: string }> {
+  const opened = await openTelegram();
+  if (!opened.ok) return { ok: false, reason: opened.message };
+  const client = opened.client;
+  const peer = await client.getInputEntity(username);
+
+  const dialog: TgDialog = {
+    async history(minId: number) {
+      const msgs = await client.getMessages(peer, { limit: 100, minId });
+      return msgs.map(toDialogMessage).reverse();
+    },
+    async send(text: string) {
+      await client.sendMessage(peer, { message: text });
+    },
+    async setTyping() {
+      await client.invoke(new Api.messages.SetTyping({ peer, action: new Api.SendMessageTypingAction() }));
+    },
+    onMessage(cb) {
+      const handler = (event: { message: Api.Message }): void => cb(toDialogMessage(event.message));
+      client.addEventHandler(handler, new NewMessage({ fromUsers: [username], incoming: true }));
+      return () => client.removeEventHandler(handler, new NewMessage({ fromUsers: [username], incoming: true }));
+    },
+    async close() {
+      await opened.close();
+    },
+  };
+  return { ok: true, dialog };
+}
+
+/** Подмена для тестов: сети нет, всё в памяти. */
+export function fakeDialog(
+  seed: DialogMessage[] = [],
+): TgDialog & { sent: string[]; push(text: string, opts?: { hasButtons?: boolean }): void } {
+  const messages = [...seed];
+  const sent: string[] = [];
+  const subs = new Set<(m: DialogMessage) => void>();
+  let nextId = Math.max(0, ...messages.map((m) => m.id)) + 1;
+
+  return {
+    sent,
+    async history(minId: number) {
+      return messages.filter((m) => m.id > minId).sort((a, b) => a.id - b.id);
+    },
+    async send(text: string) {
+      sent.push(text);
+      // Как настоящий Telegram: своё сообщение тоже ложится в историю, иначе
+      // цикл не отличит свой ответ от вопроса собеседника.
+      messages.push({ id: nextId++, date: new Date(), text, urls: [], out: true, hasButtons: false });
+    },
+    async setTyping() {},
+    onMessage(cb) {
+      subs.add(cb);
+      return () => subs.delete(cb);
+    },
+    push(text: string, opts?: { hasButtons?: boolean }) {
+      const m: DialogMessage = {
+        id: nextId++,
+        date: new Date(),
+        text,
+        urls: [],
+        out: false,
+        hasButtons: opts?.hasButtons ?? false,
+      };
+      messages.push(m);
+      for (const cb of subs) cb(m);
+    },
+    async close() {},
+  };
+}
