@@ -44,6 +44,43 @@ describe('extractNumbers', () => {
   it('числительные словами не считаются числами', () => {
     expect(extractNumbers('три вещи и две части').size).toBe(0);
   });
+
+  it('точечные десятичные дроби не путаются с датами', () => {
+    expect(extractNumbers('Точность 87.5024 процента').has('87.5024')).toBe(true);
+    expect(extractNumbers('Точность 87.5024 процента').has('5024')).toBe(false);
+  });
+
+  it('короткие дроби вида 1.2345 не путаются с датами', () => {
+    expect(extractNumbers('курс 1.2345').has('1.2345')).toBe(true);
+    expect(extractNumbers('курс 1.2345').has('2345')).toBe(false);
+  });
+
+  it('число с несуществующим месяцем не разбивается', () => {
+    const n = extractNumbers('13.2025');
+    expect(n.has('13.2025')).toBe(true);
+    expect(n.has('13')).toBe(false);
+    expect(n.has('2025')).toBe(false);
+  });
+
+  it('длинные последовательности цифр не теряют точность', () => {
+    expect(extractNumbers('12345678901234567890').has('12345678901234567890')).toBe(true);
+    expect(extractNumbers('12345678901234567891').has('12345678901234567891')).toBe(true);
+  });
+
+  it('ведущие нули отсекаются правильно', () => {
+    expect(extractNumbers('007').has('7')).toBe(true);
+    expect(extractNumbers('007').has('007')).toBe(false);
+  });
+
+  it('ноль остаётся нулём', () => {
+    expect(extractNumbers('0').has('0')).toBe(true);
+    expect(extractNumbers('0').size).toBe(1);
+  });
+
+  it('9.00 становится 9', () => {
+    expect(extractNumbers('9.00').has('9')).toBe(true);
+    expect(extractNumbers('9.00').has('9.00')).toBe(false);
+  });
 });
 
 describe('readFacts', () => {
