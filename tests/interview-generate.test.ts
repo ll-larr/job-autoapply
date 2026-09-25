@@ -45,11 +45,10 @@ describe('buildInterviewMessages', () => {
     expect(systemContent).toContain('хранимые процедуры');
   });
 
-  it('система велит писать суммы так же, как в резюме и фактах (I3)', () => {
+  it('система велит брать суммы ровно из источников, без чужой вилки в примере (H1)', () => {
     const m = buildInterviewMessages({ resume: 'р', facts: 'ф', transcript: [], question: 'в' });
-    expect(m[0]!.content).toContain(
-      'Суммы и числа пиши так же, как в резюме и фактах: например, 280–360 тысяч, а не 280 000.',
-    );
+    expect(m[0]!.content).toContain('Суммы и числа бери ровно из резюме и фактов, не пересчитывай и не округляй.');
+    expect(m[0]!.content).not.toContain('280');
   });
 });
 
@@ -64,7 +63,7 @@ describe('generateAnswer', () => {
 
   const input = {
     resume: 'Сократил время с 32 до 4 часов',
-    facts: 'Вилка 280–360',
+    facts: 'Вилка 280–360 тысяч',
     transcript: [] as Turn[],
     question: 'На сколько сократили время инвентаризации?',
   };
@@ -90,7 +89,7 @@ describe('generateAnswer', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it('правдивые «от 280 000 до 360 000 рублей» и «коды 200, 400 и 500» проходят с первой модели (I3)', async () => {
+  it('правдивые «от 280 000 до 360 000 рублей» при фактах «280–360 тысяч» и «коды 200, 400 и 500» проходят с первой модели (I3, H1)', async () => {
     for (const text of ['Ожидаю от 280 000 до 360 000 рублей.', 'Проверял коды ответов 200, 400 и 500.']) {
       const fetchImpl = vi.fn(async () => new Response(
         JSON.stringify({ choices: [{ message: { content: text } }] }),

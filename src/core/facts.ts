@@ -22,6 +22,24 @@ const NUMBER_RE = /\d+(?:[.,]\d+)?/g;
 const DATE_DDMMYYYY_RE = /\b(?:0?[1-9]|[12]\d|3[01])\.(?:0?[1-9]|1[0-2])\.(?:19|20)\d{2}\b/g;
 const DATE_MMYYYY_RE = /\b(?:0?[1-9]|1[0-2])\.(?:19|20)\d{2}\b/g;
 
+/**
+ * Сумма с разрядами через пробел: «180 000», «3 000 000», в том числе через
+ * неразрывный и узкий неразрывный пробел (H1). Первая группа — до трёх цифр и
+ * не хвост длинного числа: год «2024» с последующим «200» не склеивается.
+ */
+const GROUPED_RE = /(?<![\d.,])\d{1,3}(?:[ \u00A0\u202F]\d{3})+(?:[.,]\d+)?(?!\d)/g;
+
+// Граница слова \b в JS знает только латиницу, поэтому конец единицы —
+// «дальше не буква» (как у маркеров автомата в interview.ts, I4).
+const THOUSANDS = String.raw`тысяч(?:[аиеу]|ей|ам|ами|ах)?(?![а-яё])|тыс(?![а-яё])\.?|т\.\s?р(?:уб)?\.?(?![а-яё])|[кk](?![а-яёa-z\d])`;
+const MILLIONS = String.raw`миллион(?:[аеуы]|ов|ом|ам|ами|ах)?(?![а-яё])|млн(?![а-яё])\.?`;
+const NUM = String.raw`\d+(?:[.,]\d+)?`;
+/** Число или диапазон («180–260», «от 180 до 260») и следом единица тысяч или миллионов. */
+const UNIT_RE = new RegExp(
+  String.raw`(?<![\d.,])(${NUM})(?:\s*(?:[-‐‑‒–—−]|до)\s*(${NUM}))?\s*(?:(${THOUSANDS})|${MILLIONS})`,
+  'gi',
+);
+
 /** Текстово отсекает ведущие нули, оставляя хотя бы один. */
 function canonicalizeInteger(s: string): string {
   return s.replace(/^0+(?=\d)/, '') || '0';
@@ -45,6 +63,16 @@ function canonicalizeNumber(s: string): string {
 }
 
 /**
+ * Умножает каноническое число на 10^zeros переносом точки, без Number():
+ * «1.5» и 6 → «1500000», «0.25» и 3 → «250», «1.23456» и 3 → «1234.56».
+ */
+function scaleUp(canonical: string, zeros: number): string {
+  const [integer, frac = ''] = canonical.split('.');
+  const padded = frac.padEnd(zeros, '0');
+  return canonicalizeNumber(`${integer!}${padded.slice(0, zeros)}.${padded.slice(zeros)}`);
+}
+
+/**
  * Числа текста в канонической форме. Дробная часть — точка, плюс отсечены
  * ведущие и хвостовые нули (85,50 → 85.5, 07.2025 → 7 и 2025 отдельно).
  *
@@ -54,32 +82,42 @@ function canonicalizeNumber(s: string): string {
  * за «выдуманное число» хотя ответ правдив. Дата разбивается на компоненты
  * (ДД.ММ.ГГГГ → 12, 10, 2025) чтобы как резюме так и ответ давали одно и то же.
  *
+ * Суммы сравниваются по величине (H1). «400 000» — одно число 400000, а не 400
+ * и 0: иначе выдуманная зарплата проходила бы, собранная из кусков. Число или
+ * диапазон с единицей даёт и сырое значение, и полное: «180–260 тысяч» →
+ * 180, 260, 180000, 260000; «3 млн» → 3 и 3000000. Так правдивое «180 000»
+ * совпадает с «180 тысяч» из фактов, а «500 тысяч» при вилке 180–260 — нет.
+ *
  * Канонизация текстовая, не через Number(), чтобы не потерять точность в длинных
  * последовательностях цифр (123456789012345678 != Number(123456789012345678)).
  */
 export function extractNumbers(text: string): Set<string> {
   const out = new Set<string>();
-  let remaining = text;
 
-  // Первый проход: даты в точках разбираем на компоненты в каноничной форме
-  for (const match of text.matchAll(DATE_DDMMYYYY_RE)) {
-    const parts = match[0].split('.');
-    for (const part of parts) {
-      out.add(canonicalizeInteger(part));
-    }
+  // Первый проход: разряды склеиваются в одно число прямо в тексте — дальше
+  // его видят и проход единиц («1 500 тысяч»), и общий, но не по частям.
+  let remaining = text.replace(GROUPED_RE, (m) => m.replace(/[ \u00A0\u202F]/g, ''));
+
+  // Второй проход: даты в точках разбираем на компоненты в каноничной форме
+  for (const re of [DATE_DDMMYYYY_RE, DATE_MMYYYY_RE]) {
+    remaining = remaining.replace(re, (m) => {
+      for (const part of m.split('.')) out.add(canonicalizeInteger(part));
+      return ' ';
+    });
   }
 
-  for (const match of text.matchAll(DATE_MMYYYY_RE)) {
-    const parts = match[0].split('.');
-    for (const part of parts) {
-      out.add(canonicalizeInteger(part));
+  // Третий проход: число или диапазон с единицей — сырое и полное значения
+  remaining = remaining.replace(UNIT_RE, (_m, a: string, b: string | undefined, thousands: string | undefined) => {
+    const zeros = thousands !== undefined ? 3 : 6;
+    for (const v of b === undefined ? [a] : [a, b]) {
+      const c = canonicalizeNumber(v);
+      out.add(c);
+      out.add(scaleUp(c, zeros));
     }
-  }
+    return ' ';
+  });
 
-  // Удаляем обработанные даты перед вторым проходом
-  remaining = remaining.replace(DATE_DDMMYYYY_RE, ' ').replace(DATE_MMYYYY_RE, ' ');
-
-  // Второй проход: остальные числа в канонической форме
+  // Последний проход: остальные числа в канонической форме
   for (const m of remaining.matchAll(NUMBER_RE)) {
     out.add(canonicalizeNumber(m[0]));
   }
