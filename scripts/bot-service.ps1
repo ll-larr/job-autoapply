@@ -4,6 +4,10 @@
 # Запускать из корня репозитория один раз:
 #   powershell -ExecutionPolicy Bypass -File scripts/bot-service.ps1
 #
+# Перезапустить (после правок в коде бота):
+#   powershell -ExecutionPolicy Bypass -File scripts/bot-restart.ps1
+# Не Stop-ScheduledTask: он оставляет cmd и node жить сиротами со старым кодом.
+#
 # Снять:
 #   Unregister-ScheduledTask -TaskName job-autoapply-bot -Confirm:$false
 #
@@ -48,3 +52,4 @@ Write-Host 'Задача job-autoapply-bot зарегистрирована: с�
 Write-Host "Журнал:  $log"
 Write-Host 'Проверить:  Get-ScheduledTask -TaskName job-autoapply-bot'
 Write-Host 'Запустить сейчас:  Start-ScheduledTask -TaskName job-autoapply-bot'
+Write-Host 'Перезапустить:  powershell -ExecutionPolicy Bypass -File scripts/bot-restart.ps1'
