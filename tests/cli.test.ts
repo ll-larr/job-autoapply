@@ -590,7 +590,7 @@ describe('gigarecruiterOnSent: хук отправки резолвит блок
 
   it('в блоке нет windowMinutes — окно открывается на умолчание 120 минут, а не на NaN', () => {
     const s = spies();
-    const config = { ...base, gigarecruiter: { username: 'Giga_recruiter_bot', vpnExe: 'vpn.exe' } } as unknown as Config;
+    const config = { ...base, gigarecruiter: { username: 'Giga_recruiter_bot' } } as unknown as Config;
     gigarecruiterOnSent(config, s.deps)(sber);
     expect(s.opened).toEqual([[1_000, 120]]);
     expect(s.spawned()).toBe(1);
@@ -598,7 +598,7 @@ describe('gigarecruiterOnSent: хук отправки резолвит блок
 
   it('кривой блок — исключение (Sender запишет его в отчёт), окно не открыто, процесс не поднят', () => {
     const s = spies();
-    const config = { ...base, gigarecruiter: { username: 'Giga_recruiter_bot', vpnExe: 'vpn.exe', windowMinutes: 0 } } as unknown as Config;
+    const config = { ...base, gigarecruiter: { username: 'Giga_recruiter_bot', windowMinutes: 0 } } as unknown as Config;
     expect(() => gigarecruiterOnSent(config, s.deps)(sber)).toThrow(/windowMinutes/);
     expect(s.opened).toEqual([]);
     expect(s.spawned()).toBe(0);
@@ -606,7 +606,7 @@ describe('gigarecruiterOnSent: хук отправки резолвит блок
 
   it('не Сбер или блока нет — ничего, даже при кривом блоке', () => {
     const s = spies();
-    const broken = { ...base, gigarecruiter: { username: '', vpnExe: '' } } as unknown as Config;
+    const broken = { ...base, gigarecruiter: { username: '' } } as unknown as Config;
     expect(() => gigarecruiterOnSent(broken, s.deps)(other)).not.toThrow();
     gigarecruiterOnSent(base as Config, s.deps)(sber);
     expect(s.opened).toEqual([]);

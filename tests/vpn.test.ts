@@ -1,102 +1,198 @@
-import { describe, it, expect, vi } from 'vitest';
-import { restart, VPN_BACKOFF_MS, VPN_POLL_MS } from '../src/core/vpn.js';
-import type { VpnDeps } from '../src/core/vpn.js';
+import { describe, it, expect } from 'vitest';
+import {
+  restart, isStoppedOutput, VPN_BACKOFF_MS, VPN_POLL_MS, VPN_WAIT_MS, SERVICE_STOP_WAIT_MS, SERVICE_POLL_MS,
+  type VpnDeps, type ScResult,
+} from '../src/core/vpn.js';
 
 /**
- * Рестарт v2RayTun (поправка контроллера 2026-09-25, R4). После launch порт
- * открывается не мгновенно — оболочка ещё поднимает ядро xraycore.exe, — так
- * что restart ждёт его появления до VPN_WAIT_MS, опрашивая discover раз в
- * VPN_POLL_MS, и только после этого решает, что попытка провалилась.
+ * Рестарт Happ (решение владельца 2026-09-26, FU-2). VPN — служба HappService:
+ * остановить через sc.exe, дождаться STOPPED, запустить, поднять GUI Happ, если
+ * его нет, и ждать порт, как раньше (R4).
  *
- * Тесты не должны звать killVpn, launchVpn или defaultVpnDeps: это убило бы
- * настоящий VPN. Каждый side effect подменяется через VpnDeps, и проверяем мы
- * не сырые вызовы discover (их число — деталь реализации опроса), а сколько
- * раз были kill/launch/sleep и в каком порядке.
+ * Тесты не зовут ни sc.exe, ни tasklist, ни cmd: это остановило бы настоящий
+ * VPN владельца. Каждый side effect подменяется через VpnDeps, а проверяем мы
+ * порядок вызовов и их аргументы.
  */
 
-function fakeDeps(overrides: Partial<VpnDeps> = {}): VpnDeps {
+const TARGET = { service: 'HappService', app: 'D:\\Happ\\Happ.exe' };
+
+// Вывод `sc.exe query HappService` на машине владельца: подписи локализованы
+// (и в OEM-кодировке читаются мусором), имя состояния — всегда латиницей.
+const scOut = (code: number, state: string, flags = '(NOT_STOPPABLE, NOT_PAUSABLE, IGNORES_SHUTDOWN)'): string => [
+  '',
+  'Имя_службы: HappService ',
+  '        Тип                : 10  WIN32_OWN_PROCESS  ',
+  `        Состояние          : ${code}  ${state} `,
+  `                                ${flags}`,
+  '        Код_выхода_Win32   : 0  (0x0)',
+  '',
+].join('\r\n');
+const RUNNING = scOut(4, 'RUNNING', '(STOPPABLE, NOT_PAUSABLE, ACCEPTS_SHUTDOWN)');
+const STOP_PENDING = scOut(3, 'STOP_PENDING', '(STOPPABLE, NOT_PAUSABLE, ACCEPTS_SHUTDOWN)');
+const STOPPED = scOut(1, 'STOPPED');
+
+interface Script {
+  /** stdout n-го запроса состояния (с единицы). По умолчанию сразу STOPPED. */
+  query?: (n: number) => string;
+  stopCode?: number;
+  startCode?: number;
+  appRunning?: boolean;
+  /** Отвечает ли порт на n-м опросе (с единицы) в попытке attempt (с единицы). */
+  discover?: (n: number, attempt: number) => boolean;
+}
+
+function fakeDeps(script: Script = {}): VpnDeps & { calls: string[] } {
+  const calls: string[] = [];
+  let queries = 0;
+  let attempt = 0;
+  let polls = 0;
   return {
-    kill: vi.fn(async () => {}),
-    launch: vi.fn(async () => {}),
-    sleep: vi.fn(async () => {}),
-    discover: vi.fn(async () => true),
-    ...overrides,
+    calls,
+    async sc(args: string[]): Promise<ScResult> {
+      calls.push(`sc ${args.join(' ')}`);
+      if (args[0] === 'stop') { attempt += 1; polls = 0; return { code: script.stopCode ?? 0, stdout: '' }; }
+      if (args[0] === 'start') return { code: script.startCode ?? 0, stdout: '' };
+      queries += 1;
+      return { code: 0, stdout: (script.query ?? (() => STOPPED))(queries) };
+    },
+    async isRunning(image: string) {
+      calls.push(`isRunning ${image}`);
+      return script.appRunning ?? false;
+    },
+    async launch(exe: string) {
+      calls.push(`launch ${exe}`);
+    },
+    async discover() {
+      calls.push('discover');
+      polls += 1;
+      return (script.discover ?? (() => true))(polls, attempt);
+    },
+    async sleep(ms: number) {
+      calls.push(`sleep ${ms}`);
+    },
   };
 }
 
+const sleeps = (calls: string[]): number[] =>
+  calls.filter((c) => c.startsWith('sleep ')).map((c) => Number(c.slice('sleep '.length)));
+
+describe('isStoppedOutput', () => {
+  it('локализованный вывод sc.exe query: «1  STOPPED» — остановлена', () => {
+    expect(isStoppedOutput(STOPPED)).toBe(true);
+  });
+
+  it('английский вывод тоже узнаётся', () => {
+    expect(isStoppedOutput('SERVICE_NAME: HappService\r\n        STATE              : 1  STOPPED \r\n')).toBe(true);
+  });
+
+  it('RUNNING, STOP_PENDING и флаг STOPPABLE — не остановлена', () => {
+    expect(isStoppedOutput(RUNNING)).toBe(false);
+    expect(isStoppedOutput(STOP_PENDING)).toBe(false);
+    expect(isStoppedOutput(scOut(2, 'START_PENDING'))).toBe(false);
+  });
+
+  it('служба не найдена (1060) или пустой вывод — не остановлена', () => {
+    expect(isStoppedOutput('[SC] EnumQueryServicesStatus:OpenService: ошибка: 1060:\r\n')).toBe(false);
+    expect(isStoppedOutput('')).toBe(false);
+  });
+});
+
 describe('restart', () => {
-  it('порт ответил сразу — ровно одна пара kill и launch', async () => {
-    const d = fakeDeps({ discover: vi.fn(async () => true) });
+  it('порядок: sc stop → опрос sc query до STOPPED → sc start → GUI нет — запуск GUI → ожидание порта', async () => {
+    const d = fakeDeps({ query: (n) => (n === 1 ? STOP_PENDING : STOPPED), appRunning: false });
 
-    expect(await restart('C:/v2RayTun.exe', d)).toBe(true);
+    expect(await restart(TARGET, d)).toBe(true);
 
-    expect(d.kill).toHaveBeenCalledTimes(1);
-    expect(d.launch).toHaveBeenCalledTimes(1);
-    expect(d.sleep).not.toHaveBeenCalled();
+    expect(d.calls).toEqual([
+      'sc stop HappService',
+      'sc query HappService',
+      `sleep ${SERVICE_POLL_MS}`,
+      'sc query HappService',
+      'sc start HappService',
+      'isRunning Happ.exe',
+      'launch D:\\Happ\\Happ.exe',
+      'discover',
+    ]);
   });
 
-  it('порт появился на N-м опросе в пределах 30 секунд — второго launch нет', async () => {
-    let calls = 0;
-    const d = fakeDeps({
-      discover: vi.fn(async () => {
-        calls += 1;
-        return calls >= 5; // поднялся на 5-м опросе, задолго до дедлайна в 30с
-      }),
-    });
+  it('GUI Happ уже запущен — второй раз не запускается', async () => {
+    const d = fakeDeps({ appRunning: true });
 
-    expect(await restart('C:/v2RayTun.exe', d)).toBe(true);
+    expect(await restart(TARGET, d)).toBe(true);
 
-    expect(d.kill).toHaveBeenCalledTimes(1);
-    expect(d.launch).toHaveBeenCalledTimes(1);
-    // ждали опросом (VPN_POLL_MS), а не бэкоффом между попытками
-    expect(d.sleep).toHaveBeenCalledWith(VPN_POLL_MS);
-    expect(d.sleep).not.toHaveBeenCalledWith(VPN_BACKOFF_MS[0]);
+    expect(d.calls).toContain('isRunning Happ.exe');
+    expect(d.calls.some((c) => c.startsWith('launch'))).toBe(false);
+    expect(d.calls.indexOf('isRunning Happ.exe')).toBeGreaterThan(d.calls.indexOf('sc start HappService'));
   });
 
-  it('порт не появился ни разу за 30 секунд ни на одной попытке — false и ровно три launch', async () => {
-    const d = fakeDeps({ discover: vi.fn(async () => false) });
+  it('служба не сообщила STOPPED за 15 с — всё равно start, а не отказ', async () => {
+    const d = fakeDeps({ query: () => STOP_PENDING });
 
-    expect(await restart('C:/v2RayTun.exe', d)).toBe(false);
+    expect(await restart(TARGET, d)).toBe(true);
 
-    expect(d.kill).toHaveBeenCalledTimes(3);
-    expect(d.launch).toHaveBeenCalledTimes(3);
+    expect(SERVICE_STOP_WAIT_MS).toBe(15_000);
+    const beforeStart = d.calls.slice(0, d.calls.indexOf('sc start HappService'));
+    expect(beforeStart.filter((c) => c === 'sc query HappService')).toHaveLength(SERVICE_STOP_WAIT_MS / SERVICE_POLL_MS + 1);
+    expect(sleeps(beforeStart).reduce((a, b) => a + b, 0)).toBe(SERVICE_STOP_WAIT_MS);
+    expect(d.calls).toContain('sc start HappService');
   });
 
-  it('после провала всех трёх попыток бэкофф после последней не спит — только между попытками', async () => {
-    const d = fakeDeps({ discover: vi.fn(async () => false) });
+  it('sc stop уже остановленной службы (код 1062) и sc start запущенной (1056) не фатальны', async () => {
+    const d = fakeDeps({ stopCode: 1062, startCode: 1056 });
 
-    expect(await restart('C:/v2RayTun.exe', d)).toBe(false);
+    expect(await restart(TARGET, d)).toBe(true);
 
-    expect(d.sleep).toHaveBeenCalledWith(VPN_BACKOFF_MS[0]);
-    expect(d.sleep).toHaveBeenCalledWith(VPN_BACKOFF_MS[1]);
-    expect(d.sleep).not.toHaveBeenCalledWith(VPN_BACKOFF_MS[2]);
+    expect(d.calls.slice(0, 3)).toEqual(['sc stop HappService', 'sc query HappService', 'sc start HappService']);
   });
 
-  it('kill вызывается строго раньше launch, иначе оболочка переподнимет старое ядро', async () => {
-    const order: string[] = [];
-    const d = fakeDeps({
-      kill: vi.fn(async () => { order.push('kill'); }),
-      launch: vi.fn(async () => { order.push('launch'); }),
-      discover: vi.fn(async () => true),
-    });
+  it('три провала — false, три пары stop/start, бэкофф 5 и 15 с между попытками, после последней не спит', async () => {
+    const d = fakeDeps({ discover: () => false });
 
-    await restart('C:/v2RayTun.exe', d);
+    expect(await restart(TARGET, d)).toBe(false);
 
-    expect(order).toEqual(['kill', 'launch']);
+    expect(d.calls.filter((c) => c === 'sc stop HappService')).toHaveLength(3);
+    expect(d.calls.filter((c) => c === 'sc start HappService')).toHaveLength(3);
+    expect(sleeps(d.calls).filter((ms) => (VPN_BACKOFF_MS as readonly number[]).includes(ms)))
+      .toEqual([VPN_BACKOFF_MS[0], VPN_BACKOFF_MS[1]]);
+    expect(d.calls.at(-1)).toBe('discover');
   });
 
-  it('между первой и второй попыткой выдержан бэкофф VPN_BACKOFF_MS[0]', async () => {
-    let attempt = 0;
-    const d = fakeDeps({
-      kill: vi.fn(async () => { attempt += 1; }),
-      // первая попытка (attempt=1) ни разу не поднимается за отведённые 30с,
-      // вторая (attempt=2) отвечает сразу
-      discover: vi.fn(async () => attempt >= 2),
-    });
+  it('порт ждётся до 30 с с опросом раз в 2 с, прежде чем попытка считается проваленной', async () => {
+    const d = fakeDeps({ discover: () => false });
 
-    expect(await restart('C:/v2RayTun.exe', d)).toBe(true);
+    await restart(TARGET, d);
 
-    expect(d.launch).toHaveBeenCalledTimes(2);
-    expect(d.sleep).toHaveBeenCalledWith(VPN_BACKOFF_MS[0]);
+    const firstAttempt = d.calls.slice(0, d.calls.indexOf(`sleep ${VPN_BACKOFF_MS[0]}`));
+    expect(sleeps(firstAttempt).filter((ms) => ms === VPN_POLL_MS)).toHaveLength(VPN_WAIT_MS / VPN_POLL_MS);
+    expect(firstAttempt.filter((c) => c === 'discover')).toHaveLength(VPN_WAIT_MS / VPN_POLL_MS + 1);
+  });
+
+  it('порт появился на 5-м опросе в пределах 30 с — второго рестарта нет', async () => {
+    const d = fakeDeps({ discover: (n) => n >= 5 });
+
+    expect(await restart(TARGET, d)).toBe(true);
+
+    expect(d.calls.filter((c) => c === 'sc stop HappService')).toHaveLength(1);
+    expect(sleeps(d.calls)).not.toContain(VPN_BACKOFF_MS[0]);
+  });
+
+  it('первая попытка провалилась, вторая подняла — между ними бэкофф VPN_BACKOFF_MS[0]', async () => {
+    const d = fakeDeps({ discover: (_n, attempt) => attempt >= 2 });
+
+    expect(await restart(TARGET, d)).toBe(true);
+
+    expect(d.calls.filter((c) => c === 'sc stop HappService')).toHaveLength(2);
+    expect(sleeps(d.calls)).toContain(VPN_BACKOFF_MS[0]);
+    expect(sleeps(d.calls)).not.toContain(VPN_BACKOFF_MS[1]);
+  });
+
+  it('служба и GUI берутся из аргумента: другое имя — другие вызовы', async () => {
+    const d = fakeDeps();
+
+    await restart({ service: 'OtherVpn', app: 'C:\\Other\\Gui.exe' }, d);
+
+    expect(d.calls).toEqual([
+      'sc stop OtherVpn', 'sc query OtherVpn', 'sc start OtherVpn', 'isRunning Gui.exe', 'launch C:\\Other\\Gui.exe', 'discover',
+    ]);
   });
 });

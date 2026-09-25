@@ -197,7 +197,7 @@ describe('resolveGigarecruiterConfig', () => {
     minScore: 40, letterFullThreshold: 60, letterModels: ['m1'], throttle: {},
     ...(g === undefined ? {} : { gigarecruiter: g as GigarecruiterConfig }),
   });
-  const minimal = { username: 'Giga_recruiter_bot', vpnExe: 'D:\\v2RayTun\\v2RayTun.exe' };
+  const minimal = { username: 'Giga_recruiter_bot' };
 
   it('без блока — внятная ошибка, команда не запускается', () => {
     expect(() => resolveGigarecruiterConfig(base())).toThrow(/config\.json.*gigarecruiter/);
@@ -210,9 +210,26 @@ describe('resolveGigarecruiterConfig', () => {
     expect(r.models).toBeUndefined();
   });
 
-  it('пустой username или vpnExe — отказ', () => {
+  it('VPN по умолчанию — служба HappService и GUI D:\\Happ\\Happ.exe (FU-2)', () => {
+    const r = resolveGigarecruiterConfig(base(minimal));
+    expect(r.vpnService).toBe('HappService');
+    expect(r.vpnApp).toBe('D:\\Happ\\Happ.exe');
+    expect(DEFAULT_GIGARECRUITER.vpnService).toBe('HappService');
+    expect(DEFAULT_GIGARECRUITER.vpnApp).toBe('D:\\Happ\\Happ.exe');
+  });
+
+  it('vpnService и vpnApp из блока перекрывают умолчания', () => {
+    const r = resolveGigarecruiterConfig(base({ ...minimal, vpnService: 'OtherVpn', vpnApp: 'C:\\Other\\Gui.exe' }));
+    expect(r.vpnService).toBe('OtherVpn');
+    expect(r.vpnApp).toBe('C:\\Other\\Gui.exe');
+  });
+
+  it('пустой или нестроковый username, vpnService, vpnApp — отказ', () => {
     expect(() => resolveGigarecruiterConfig(base({ ...minimal, username: ' ' }))).toThrow(/username/);
-    expect(() => resolveGigarecruiterConfig(base({ ...minimal, vpnExe: '' }))).toThrow(/vpnExe/);
+    expect(() => resolveGigarecruiterConfig(base({ ...minimal, vpnService: '' }))).toThrow(/vpnService/);
+    expect(() => resolveGigarecruiterConfig(base({ ...minimal, vpnService: 5 }))).toThrow(/vpnService/);
+    expect(() => resolveGigarecruiterConfig(base({ ...minimal, vpnApp: ' ' }))).toThrow(/vpnApp/);
+    expect(() => resolveGigarecruiterConfig(base({ ...minimal, vpnApp: null }))).toThrow(/vpnApp/);
   });
 
   it('число строкой, ноль или NaN — отказ: иначе цикл никогда не гаснет', () => {
@@ -239,7 +256,9 @@ describe('resolveGigarecruiterConfig', () => {
     const c = JSON.parse(readFileSync('config.json', 'utf8')) as Config;
     const r = resolveGigarecruiterConfig(c);
     expect(r.username).toBe('Giga_recruiter_bot');
-    expect(r.vpnExe).toBe('D:\\v2RayTun\\v2RayTun.exe');
+    expect(r.vpnService).toBe('HappService');
+    expect(r.vpnApp).toBe('D:\\Happ\\Happ.exe');
+    expect(c.gigarecruiter).not.toHaveProperty('vpnExe');
     expect(r.windowMinutes).toBe(120);
     expect(r.idleMinutes).toBe(10);
     expect(c.gigarecruiter?.maxRepliesPerSession).toBe(12);

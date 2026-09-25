@@ -72,7 +72,9 @@ describe('сквозной прогон шести вопросов', () => {
 // Цикл целиком: фейковый диалог, фейковые часы, никакого реального ожидания.
 
 const MIN = 60_000;
-const CFG: GigarecruiterConfig = { username: 'Giga_recruiter_bot', vpnExe: 'vpn.exe', ...DEFAULT_GIGARECRUITER };
+const CFG: GigarecruiterConfig = {
+  ...DEFAULT_GIGARECRUITER, username: 'Giga_recruiter_bot', vpnService: 'VpnService', vpnApp: 'C:\\Vpn\\Gui.exe',
+};
 type Gen = NonNullable<RunOptions['generate']>;
 
 function msg(id: number, text: string, over: Partial<DialogMessage> = {}): DialogMessage {
@@ -781,9 +783,10 @@ describe('runInterview: один экземпляр и уборка', () => {
 
   it('VPN не поднялся — диалог не открывается, строка в журнал, блокировка снята', async () => {
     const h = harness([msg(1, 'Вопрос')]);
-    const restart = vi.fn(async (_exe: string) => false);
+    const restart = vi.fn(async (_target: { service: string; app: string }) => false);
     await h.run({ vpn: { isUp: async () => false, restart } });
-    expect(restart).toHaveBeenCalledWith('vpn.exe');
+    // Служба и GUI — из конфига (FU-2), а не зашитые в код.
+    expect(restart).toHaveBeenCalledWith({ service: 'VpnService', app: 'C:\\Vpn\\Gui.exe' });
     expect(h.openDialog).not.toHaveBeenCalled();
     expect(h.journal()).toMatch(/VPN не поднялся/);
     expect(existsSync(h.lockPath)).toBe(false);

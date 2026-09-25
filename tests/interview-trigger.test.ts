@@ -11,7 +11,8 @@ const CONFIG: GigarecruiterConfig = {
   replyDelaySec: [40, 120],
   maxReplyLength: 1500,
   maxRepliesPerSession: 12,
-  vpnExe: 'D:\\v2RayTun\\v2RayTun.exe',
+  vpnService: 'HappService',
+  vpnApp: 'D:\\Happ\\Happ.exe',
 };
 
 describe('isSberVacancy', () => {

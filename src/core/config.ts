@@ -93,17 +93,25 @@ export interface GigarecruiterConfig {
   maxRepliesPerSession: number;
   /** Не задано — те же модели, что у писем. */
   models?: string[];
-  /** Оболочка VPN. Ядро она поднимает сама. */
-  vpnExe: string;
+  /**
+   * Служба Windows, которая держит VPN (FU-2): перезапуск — `sc.exe stop/start`.
+   * Её права позволяют владельцу останавливать и запускать её без админа.
+   */
+  vpnService: string;
+  /** GUI клиента VPN: запускается после старта службы, если его нет среди процессов. */
+  vpnApp: string;
 }
 
-export const DEFAULT_GIGARECRUITER: Omit<GigarecruiterConfig, 'username' | 'vpnExe'> = {
+export const DEFAULT_GIGARECRUITER: Omit<GigarecruiterConfig, 'username'> = {
   windowMinutes: 120,
   idleMinutes: 10,
   pollHours: 4,
   replyDelaySec: [40, 120],
   maxReplyLength: 1500,
   maxRepliesPerSession: 12,
+  // Happ на машине владельца, снято 2026-09-26: служба HappService (happd.exe), GUI Happ.exe.
+  vpnService: 'HappService',
+  vpnApp: 'D:\\Happ\\Happ.exe',
 };
 
 /**
@@ -115,12 +123,15 @@ export const DEFAULT_GIGARECRUITER: Omit<GigarecruiterConfig, 'username' | 'vpnE
 export function resolveGigarecruiterConfig(config: Config): GigarecruiterConfig {
   const g = config.gigarecruiter as Partial<GigarecruiterConfig> | undefined;
   if (g === undefined || g === null) {
-    throw new Error('config.json: нет блока "gigarecruiter" — добавь username и vpnExe');
+    throw new Error('config.json: нет блока "gigarecruiter" — добавь username');
   }
   const bad = (field: string, want: string): Error => new Error(`config.json: gigarecruiter.${field} ${want}`);
   if (typeof g.username !== 'string' || g.username.trim() === '') throw bad('username', 'обязателен — username бота без @');
-  if (typeof g.vpnExe !== 'string' || g.vpnExe.trim() === '') throw bad('vpnExe', 'обязателен — путь к оболочке VPN');
   const { models, ...rest } = { ...DEFAULT_GIGARECRUITER, ...g } as GigarecruiterConfig;
+  for (const k of ['vpnService', 'vpnApp'] as const) {
+    const v: unknown = rest[k];
+    if (typeof v !== 'string' || v.trim() === '') throw bad(k, 'если задан, должен быть непустой строкой');
+  }
   for (const k of ['windowMinutes', 'idleMinutes', 'pollHours', 'maxReplyLength', 'maxRepliesPerSession'] as const) {
     const v: unknown = rest[k];
     if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) throw bad(k, 'должен быть положительным числом');

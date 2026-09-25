@@ -3,7 +3,7 @@ import { dirname } from 'node:path';
 import { openDialog, type DialogMessage, type TgDialog } from '../telegram/interview-session.js';
 import { generateAnswer, type Turn } from './interview.js';
 import { readFacts } from './facts.js';
-import { isUp, restart, defaultVpnDeps, sleep } from './vpn.js';
+import { isUp, restart, defaultVpnDeps, sleep, type VpnTarget } from './vpn.js';
 import type { GigarecruiterConfig } from './config.js';
 import { acquireLock, releaseLock, refreshLock, LOCK_PATH } from './interview-lock.js';
 
@@ -179,7 +179,7 @@ export interface RunOptions {
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
   openDialog?: typeof openDialog;
-  vpn?: { isUp(): Promise<boolean>; restart(exe: string): Promise<boolean> };
+  vpn?: { isUp(): Promise<boolean>; restart(target: VpnTarget): Promise<boolean> };
   generate?: GenerateFn;
   factsPath?: string;
   statePath?: string;
@@ -226,10 +226,10 @@ export async function runInterview(opts: RunOptions): Promise<void> {
       note(`потолок ответов сработал ${new Date(capped).toISOString()}, до нового окна не отвечаю — выхожу`);
       return;
     }
-    const vpn = opts.vpn ?? { isUp: () => isUp(defaultVpnDeps), restart: (exe: string) => restart(exe) };
+    const vpn = opts.vpn ?? { isUp: () => isUp(defaultVpnDeps), restart: (target: VpnTarget) => restart(target) };
     if (!(await vpn.isUp())) {
-      note('VPN не отвечает, пробую рестарт');
-      if (!(await vpn.restart(opts.config.vpnExe))) {
+      note(`VPN не отвечает, пробую перезапустить службу ${opts.config.vpnService}`);
+      if (!(await vpn.restart({ service: opts.config.vpnService, app: opts.config.vpnApp }))) {
         note('VPN не поднялся за три попытки, жду следующего запуска');
         return;
       }
