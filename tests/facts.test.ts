@@ -19,7 +19,26 @@ describe('extractNumbers', () => {
 
   it('годы и диапазоны разбираются на числа', () => {
     const n = extractNumbers('с 04/2024 по 09/2024, вилка 280–360');
-    expect([...n].sort()).toEqual(['04', '09', '2024', '280', '360']);
+    expect([...n].sort()).toEqual(['2024', '280', '360', '4', '9']);
+  });
+
+  it('точечные даты ММ.ГГГГ разбираются на месяц и год отдельно', () => {
+    expect(extractNumbers('07.2025').has('7')).toBe(true);
+    expect(extractNumbers('07.2025').has('2025')).toBe(true);
+    expect(extractNumbers('07.2025').size).toBe(2);
+  });
+
+  it('точечные даты ДД.ММ.ГГГГ разбираются на день, месяц и год отдельно', () => {
+    const n = extractNumbers('12.10.2025');
+    expect(n.has('12')).toBe(true);
+    expect(n.has('10')).toBe(true);
+    expect(n.has('2025')).toBe(true);
+    expect(n.size).toBe(3);
+  });
+
+  it('хвостовые нули в дробях отсекаются', () => {
+    expect(extractNumbers('85,50').has('85.5')).toBe(true);
+    expect(extractNumbers('85,50').has('85.50')).toBe(false);
   });
 
   it('числительные словами не считаются числами', () => {

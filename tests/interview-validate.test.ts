@@ -40,4 +40,21 @@ describe('validateAnswer', () => {
     expect(validateAnswer('Ключ sk-abcdefgh12345 лежит в .env', { allowed }))
       .toBe('в ответе ключ');
   });
+
+  it('ММ.ГГГГ дата в ответе пропускает, если компоненты разрешены', () => {
+    const allowedWithDateParts = allowedNumbers(['Пробел в занятости 07–12.2025']);
+    expect(validateAnswer('Не было работы с 07.2025 по 12.2025.', { allowed: allowedWithDateParts }))
+      .toBeNull();
+  });
+
+  it('число с хвостовыми нулями пропускает, если основание разрешено', () => {
+    const allowedWithTrailing = allowedNumbers(['85,5%']);
+    expect(validateAnswer('это 85,50%', { allowed: allowedWithTrailing }))
+      .toBeNull();
+  });
+
+  it('режет приписанный навык', () => {
+    expect(validateAnswer('Писал JOIN и CTE каждый день.', { allowed }))
+      .toMatch(/^выдуман навык:/);
+  });
 });
