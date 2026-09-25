@@ -23,7 +23,7 @@ $log = Join-Path $repo 'data\bot-service.log'
 # окружении, и падение видно только по коду возврата. Здесь же вывод бота
 # ложится в журнал, и причину отказа можно прочитать.
 $action = New-ScheduledTaskAction -Execute 'cmd.exe' `
-  -Argument "/c npm run bot >> \"$log\" 2>&1" `
+  -Argument "/c npm run bot >> `"$log`" 2>&1" `
   -WorkingDirectory $repo
 
 # Без -User триггер означает «при входе любого пользователя», а такую задачу
