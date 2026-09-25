@@ -9,9 +9,11 @@
 #   Unregister-ScheduledTask -TaskName job-autoapply-interview-window -Confirm:$false
 #   Unregister-ScheduledTask -TaskName job-autoapply-interview-poll -Confirm:$false
 #
-# Дата первого запуска (2026-09-25T22:40) зашита один раз, под живой прогон
-# того дня. Перерегистрировать с новой датой — снять обе задачи командами
-# выше и запустить этот файл заново после правки $windowTrigger/$pollTrigger.
+# Разовая задача окна стартует через минуту после регистрации (FR-3):
+# зашитые 22:40 2026-09-25 прошли, пока регистрация ждала. Поллинг — с
+# 2026-09-26 00:40 раз в 4 часа. Перерегистрировать — снять обе задачи
+# командами выше и запустить этот файл заново: окно откроется через минуту
+# после нового запуска.
 #
 # Файл сохранён в UTF-8 с BOM: PowerShell 5.1 без BOM читает его как ANSI и
 # превращает русский текст в кракозябры.
@@ -34,9 +36,9 @@ $pollAction = New-ScheduledTaskAction -Execute 'conhost.exe' `
   -Argument "--headless cmd.exe /c npm run interview >> `"$log`" 2>&1" `
   -WorkingDirectory $repo
 
-# Разово в 22:40 2026-09-25 (спека 3.5): открывает окно на windowMinutes и,
-# если ГигаРекрутёр уже писал, отвечает сразу.
-$windowTrigger = New-ScheduledTaskTrigger -Once -At '2026-09-25T22:40:00'
+# Разово через минуту после регистрации (спека 3.5, FR-3): открывает окно на
+# windowMinutes и, если ГигаРекрутёр уже писал, отвечает сразу.
+$windowTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1)
 
 # С 00:40 2026-09-26 (конец первого окна) — раз в 4 часа без ограничения по
 # сроку: RepetitionDuration не задан нарочно — планировщик считает это
@@ -47,7 +49,12 @@ $pollTrigger = New-ScheduledTaskTrigger -Once -At '2026-09-26T00:40:00' `
 # MultipleInstances по умолчанию IgnoreNew: если предыдущий прогон ещё не
 # закончился, планировщик не запустит второй поверх него — вторая линия
 # защиты сверх файловой блокировки data/interview.lock (задача 7).
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+# ExecutionTimeLimit 3 ч — потолок одного прогона: окно 2 ч плюс хвост
+# разговора; тот же срок, после которого блокировка считается брошенной.
+# StartWhenAvailable — пропущенный запуск (машина была выключена или спала)
+# выполняется, как только она проснётся, а не ждёт следующих четырёх часов.
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+  -ExecutionTimeLimit (New-TimeSpan -Hours 3) -StartWhenAvailable
 
 Register-ScheduledTask -TaskName 'job-autoapply-interview-window' -Action $windowAction -Trigger $windowTrigger -Settings $settings -User $me -Force | Out-Null
 Register-ScheduledTask -TaskName 'job-autoapply-interview-poll' -Action $pollAction -Trigger $pollTrigger -Settings $settings -User $me -Force | Out-Null
