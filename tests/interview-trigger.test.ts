@@ -9,6 +9,7 @@ const CONFIG: GigarecruiterConfig = {
   pollHours: 4,
   replyDelaySec: [40, 120],
   maxReplyLength: 1500,
+  maxRepliesPerSession: 12,
   vpnExe: 'D:\\v2RayTun\\v2RayTun.exe',
 };
 

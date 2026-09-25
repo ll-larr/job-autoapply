@@ -5,7 +5,7 @@ import { generateAnswer, type Turn } from './interview.js';
 import { readFacts } from './facts.js';
 import { isUp, restart, defaultVpnDeps, sleep } from './vpn.js';
 import type { GigarecruiterConfig } from './config.js';
-import { acquireLock, releaseLock, LOCK_PATH } from './interview-lock.js';
+import { acquireLock, releaseLock, refreshLock, LOCK_PATH } from './interview-lock.js';
 
 /**
  * Цикл автоответа (спека 2026-09-25, 3 и 7; поправки контроллера R6–R15).
@@ -13,7 +13,9 @@ import { acquireLock, releaseLock, LOCK_PATH } from './interview-lock.js';
  * Окно открыто (`windowUntil > now`, его открывает `interview --window`) —
  * сессия ждёт первое сообщение сколько угодно долго, до конца окна; после
  * первого ответа гаснет по `idleMinutes` тишины. Окна нет — это поллинг: нет
- * новых входящих — выход сразу, есть — отвечаем и живём до тишины.
+ * новых входящих — выход сразу, есть — отвечаем и живём до тишины. В любом
+ * режиме сессию заканчивают потолок `maxRepliesPerSession` и сообщение с
+ * кнопками после нашего ответа — так ГигаРекрутёр закрывает интервью (C1).
  *
  * Уведомлений владельцу нет по его решению: единственный след — журнал, и в
  * нём только события (номера, длины, причины), текстов диалога там нет.
@@ -24,6 +26,8 @@ export const LOG_PATH = 'data/interview.log';
 export const RETRY_BACKOFF_MS = [30_000, 120_000, 300_000, 900_000] as const;
 /** Как часто перечитывать историю (R9). */
 export const POLL_MS = 5_000;
+/** Сколько сбоев history() подряд цикл терпит (D2); следующий заканчивает сессию. */
+export const HISTORY_FAILURES_TOLERATED = 3;
 /** Входящее старше суток — прошлый разговор, не отвечается никогда (R14). */
 export const STALE_MS = 24 * 60 * 60_000;
 
@@ -184,7 +188,7 @@ export async function runInterview(opts: RunOptions): Promise<void> {
 
   let lock: ReturnType<typeof acquireLock>;
   try {
-    lock = acquireLock(lockPath, pid, opts.isAlive);
+    lock = acquireLock(lockPath, pid, opts.isAlive, now());
   } catch (e) {
     note(`блокировка не взялась: ${errText(e)}`);
     return;
@@ -193,7 +197,7 @@ export async function runInterview(opts: RunOptions): Promise<void> {
     note(`уже работает другой экземпляр (pid ${lock.holder}), выхожу`);
     return;
   }
-  if (lock.stale !== null) note(`блокировка мёртвого процесса «${lock.stale}» перехвачена`);
+  if (lock.stale !== null) note(`брошенная блокировка «${lock.stale}» перехвачена`);
 
   let dialog: TgDialog | null = null;
   try {
@@ -212,7 +216,7 @@ export async function runInterview(opts: RunOptions): Promise<void> {
       return;
     }
     dialog = opened.dialog;
-    await converse(dialog, opts, now, note);
+    await converse(dialog, opts, now, note, { path: lockPath, pid });
   } catch (e) {
     note(`сессия прервана ошибкой: ${errText(e)}`);
   } finally {
@@ -228,14 +232,48 @@ function toTranscript(messages: DialogMessage[]): Turn[] {
   return messages.map((m): Turn => ({ who: m.out ? 'me' : 'bot', text: m.text }));
 }
 
+/** Сбой history(), который цикл ещё терпит (D2): шаг начинается заново через POLL_MS. */
+class HistoryHiccup extends Error {}
+
+/**
+ * Диалог, чья history() терпит до HISTORY_FAILURES_TOLERATED сбоев подряд
+ * (D2): каждый — строка в журнал и HistoryHiccup, следующий сверх предела —
+ * исходная ошибка, сессия заканчивается, как раньше. Успех обнуляет счётчик.
+ * Все чтения цикла идут через него, включая перечитывание перед отправкой:
+ * сбой там — ответ не уходит вслепую, группа собирается заново.
+ */
+function tolerantDialog(dialog: TgDialog, note: (line: string) => void): TgDialog {
+  let failures = 0;
+  return {
+    async history(minId) {
+      try {
+        const r = await dialog.history(minId);
+        failures = 0;
+        return r;
+      } catch (e) {
+        failures += 1;
+        if (failures > HISTORY_FAILURES_TOLERATED) throw e;
+        note(`история чата не прочиталась, сбой ${failures} подряд из ${HISTORY_FAILURES_TOLERATED} терпимых: ${errText(e)}`);
+        throw new HistoryHiccup();
+      }
+    },
+    send: (text) => dialog.send(text),
+    setTyping: () => dialog.setTyping(),
+    onMessage: (cb) => dialog.onMessage(cb),
+    close: () => dialog.close(),
+  };
+}
+
 /** Последовательный цикл разговора (R9): без рекурсии, без подписки, без гонок с close(). */
 async function converse(
-  dialog: TgDialog,
+  raw: TgDialog,
   opts: RunOptions,
   now: () => number,
   note: (line: string) => void,
+  lock: { path: string; pid: number },
 ): Promise<void> {
   const cfg = opts.config;
+  const dialog = tolerantDialog(raw, note);
   const statePath = opts.statePath ?? STATE_PATH;
   const logPath = opts.logPath ?? LOG_PATH;
   const pause = opts.sleep ?? sleep;
@@ -257,7 +295,8 @@ async function converse(
   let windowMark = readState(statePath).windowUntil;
   let lastActivity = now();
   let seenId = 0;
-  let answered = false;
+  /** Ответов в этой сессии: потолок (C1) и «разговор уже шёл» (R8). */
+  let replies = 0;
   let pending = false;
   let sentCount = 0;
   let round = 0;
@@ -268,75 +307,101 @@ async function converse(
   // ответа, лестница повторов идёт до конца окна (спека 7). Окно,
   // закрывшееся посреди разговора, его не рвёт: дальше живём до тишины.
   const endsAt = (windowUntil: number): number =>
-    (answered && !pending ? lastActivity + idleMs : Math.max(windowUntil, lastActivity + idleMs));
+    (replies > 0 && !pending ? lastActivity + idleMs : Math.max(windowUntil, lastActivity + idleMs));
 
   for (;;) {
-    const t = now();
-    const state = readState(statePath);
-    if (state.windowUntil > windowMark) {
-      // Окно открыли заново, пока мы работали (новый отклик): это новая сессия.
-      windowMark = state.windowUntil;
-      answered = false;
-    }
-    if (!first && t >= endsAt(state.windowUntil)) {
-      note(`сессия закрыта: ответов ${sentCount}, тишина ${Math.round((t - lastActivity) / 60_000)} мин`);
-      return;
-    }
-
-    const msgs = await dialog.history(state.lastMessageId);
-    // Граница R13: всё до нашего последнего сообщения отвечено или пропущено
-    // намеренно — двойной ответ невозможен, даже если файл состояния потерян.
-    const floor = Math.max(state.lastMessageId, ...msgs.filter((m) => m.out).map((m) => m.id));
-    const group: DialogMessage[] = [];
-    let fresh = false;
-    for (const m of msgs) {
-      if (m.out || m.id <= floor) continue;
-      const stale = t - m.date.getTime() > STALE_MS;
-      if (!stale) {
-        fresh = true;
-        if (m.id > seenId) { seenId = m.id; lastActivity = t; }
-      }
-      if (stale || m.hasButtons) {
-        // Кнопки не нажимаем и не отвечаем на них (R7); старое — прошлый разговор (R14).
-        if (!logged.has(m.id)) note(stale ? `пропущено ${m.id}: старше суток` : `пропущено сообщение с кнопками ${m.id}`);
-        logged.add(m.id);
-        continue;
-      }
-      group.push(m);
-    }
-    bump(group.length === 0 ? Math.max(floor, msgs.at(-1)?.id ?? 0) : floor);
-    pending = group.length > 0;
-
-    if (first) {
-      first = false;
-      if (state.windowUntil <= t && !fresh) {
-        note('поллинг: новых входящих нет');
+    try {
+      const t = now();
+      // Живой цикл продлевает блокировку (D1); перехватили — в чате второй цикл.
+      if (!refreshLock(lock.path, lock.pid, t)) {
+        note(`блокировку перехватил другой экземпляр, сессия закрыта: ответов ${sentCount}`);
         return;
       }
-      note(state.windowUntil > t ? `сессия: окно до ${new Date(state.windowUntil).toISOString()}` : 'сессия: поллинг нашёл новое');
-    }
+      const state = readState(statePath);
+      if (state.windowUntil > windowMark) {
+        // Окно открыли заново, пока мы работали (новый отклик): это новая сессия.
+        windowMark = state.windowUntil;
+        replies = 0;
+      }
+      if (!first && t >= endsAt(state.windowUntil)) {
+        note(`сессия закрыта: ответов ${sentCount}, тишина ${Math.round((t - lastActivity) / 60_000)} мин`);
+        return;
+      }
 
-    const head = group[0];
-    if (head !== undefined) {
-      const transcript = toTranscript((await dialog.history(0)).filter((m) => m.id < head.id));
-      const seenUpTo = msgs.at(-1)?.id ?? head.id;
-      const r = await answerGroup({ dialog, group, seenUpTo, transcript, generate, delay, statePath, logPath });
-      if (r === 'superseded') continue;
-      if (r === 'sent') {
-        answered = true;
-        pending = false;
-        sentCount += 1;
-        round = 0;
-        lastActivity = now();
+      const msgs = await dialog.history(state.lastMessageId);
+      // Граница R13: всё до нашего последнего сообщения отвечено или пропущено
+      // намеренно — двойной ответ невозможен, даже если файл состояния потерян.
+      const floor = Math.max(state.lastMessageId, ...msgs.filter((m) => m.out).map((m) => m.id));
+      const batchEnd = Math.max(floor, msgs.at(-1)?.id ?? 0);
+      const group: DialogMessage[] = [];
+      let fresh = false;
+      let buttons = false;
+      for (const m of msgs) {
+        if (m.out || m.id <= floor) continue;
+        const stale = t - m.date.getTime() > STALE_MS;
+        if (!stale) {
+          fresh = true;
+          buttons ||= m.hasButtons;
+          if (m.id > seenId) { seenId = m.id; lastActivity = t; }
+        }
+        if (stale || m.hasButtons) {
+          // Кнопки не нажимаем и не отвечаем на них (R7); старое — прошлый разговор (R14).
+          if (!logged.has(m.id)) note(stale ? `пропущено ${m.id}: старше суток` : `пропущено сообщение с кнопками ${m.id}`);
+          logged.add(m.id);
+          continue;
+        }
+        group.push(m);
       }
-      if (r === 'retry') {
-        // Бэкофф не дольше, чем осталось жить сессии: спать после её конца незачем.
-        const wait = Math.min(backoffFor(round), Math.max(0, endsAt(readState(statePath).windowUntil) - now()));
-        round += 1;
-        await pause(wait);
-        continue;
+      if (buttons && replies > 0) {
+        // Конец интервью (C1): после наших ответов ГигаРекрутёр прощается и
+        // сразу шлёт оценку с кнопками. Прощание без кнопок, но отвечать на
+        // него — значит начать новый круг; вся пачка остаётся без ответа.
+        bump(batchEnd);
+        note(`конец интервью: после ответа пришло сообщение с кнопками, пачка до ${batchEnd} без ответа; ответов ${sentCount}`);
+        return;
       }
+      bump(group.length === 0 ? batchEnd : floor);
+      pending = group.length > 0;
+
+      if (first) {
+        first = false;
+        if (state.windowUntil <= t && !fresh) {
+          note('поллинг: новых входящих нет');
+          return;
+        }
+        note(state.windowUntil > t ? `сессия: окно до ${new Date(state.windowUntil).toISOString()}` : 'сессия: поллинг нашёл новое');
+      }
+
+      const head = group[0];
+      if (head !== undefined) {
+        const transcript = toTranscript((await dialog.history(0)).filter((m) => m.id < head.id));
+        const seenUpTo = msgs.at(-1)?.id ?? head.id;
+        const r = await answerGroup({ dialog, group, seenUpTo, transcript, generate, delay, statePath, logPath });
+        if (r === 'superseded') continue;
+        if (r === 'sent') {
+          replies += 1;
+          pending = false;
+          sentCount += 1;
+          round = 0;
+          lastActivity = now();
+          if (replies >= cfg.maxRepliesPerSession) {
+            // Два бота могут переписываться бесконечно (C1): дальше не отвечаем.
+            note(`потолок ${cfg.maxRepliesPerSession} ответов за сессию, сессия закрыта`);
+            return;
+          }
+        }
+        if (r === 'retry') {
+          // Бэкофф не дольше, чем осталось жить сессии: спать после её конца незачем.
+          const wait = Math.min(backoffFor(round), Math.max(0, endsAt(readState(statePath).windowUntil) - now()));
+          round += 1;
+          await pause(wait);
+          continue;
+        }
+      }
+      await pause(POLL_MS);
+    } catch (e) {
+      if (!(e instanceof HistoryHiccup)) throw e;
+      await pause(POLL_MS);
     }
-    await pause(POLL_MS);
   }
 }

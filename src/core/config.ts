@@ -86,6 +86,11 @@ export interface GigarecruiterConfig {
   /** Пауза перед ответом, секунды: [минимум, максимум]. */
   replyDelaySec: [number, number];
   maxReplyLength: number;
+  /**
+   * Потолок ответов за одну сессию (C1). ГигаРекрутёр — тоже модель: если он
+   * отвечает на каждый наш ответ, два бота переписывались бы бесконечно.
+   */
+  maxRepliesPerSession: number;
   /** Не задано — те же модели, что у писем. */
   models?: string[];
   /** Оболочка VPN. Ядро она поднимает сама. */
@@ -98,6 +103,7 @@ export const DEFAULT_GIGARECRUITER: Omit<GigarecruiterConfig, 'username' | 'vpnE
   pollHours: 4,
   replyDelaySec: [40, 120],
   maxReplyLength: 1500,
+  maxRepliesPerSession: 12,
 };
 
 /**
@@ -115,7 +121,7 @@ export function resolveGigarecruiterConfig(config: Config): GigarecruiterConfig 
   if (typeof g.username !== 'string' || g.username.trim() === '') throw bad('username', 'обязателен — username бота без @');
   if (typeof g.vpnExe !== 'string' || g.vpnExe.trim() === '') throw bad('vpnExe', 'обязателен — путь к оболочке VPN');
   const { models, ...rest } = { ...DEFAULT_GIGARECRUITER, ...g } as GigarecruiterConfig;
-  for (const k of ['windowMinutes', 'idleMinutes', 'pollHours', 'maxReplyLength'] as const) {
+  for (const k of ['windowMinutes', 'idleMinutes', 'pollHours', 'maxReplyLength', 'maxRepliesPerSession'] as const) {
     const v: unknown = rest[k];
     if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) throw bad(k, 'должен быть положительным числом');
   }

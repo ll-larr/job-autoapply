@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fakeDialog, type DialogMessage } from '../src/telegram/interview-session.js';
 import {
-  answerOnce, readState, writeState, openWindow, runInterview, backoffFor, type RunnerState, type RunOptions,
+  answerOnce, readState, writeState, openWindow, runInterview, backoffFor, POLL_MS, type RunnerState, type RunOptions,
 } from '../src/core/interview-runner.js';
+import { LOCK_MAX_AGE_MS } from '../src/core/interview-lock.js';
 import { DEFAULT_GIGARECRUITER, type GigarecruiterConfig } from '../src/core/config.js';
 import type { Turn } from '../src/core/interview.js';
 
@@ -281,6 +282,133 @@ describe('runInterview: что отвечается', () => {
   });
 });
 
+describe('runInterview: потолок ответов и конец интервью (C1)', () => {
+  /** ГигаРекрутёр — тоже модель: на каждый наш ответ приходит встречная реплика. */
+  function chatty(h: ReturnType<typeof harness>): void {
+    const send = h.dialog.send;
+    let n = 0;
+    h.dialog.send = async (text) => { await send(text); h.dialog.push(`Встречная реплика ${++n}`); };
+  }
+
+  it('бот отвечает на каждый ответ — уходит ровно maxRepliesPerSession ответов, строка в журнал, выход', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.dialog.push('Первый вопрос');
+    chatty(h);
+    await h.run();
+    expect(h.dialog.sent).toHaveLength(12);
+    expect(CFG.maxRepliesPerSession).toBe(12);
+    expect(h.journal()).toMatch(/потолок 12 ответов/);
+    // Двенадцатый ответ ушёл на 12 × 40 с паузы + 11 × 5 с поллинга — и сразу выход,
+    // не дожидаясь ни тишины, ни конца окна.
+    expect(h.now()).toBe(h.t0 + 12 * 40_000 + 11 * POLL_MS);
+  });
+
+  it('потолок берётся из конфига', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.dialog.push('Первый вопрос');
+    chatty(h);
+    await h.run({ config: { ...CFG, maxRepliesPerSession: 3 } });
+    expect(h.dialog.sent).toHaveLength(3);
+  });
+
+  it('после ответа пришли прощание и оценка с кнопками — не отвечается ничего, метка за обоими, выход', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push('Почему ищете работу?'));
+    h.at(5 * MIN, () => {
+      h.dialog.push('Спасибо за интервью!');
+      h.dialog.push('Оцените собеседование', { hasButtons: true });
+    });
+    await h.run();
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(h.generate).toHaveBeenCalledTimes(1);
+    const rating = (await h.dialog.history(0)).at(-1)!;
+    expect(rating.text).toBe('Оцените собеседование');
+    expect(readState(h.statePath).lastMessageId).toBe(rating.id);
+    expect(h.journal()).toMatch(/конец интервью/);
+    expect(h.now()).toBe(h.t0 + 5 * MIN);
+  });
+
+  it('оценка пришла во время паузы перед ответом на прощание — прощание тоже остаётся без ответа', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push('Почему ищете работу?'));
+    h.at(5 * MIN, () => h.dialog.push('Спасибо за интервью!'));
+    h.at(5 * MIN + 20_000, () => h.dialog.push('Оцените собеседование', { hasButtons: true }));
+    await h.run();
+    expect(h.dialog.sent).toHaveLength(1);
+    const rating = (await h.dialog.history(0)).at(-1)!;
+    expect(readState(h.statePath).lastMessageId).toBe(rating.id);
+    expect(h.journal()).toMatch(/конец интервью/);
+  });
+
+  it('кнопки до первого ответа (выбор вакансии) сессию не заканчивают — вопрос после них отвечается', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push('Выберите вакансию', { hasButtons: true }));
+    h.at(2 * MIN, () => h.dialog.push('Почему ищете работу?'));
+    await h.run();
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(h.journal()).not.toMatch(/конец интервью/);
+  });
+});
+
+describe('runInterview: сбои history() (D2)', () => {
+  /** history() падает на вызовах, для номера которых (с единицы) `fails` вернула true. */
+  function flaky(h: ReturnType<typeof harness>, fails: (call: number) => boolean): { calls: () => number } {
+    const history = h.dialog.history;
+    let calls = 0;
+    h.dialog.history = async (minId) => {
+      calls += 1;
+      if (fails(calls)) throw new Error('ECONNRESET');
+      return history(minId);
+    };
+    return { calls: () => calls };
+  }
+
+  it('три сбоя подряд терпятся: строка в журнал на каждый, 5 с между попытками, разговор идёт', async () => {
+    const h = harness([msg(1, 'Вопрос')]);
+    flaky(h, (n) => n <= 3);
+    await h.run();
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(h.journal().match(/ECONNRESET/g)).toHaveLength(3);
+    expect(h.sleeps.slice(0, 3)).toEqual([POLL_MS, POLL_MS, POLL_MS]);
+  });
+
+  it('четвёртый сбой подряд заканчивает сессию, как раньше', async () => {
+    const h = harness([msg(1, 'Вопрос')]);
+    const f = flaky(h, () => true);
+    const close = vi.spyOn(h.dialog, 'close');
+    await h.run();
+    expect(f.calls()).toBe(4);
+    expect(h.dialog.sent).toEqual([]);
+    expect(h.journal()).toMatch(/сессия прервана ошибкой: ECONNRESET/);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(existsSync(h.lockPath)).toBe(false);
+  });
+
+  it('успешное чтение обнуляет счётчик: 3 сбоя, успех, ещё 3 сбоя — сессия жива, вопрос отвечен', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    flaky(h, (n) => [1, 2, 3, 5, 6, 7].includes(n));
+    h.at(1 * MIN, () => h.dialog.push('Вопрос'));
+    await h.run();
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(h.journal()).not.toMatch(/прервана/);
+  });
+
+  it('сбой при перечитывании перед отправкой — ответ не уходит вслепую, пересобирается и уходит один раз', async () => {
+    const h = harness([msg(1, 'Вопрос')]);
+    // 1 — поллинг, 2 — транскрипт, 3 — перечитывание после паузы.
+    flaky(h, (n) => n === 3);
+    await h.run();
+    expect(h.generate).toHaveBeenCalledTimes(2);
+    expect(h.dialog.sent).toHaveLength(1);
+  });
+});
+
 describe('runInterview: провал моделей', () => {
   it('в чат ничего, бэкофф, повтор на следующей итерации, затем один ответ', async () => {
     const h = harness([msg(1, 'Вопрос')]);
@@ -359,7 +487,7 @@ describe('runInterview: один экземпляр и уборка', () => {
       return { ok: true, dialog: h.dialog };
     });
     await h.run();
-    expect(during).toBe('4242');
+    expect(JSON.parse(during)).toEqual({ pid: 4242, at: h.t0 });
     expect(existsSync(h.lockPath)).toBe(false);
   });
 
@@ -380,6 +508,37 @@ describe('runInterview: один экземпляр и уборка', () => {
     expect(h.dialog.sent).toHaveLength(1);
     expect(h.journal()).toMatch(/перехвач/);
     expect(existsSync(h.lockPath)).toBe(false);
+  });
+
+  it('блокировка живого процесса старше трёх часов считается брошенной и перехватывается (D1)', async () => {
+    const h = harness([msg(1, 'Вопрос')]);
+    writeFileSync(h.lockPath, JSON.stringify({ pid: 999, at: h.t0 - LOCK_MAX_AGE_MS - 1 }), 'utf8');
+    await h.run({ isAlive: () => true });
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(h.journal()).toMatch(/перехвач/);
+    expect(existsSync(h.lockPath)).toBe(false);
+  });
+
+  it('живой цикл продлевает метку блокировки — длинная сессия брошенной не считается', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    let at = 0;
+    h.at(30 * MIN, () => { at = (JSON.parse(readFileSync(h.lockPath, 'utf8')) as { at: number }).at; });
+    await h.run();
+    expect(at).toBe(h.t0 + 30 * MIN - POLL_MS);
+  });
+
+  it('блокировку перехватили посреди сессии — цикл выходит и чужую блокировку не снимает', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    const foreign = JSON.stringify({ pid: 7, at: h.t0 });
+    h.at(10 * MIN, () => writeFileSync(h.lockPath, foreign, 'utf8'));
+    h.at(20 * MIN, () => h.dialog.push('Вопрос'));
+    await h.run();
+    expect(h.dialog.sent).toEqual([]);
+    expect(h.journal()).toMatch(/другой экземпляр/);
+    expect(readFileSync(h.lockPath, 'utf8')).toBe(foreign);
+    expect(h.now()).toBe(h.t0 + 10 * MIN);
   });
 
   it('history() бросает — ошибка в журнал, диалог закрыт, блокировка снята, промис не отклонён', async () => {

@@ -206,6 +206,7 @@ describe('resolveGigarecruiterConfig', () => {
   it('недостающие поля добираются умолчаниями, models не задан', () => {
     const r = resolveGigarecruiterConfig(base(minimal));
     expect(r).toEqual({ ...DEFAULT_GIGARECRUITER, ...minimal });
+    expect(r.maxRepliesPerSession).toBe(12);
     expect(r.models).toBeUndefined();
   });
 
@@ -218,6 +219,8 @@ describe('resolveGigarecruiterConfig', () => {
     expect(() => resolveGigarecruiterConfig(base({ ...minimal, idleMinutes: '10' }))).toThrow(/idleMinutes/);
     expect(() => resolveGigarecruiterConfig(base({ ...minimal, windowMinutes: 0 }))).toThrow(/windowMinutes/);
     expect(() => resolveGigarecruiterConfig(base({ ...minimal, maxReplyLength: null }))).toThrow(/maxReplyLength/);
+    expect(() => resolveGigarecruiterConfig(base({ ...minimal, maxRepliesPerSession: 0 }))).toThrow(/maxRepliesPerSession/);
+    expect(() => resolveGigarecruiterConfig(base({ ...minimal, maxRepliesPerSession: '12' }))).toThrow(/maxRepliesPerSession/);
   });
 
   it('replyDelaySec — пара неотрицательных чисел, минимум не больше максимума', () => {
@@ -239,6 +242,7 @@ describe('resolveGigarecruiterConfig', () => {
     expect(r.vpnExe).toBe('D:\\v2RayTun\\v2RayTun.exe');
     expect(r.windowMinutes).toBe(120);
     expect(r.idleMinutes).toBe(10);
+    expect(c.gigarecruiter?.maxRepliesPerSession).toBe(12);
   });
 
   it('loadConfig принимает config.json с новым блоком', () => {
