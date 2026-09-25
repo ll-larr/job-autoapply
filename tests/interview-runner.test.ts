@@ -1,10 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { vi } from 'vitest';
-import { backoffFor, readState, writeState, openWindow, RETRY_BACKOFF_MS, answerOnce } from '../src/core/interview-runner.js';
-import { fakeDialog } from '../src/telegram/interview-session.js';
+import {
+  backoffFor, readState, writeState, openWindow, RETRY_BACKOFF_MS, answerOnce, answerGroup,
+  acquireLock, releaseLock, pidAlive,
+} from '../src/core/interview-runner.js';
+import { fakeDialog, type DialogMessage } from '../src/telegram/interview-session.js';
 
 describe('backoffFor', () => {
   it('идёт по лестнице 30 секунд, 2, 5, 15 минут', () => {
@@ -110,5 +113,109 @@ describe('answerOnce', () => {
     const d = deps();
     await answerOnce(d);
     expect(d.delay).toHaveBeenCalledTimes(1);
+  });
+});
+
+function incoming(id: number, text: string, over: Partial<DialogMessage> = {}): DialogMessage {
+  return { id, date: new Date(), text, urls: [], out: false, hasButtons: false, ...over };
+}
+
+function groupDeps(seed: DialogMessage[]) {
+  const dialog = fakeDialog(seed);
+  const statePath = join(mkdtempSync(join(tmpdir(), 'group-')), 'state.json');
+  return {
+    dialog,
+    statePath,
+    logPath: join(dirname(statePath), 'run.log'),
+    transcript: [],
+    generate: vi.fn(async (_: { question: string }) => ({ ok: true as const, text: 'Ответ.' })),
+    delay: vi.fn(async () => {}),
+  };
+}
+
+describe('answerGroup', () => {
+  it('два входящих подряд — один вопрос через перевод строки, один ответ, метка на последнем', async () => {
+    const seed = [incoming(1, 'Спасибо за ответ!'), incoming(2, 'Расскажите про Kafka?')];
+    const d = groupDeps(seed);
+    expect(await answerGroup({ ...d, group: seed })).toBe('sent');
+    expect(d.generate).toHaveBeenCalledTimes(1);
+    expect(d.generate.mock.calls[0]![0].question).toBe('Спасибо за ответ!\nРасскажите про Kafka?');
+    expect(d.dialog.sent).toEqual(['Ответ.']);
+    expect(readState(d.statePath).lastMessageId).toBe(2);
+  });
+
+  it('пока шла пауза, пришло продолжение — не отправляет, метку не двигает', async () => {
+    const seed = [incoming(1, 'Спасибо за ответ!')];
+    const d = groupDeps(seed);
+    d.delay.mockImplementation(async () => { d.dialog.push('А какой опыт с Kafka?'); });
+    expect(await answerGroup({ ...d, group: seed })).toBe('superseded');
+    expect(d.dialog.sent).toEqual([]);
+    expect(readState(d.statePath).lastMessageId).toBe(0);
+  });
+
+  it('уже просмотренное сообщение с кнопками за группой — не продолжение, ответ уходит', async () => {
+    const seed = [incoming(1, 'Какой опыт с SQL?'), incoming(2, 'Выберите вакансию', { hasButtons: true })];
+    const d = groupDeps(seed);
+    expect(await answerGroup({ ...d, group: [seed[0]!], seenUpTo: 2 })).toBe('sent');
+    expect(d.dialog.sent).toEqual(['Ответ.']);
+  });
+
+  it('пустая группа — ничего не делает', async () => {
+    const d = groupDeps([]);
+    expect(await answerGroup({ ...d, group: [] })).toBe('idle');
+    expect(d.generate).not.toHaveBeenCalled();
+  });
+
+  it('журнал пишет только номера и длину, без текста диалога', async () => {
+    const seed = [incoming(1, 'Секретный вопрос про зарплату')];
+    const d = groupDeps(seed);
+    await answerGroup({ ...d, group: seed });
+    const journal = readFileSync(d.logPath, 'utf8');
+    expect(journal).toMatch(/ответ на 1: 6 символов/);
+    expect(journal).not.toMatch(/Секретный|Ответ\./);
+  });
+});
+
+describe('блокировка одного экземпляра', () => {
+  const lockIn = (): string => join(mkdtempSync(join(tmpdir(), 'lock-')), 'interview.lock');
+
+  it('свободна — захватывается, в файле наш pid', () => {
+    const path = lockIn();
+    expect(acquireLock(path, 4242, () => true)).toEqual({ ok: true, stale: null });
+    expect(readFileSync(path, 'utf8')).toBe('4242');
+  });
+
+  it('держит живой pid — отказ, файл не тронут', () => {
+    const path = lockIn();
+    writeFileSync(path, '999', 'utf8');
+    expect(acquireLock(path, 4242, (pid) => pid === 999)).toEqual({ ok: false, holder: 999 });
+    expect(readFileSync(path, 'utf8')).toBe('999');
+  });
+
+  it('pid мёртв — перехватывается', () => {
+    const path = lockIn();
+    writeFileSync(path, '999', 'utf8');
+    expect(acquireLock(path, 4242, () => false)).toEqual({ ok: true, stale: '999' });
+    expect(readFileSync(path, 'utf8')).toBe('4242');
+  });
+
+  it('мусор в файле — перехватывается, а не блокирует навсегда', () => {
+    const path = lockIn();
+    writeFileSync(path, '', 'utf8');
+    expect(acquireLock(path, 4242, () => true).ok).toBe(true);
+  });
+
+  it('снимается только своя блокировка', () => {
+    const path = lockIn();
+    writeFileSync(path, '999', 'utf8');
+    releaseLock(path, 4242);
+    expect(existsSync(path)).toBe(true);
+    releaseLock(path, 999);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it('pidAlive: свой процесс жив, заведомо несуществующий — нет', () => {
+    expect(pidAlive(process.pid)).toBe(true);
+    expect(pidAlive(2 ** 30 + 12344)).toBe(false);
   });
 });

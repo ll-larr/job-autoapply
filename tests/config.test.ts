@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { writeFileSync, mkdtempSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { loadConfig } from '../src/core/config.js';
+import {
+  loadConfig, resolveGigarecruiterConfig, DEFAULT_GIGARECRUITER, type Config, type GigarecruiterConfig,
+} from '../src/core/config.js';
 
 function withConfig(obj: unknown): string {
   const dir = mkdtempSync(join(tmpdir(), 'jaa-'));
@@ -187,5 +189,59 @@ describe('loadConfig', () => {
       const c = loadConfig(p);
       expect(c.searchQueries).toEqual(queries);
     });
+  });
+});
+
+describe('resolveGigarecruiterConfig', () => {
+  const base = (g?: unknown): Config => ({
+    minScore: 40, letterFullThreshold: 60, letterModels: ['m1'], throttle: {},
+    ...(g === undefined ? {} : { gigarecruiter: g as GigarecruiterConfig }),
+  });
+  const minimal = { username: 'Giga_recruiter_bot', vpnExe: 'D:\\v2RayTun\\v2RayTun.exe' };
+
+  it('без блока — внятная ошибка, команда не запускается', () => {
+    expect(() => resolveGigarecruiterConfig(base())).toThrow(/config\.json.*gigarecruiter/);
+  });
+
+  it('недостающие поля добираются умолчаниями, models не задан', () => {
+    const r = resolveGigarecruiterConfig(base(minimal));
+    expect(r).toEqual({ ...DEFAULT_GIGARECRUITER, ...minimal });
+    expect(r.models).toBeUndefined();
+  });
+
+  it('пустой username или vpnExe — отказ', () => {
+    expect(() => resolveGigarecruiterConfig(base({ ...minimal, username: ' ' }))).toThrow(/username/);
+    expect(() => resolveGigarecruiterConfig(base({ ...minimal, vpnExe: '' }))).toThrow(/vpnExe/);
+  });
+
+  it('число строкой, ноль или NaN — отказ: иначе цикл никогда не гаснет', () => {
+    expect(() => resolveGigarecruiterConfig(base({ ...minimal, idleMinutes: '10' }))).toThrow(/idleMinutes/);
+    expect(() => resolveGigarecruiterConfig(base({ ...minimal, windowMinutes: 0 }))).toThrow(/windowMinutes/);
+    expect(() => resolveGigarecruiterConfig(base({ ...minimal, maxReplyLength: null }))).toThrow(/maxReplyLength/);
+  });
+
+  it('replyDelaySec — пара неотрицательных чисел, минимум не больше максимума', () => {
+    expect(() => resolveGigarecruiterConfig(base({ ...minimal, replyDelaySec: [120, 40] }))).toThrow(/replyDelaySec/);
+    expect(() => resolveGigarecruiterConfig(base({ ...minimal, replyDelaySec: [40] }))).toThrow(/replyDelaySec/);
+    expect(resolveGigarecruiterConfig(base({ ...minimal, replyDelaySec: [0, 0] })).replyDelaySec).toEqual([0, 0]);
+  });
+
+  it('пустой models — как незаданный, кривой — отказ', () => {
+    expect(resolveGigarecruiterConfig(base({ ...minimal, models: [] })).models).toBeUndefined();
+    expect(resolveGigarecruiterConfig(base({ ...minimal, models: ['x/y'] })).models).toEqual(['x/y']);
+    expect(() => resolveGigarecruiterConfig(base({ ...minimal, models: [''] }))).toThrow(/models/);
+  });
+
+  it('config.json в репозитории содержит рабочий блок gigarecruiter', () => {
+    const c = JSON.parse(readFileSync('config.json', 'utf8')) as Config;
+    const r = resolveGigarecruiterConfig(c);
+    expect(r.username).toBe('Giga_recruiter_bot');
+    expect(r.vpnExe).toBe('D:\\v2RayTun\\v2RayTun.exe');
+    expect(r.windowMinutes).toBe(120);
+    expect(r.idleMinutes).toBe(10);
+  });
+
+  it('loadConfig принимает config.json с новым блоком', () => {
+    expect(loadConfig('config.json').gigarecruiter?.username).toBe('Giga_recruiter_bot');
   });
 });

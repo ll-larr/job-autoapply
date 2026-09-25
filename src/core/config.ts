@@ -72,6 +72,67 @@ export interface Config {
   salaryExpectation?: string;
   /** Настройки бота-приёмника (спека 2026-09-20). Нет блока — команда `bot` не запускается. */
   bot?: BotConfig;
+  /** Автоответ ГигаРекрутёру (спека 2026-09-25). Нет блока — команда `interview` не запускается. */
+  gigarecruiter?: GigarecruiterConfig;
+}
+
+/** Автоответ ГигаРекрутёру (спека 2026-09-25). Нет блока — команда `interview` не запускается. */
+export interface GigarecruiterConfig {
+  /** Username бота без @. Единственный собеседник, которому эта машина отвечает. */
+  username: string;
+  windowMinutes: number;
+  idleMinutes: number;
+  pollHours: number;
+  /** Пауза перед ответом, секунды: [минимум, максимум]. */
+  replyDelaySec: [number, number];
+  maxReplyLength: number;
+  /** Не задано — те же модели, что у писем. */
+  models?: string[];
+  /** Оболочка VPN. Ядро она поднимает сама. */
+  vpnExe: string;
+}
+
+export const DEFAULT_GIGARECRUITER: Omit<GigarecruiterConfig, 'username' | 'vpnExe'> = {
+  windowMinutes: 120,
+  idleMinutes: 10,
+  pollHours: 4,
+  replyDelaySec: [40, 120],
+  maxReplyLength: 1500,
+};
+
+/**
+ * Блок `gigarecruiter` с умолчаниями. Проверяется здесь, а не в loadConfig:
+ * кривой блок должен останавливать только `interview`, а не поиск и отправку.
+ * Число строкой или ноль в idleMinutes без проверки дали бы цикл, который
+ * никогда не гаснет (NaN-сравнения всегда ложны).
+ */
+export function resolveGigarecruiterConfig(config: Config): GigarecruiterConfig {
+  const g = config.gigarecruiter as Partial<GigarecruiterConfig> | undefined;
+  if (g === undefined || g === null) {
+    throw new Error('config.json: нет блока "gigarecruiter" — добавь username и vpnExe');
+  }
+  const bad = (field: string, want: string): Error => new Error(`config.json: gigarecruiter.${field} ${want}`);
+  if (typeof g.username !== 'string' || g.username.trim() === '') throw bad('username', 'обязателен — username бота без @');
+  if (typeof g.vpnExe !== 'string' || g.vpnExe.trim() === '') throw bad('vpnExe', 'обязателен — путь к оболочке VPN');
+  const { models, ...rest } = { ...DEFAULT_GIGARECRUITER, ...g } as GigarecruiterConfig;
+  for (const k of ['windowMinutes', 'idleMinutes', 'pollHours', 'maxReplyLength'] as const) {
+    const v: unknown = rest[k];
+    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) throw bad(k, 'должен быть положительным числом');
+  }
+  const d: unknown = rest.replyDelaySec;
+  if (
+    !Array.isArray(d) || d.length !== 2
+    || !d.every((x) => typeof x === 'number' && Number.isFinite(x) && x >= 0)
+    || d[0] > d[1]
+  ) {
+    throw bad('replyDelaySec', 'должен быть [минимум, максимум] в секундах, минимум не больше максимума');
+  }
+  if (models === undefined) return rest;
+  if (!Array.isArray(models) || !models.every((m) => typeof m === 'string' && m.trim() !== '')) {
+    throw bad('models', 'если задан, должен быть списком строк');
+  }
+  // Пустой список — как незаданный: те же модели, что у писем (как у бота).
+  return models.length > 0 ? { ...rest, models } : rest;
 }
 
 /** Лимиты бота (спека 2026-09-20, раздел 6). Значения — стартовые, правятся в config.json. */

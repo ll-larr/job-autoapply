@@ -52,5 +52,14 @@
       "github": "https://github.com/ll-larr",
       "telegram": "@ll_larr"
     }
+  },
+  "gigarecruiter": {
+    "username": "Giga_recruiter_bot",
+    "windowMinutes": 120,
+    "idleMinutes": 10,
+    "pollHours": 4,
+    "replyDelaySec": [40, 120],
+    "maxReplyLength": 1500,
+    "vpnExe": "D:\\v2RayTun\\v2RayTun.exe"
   }
 }
