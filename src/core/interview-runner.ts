@@ -374,7 +374,10 @@ async function converse(
 
       const head = group[0];
       if (head !== undefined) {
-        const transcript = toTranscript((await dialog.history(0)).filter((m) => m.id < head.id));
+        // Прошлые интервью (старше суток, R14) — про другую вакансию: в
+        // транскрипт идёт только текущий разговор (M3).
+        const transcript = toTranscript((await dialog.history(0))
+          .filter((m) => m.id < head.id && t - m.date.getTime() <= STALE_MS));
         const seenUpTo = msgs.at(-1)?.id ?? head.id;
         const r = await answerGroup({ dialog, group, seenUpTo, transcript, generate, delay, statePath, logPath });
         if (r === 'superseded') continue;

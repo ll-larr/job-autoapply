@@ -225,6 +225,24 @@ describe('runInterview: что отвечается', () => {
     expect(h.generate.mock.calls[0]![0].transcript).toEqual([{ who: 'me', text: 'Здравствуйте' }]);
   });
 
+  it('в транскрипт не попадает прошлое интервью старше суток — только свежий разговор (M3)', async () => {
+    const old = new Date(Date.now() - 10 * 24 * 60 * MIN);
+    const h = harness([
+      msg(1, 'Вопрос прошлого интервью', { date: old }),
+      msg(2, 'Ответ про другую вакансию', { out: true, date: old }),
+      msg(3, 'Спасибо за интервью!', { date: old }),
+      msg(4, 'Здравствуйте! Почему ищете работу?'),
+      msg(5, 'Хочу больше масштаба.', { out: true }),
+      msg(6, 'Какой у вас опыт с Kafka?'),
+    ]);
+    await h.run();
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(h.generate.mock.calls[0]![0].transcript).toEqual([
+      { who: 'bot', text: 'Здравствуйте! Почему ищете работу?' },
+      { who: 'me', text: 'Хочу больше масштаба.' },
+    ]);
+  });
+
   it('два входящих подряд — один ответ на склейку, метка на момент отправки — последний из группы (R9)', async () => {
     const h = harness([msg(1, 'Спасибо за ответ!'), msg(2, 'Расскажите про Kafka?')]);
     const atSend: number[] = [];
