@@ -1,11 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { vi } from 'vitest';
 import {
   backoffFor, readState, writeState, openWindow, RETRY_BACKOFF_MS, answerOnce, answerGroup,
-  acquireLock, releaseLock, pidAlive,
 } from '../src/core/interview-runner.js';
 import { fakeDialog, type DialogMessage } from '../src/telegram/interview-session.js';
 
@@ -173,49 +172,5 @@ describe('answerGroup', () => {
     const journal = readFileSync(d.logPath, 'utf8');
     expect(journal).toMatch(/ответ на 1: 6 символов/);
     expect(journal).not.toMatch(/Секретный|Ответ\./);
-  });
-});
-
-describe('блокировка одного экземпляра', () => {
-  const lockIn = (): string => join(mkdtempSync(join(tmpdir(), 'lock-')), 'interview.lock');
-
-  it('свободна — захватывается, в файле наш pid', () => {
-    const path = lockIn();
-    expect(acquireLock(path, 4242, () => true)).toEqual({ ok: true, stale: null });
-    expect(readFileSync(path, 'utf8')).toBe('4242');
-  });
-
-  it('держит живой pid — отказ, файл не тронут', () => {
-    const path = lockIn();
-    writeFileSync(path, '999', 'utf8');
-    expect(acquireLock(path, 4242, (pid) => pid === 999)).toEqual({ ok: false, holder: 999 });
-    expect(readFileSync(path, 'utf8')).toBe('999');
-  });
-
-  it('pid мёртв — перехватывается', () => {
-    const path = lockIn();
-    writeFileSync(path, '999', 'utf8');
-    expect(acquireLock(path, 4242, () => false)).toEqual({ ok: true, stale: '999' });
-    expect(readFileSync(path, 'utf8')).toBe('4242');
-  });
-
-  it('мусор в файле — перехватывается, а не блокирует навсегда', () => {
-    const path = lockIn();
-    writeFileSync(path, '', 'utf8');
-    expect(acquireLock(path, 4242, () => true).ok).toBe(true);
-  });
-
-  it('снимается только своя блокировка', () => {
-    const path = lockIn();
-    writeFileSync(path, '999', 'utf8');
-    releaseLock(path, 4242);
-    expect(existsSync(path)).toBe(true);
-    releaseLock(path, 999);
-    expect(existsSync(path)).toBe(false);
-  });
-
-  it('pidAlive: свой процесс жив, заведомо несуществующий — нет', () => {
-    expect(pidAlive(process.pid)).toBe(true);
-    expect(pidAlive(2 ** 30 + 12344)).toBe(false);
   });
 });

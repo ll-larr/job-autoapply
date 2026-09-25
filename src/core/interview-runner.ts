@@ -1,10 +1,11 @@
-import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { openDialog, type DialogMessage, type TgDialog } from '../telegram/interview-session.js';
 import { generateAnswer, type Turn } from './interview.js';
 import { readFacts } from './facts.js';
 import { isUp, restart, defaultVpnDeps, sleep } from './vpn.js';
 import type { GigarecruiterConfig } from './config.js';
+import { acquireLock, releaseLock, LOCK_PATH } from './interview-lock.js';
 
 /**
  * Цикл автоответа (спека 2026-09-25, 3 и 7; поправки контроллера R6–R15).
@@ -20,7 +21,6 @@ import type { GigarecruiterConfig } from './config.js';
 
 export const STATE_PATH = 'data/interview-state.json';
 export const LOG_PATH = 'data/interview.log';
-export const LOCK_PATH = 'data/interview.lock';
 export const RETRY_BACKOFF_MS = [30_000, 120_000, 300_000, 900_000] as const;
 /** Как часто перечитывать историю (R9). */
 export const POLL_MS = 5_000;
@@ -146,47 +146,6 @@ export async function answerGroup(deps: GroupDeps): Promise<AnswerOutcome> {
   await deps.dialog.send(r.text);
   log(`ответ на ${ids}: ${r.text.length} символов`, logPath);
   return 'sent';
-}
-
-/** Жив ли процесс. EPERM — процесс есть, просто чужой. */
-export function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
-
-/**
- * Один экземпляр (R10): файл с pid. Живой владелец — отказ. Мёртвый, мусор в
- * файле или наш же pid (переиспользован после падения) — перехват.
- */
-export function acquireLock(
-  path: string,
-  pid: number,
-  isAlive: (pid: number) => boolean = pidAlive,
-): { ok: true; stale: string | null } | { ok: false; holder: number } {
-  mkdirSync(dirname(path), { recursive: true });
-  try {
-    writeFileSync(path, String(pid), { encoding: 'utf8', flag: 'wx' });
-    return { ok: true, stale: null };
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
-  }
-  let raw = '';
-  try { raw = readFileSync(path, 'utf8').trim(); } catch { /* сняли между попытками */ }
-  const holder = Number(raw);
-  if (/^\d+$/.test(raw) && holder !== pid && isAlive(holder)) return { ok: false, holder };
-  writeFileSync(path, String(pid), 'utf8');
-  return { ok: true, stale: raw };
-}
-
-/** Снимает только свою блокировку: чужую, перехваченную у нас, не трогаем. */
-export function releaseLock(path: string, pid: number): void {
-  try {
-    if (readFileSync(path, 'utf8').trim() === String(pid)) rmSync(path);
-  } catch { /* файла уже нет */ }
 }
 
 export interface RunOptions {
