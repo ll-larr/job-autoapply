@@ -303,7 +303,7 @@ describe('Sender — хук onSent', () => {
     expect(calls).toBe(0);
   });
 
-  it('бросающий хук не ломает отправку — строка всё равно уходит в sent', async () => {
+  it('бросающий хук не ломает отправку, но оставляет след в отчёте', async () => {
     seed(q, 2);
     const s = new Sender(q, new Map([['hh', mkAdapter([{ status: 'sent' }])]]), CONFIG, {
       sleep: async () => {},
@@ -313,6 +313,10 @@ describe('Sender — хук onSent', () => {
     expect(rep.sent).toBe(2);
     expect(q.listByStatus('sent')).toHaveLength(2);
     expect(q.listByStatus('failed')).toHaveLength(0);
+    // Молчать нельзя: если бы это был openWindow/spawnInterview, окно
+    // автоответа тихо не открылось бы, и владелец никогда бы не узнал.
+    expect(rep.warnings).toHaveLength(2);
+    expect(rep.warnings.every((w) => w.includes('автоответ ГигаРекрутёру не запущен — хук упал'))).toBe(true);
   });
 
   it('без хука поведение не меняется', async () => {
