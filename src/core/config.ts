@@ -87,7 +87,9 @@ export interface BotLimits {
 export const DEFAULT_BOT_LIMITS: BotLimits = {
   perChatPerDay: 20,
   perBotPerDay: 200,
-  minIntervalMs: 3000,
+  // 1,5 с вместо 3 с — решение владельца 2026-09-25: при 3 с живой человек,
+  // задающий вопросы подряд, упирался в лимит. Кнопки под него не попадают вовсе.
+  minIntervalMs: 1500,
   strikesBeforeMute: 5,
   muteHours: 24,
   meetingsPerChatPerDay: 3,

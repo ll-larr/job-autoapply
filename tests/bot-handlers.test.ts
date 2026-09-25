@@ -317,3 +317,41 @@ describe('лимиты и защита', () => {
     expect(actions).toEqual([]);
   });
 });
+
+describe('троттлинг (решение владельца 2026-09-25)', () => {
+  /** Нажатие без tick(): время двигаем руками, как живой человек у клавиатуры. */
+  const at = async (dtMs: number, text: string, id: number) => {
+    clock += dtMs;
+    return handleMessage(msg({ text, message_id: id }), deps);
+  };
+
+  it('интервал для текста — 1,5 секунды', () => {
+    expect(DEFAULT_BOT_LIMITS.minIntervalMs).toBe(1500);
+  });
+
+  it('кнопки раз в секунду отвечают все до одной', async () => {
+    const presses = ['Резюме', 'Профиль', 'Резюме', 'Профиль', 'Резюме', 'Профиль'];
+    for (const [i, t] of presses.entries()) {
+      const r = await at(i === 0 ? 60_000 : 1000, t, i + 1);
+      expect(r.length, `нажатие ${i + 1} «${t}»`).toBeGreaterThan(0);
+    }
+  });
+
+  it('команда сразу после текста не режется', async () => {
+    await at(60_000, 'Какой у вас опыт с BPMN?', 1);
+    const r = await at(300, '/profile', 2);
+    expect(r.length).toBeGreaterThan(0);
+  });
+
+  it('текст чаще 1,5 секунды режется, через 1,5 секунды — проходит', async () => {
+    await at(60_000, 'Какой у вас опыт с BPMN?', 1);
+    expect(await at(1400, 'А с SQL?', 2)).toEqual([]);
+    expect((await at(1500, 'А с SQL?', 3)).length).toBeGreaterThan(0);
+  });
+
+  it('кнопка не сдвигает окно: ссылка сразу после «Прикрепить вакансию» не теряется', async () => {
+    await at(60_000, 'Прикрепить вакансию', 1);
+    const r = await at(500, 'Бизнес-аналитик в финтех, BPMN, SQL, интеграции, Москва, гибрид', 2);
+    expect(r.length).toBeGreaterThan(0);
+  });
+});

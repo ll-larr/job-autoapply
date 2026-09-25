@@ -101,17 +101,24 @@ export async function handleMessage(message: TgBotMessage, deps: HandlerDeps): P
   const nowMs = now.getTime();
   const day = dayKey(now);
 
-  const previous = deps.store.chat(chatId);
-  // Троттлинг считается по ПРОШЛОМУ сообщению, до записи нового времени.
-  if (previous !== null && nowMs - previous.lastMsgAt < deps.limits.minIntervalMs) return [];
-
-  const mode = deps.store.modeAt(chatId, nowMs);
-  deps.store.touch(chatId, username, nowMs);
-  const muted = previous?.mutedUntil !== undefined && previous.mutedUntil !== null
-    && previous.mutedUntil > nowMs;
-
   const text = message.text ?? message.caption ?? '';
   const command = commandOf(text);
+
+  const previous = deps.store.chat(chatId);
+  // Троттлинг считается по ПРОШЛОМУ сообщению, до записи нового времени.
+  // Кнопки и команды под него не попадают (решение владельца 2026-09-25): они
+  // не зовут модель, а человек у клавиатуры жмёт их быстрее раза в 1,5 с —
+  // раньше каждое второе и третье нажатие молча пропадало.
+  if (command === null && previous !== null && nowMs - previous.lastMsgAt < deps.limits.minIntervalMs) {
+    return [];
+  }
+
+  const mode = deps.store.modeAt(chatId, nowMs);
+  // Команда не сдвигает окно троттлинга: иначе ссылка, вставленная сразу после
+  // кнопки «Прикрепить вакансию», пришла бы быстрее лимита и потерялась.
+  deps.store.touch(chatId, username, command === null ? nowMs : (previous?.lastMsgAt ?? 0));
+  const muted = previous?.mutedUntil !== undefined && previous.mutedUntil !== null
+    && previous.mutedUntil > nowMs;
 
   // Команды бесплатны — работают и в молчании, и при исчерпанном лимите модели.
   if (command !== null) return handleCommand(command, chatId, nowMs, deps);
