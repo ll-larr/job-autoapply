@@ -214,7 +214,7 @@
 ```json
 {
   "gigarecruiter": {
-    "username": "<username ГигаРекрутёра, снимается из существующего диалога при реализации>",
+    "username": "Giga_recruiter_bot",
     "windowMinutes": 120,
     "idleMinutes": 10,
     "pollHours": 4,

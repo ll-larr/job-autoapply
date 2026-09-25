@@ -1292,7 +1292,7 @@ export const DEFAULT_GIGARECRUITER: Omit<GigarecruiterConfig, 'username' | 'vpnE
 
 ```json
   "gigarecruiter": {
-    "username": "<снять из существующего диалога: t.me/… ГигаРекрутёра>",
+    "username": "Giga_recruiter_bot",
     "windowMinutes": 120,
     "idleMinutes": 10,
     "pollHours": 4,
@@ -1457,7 +1457,20 @@ $trigger = New-ScheduledTaskTrigger -Once -At '2026-09-25T22:40:00' -RepetitionI
 Register-ScheduledTask -TaskName 'job-autoapply-interview' -Action $action -Trigger $trigger -Description 'Автоответ ГигаРекрутёру'
 ```
 
-- [ ] **Step 9: Коммит**
+- [ ] **Step 9: Подтвердить собеседника вживую**
+
+Опечатка в username тихо фатальна: подписка встанет на пустое место, цикл
+будет ждать вечно и ничего не сообщит. Проверить до планировщика, при
+включённом VPN:
+
+```bash
+npx tsx -e "import('./src/telegram/interview-session.js').then(async (m) => { const r = await m.openDialog('Giga_recruiter_bot'); if (!r.ok) { console.error('НЕ ОТКРЫЛСЯ:', r.reason); process.exit(1); } const h = await r.dialog.history(0); console.log('сообщений в диалоге:', h.length); console.log('последнее:', h.at(-1)?.text.slice(0, 80)); await r.dialog.close(); })"
+```
+
+Expected: непустая история, в последнем сообщении — текст из реального диалога
+с ГигаРекрутёром. Пустая история или ошибка резолва означают неверный username.
+
+- [ ] **Step 10: Коммит**
 
 ```bash
 git add src/core/interview-runner.ts src/core/config.ts src/cli.ts package.json config.json scripts/interview-service.ps1 tests/interview-loop.test.ts
@@ -1476,10 +1489,14 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ## Что остаётся владельцу
 
-Две вещи, без которых цикл не поедет, и обе может сделать только он:
+Одна вещь, без которой цикл не поедет, и сделать её может только он:
 
 1. **Заполнить `data/facts.md`.** Пустое поле означает, что на такой вопрос машина промолчит и уйдёт в повторы. Качество автоответа равно качеству этого файла.
-2. **Вписать `username` ГигаРекрутёра** в `config.json`. Снимается из существующего диалога в Telegram.
+
+Username ГигаРекрутёра владелец назвал 2026-09-25: `Giga_recruiter_bot`, он уже
+вписан в конфиг. На первом живом запуске его надо подтвердить (шаг 10 задачи 7):
+опечатка здесь тихо фатальна — подписка встанет на несуществующего
+собеседника, и цикл будет молча ждать вечно.
 
 ## Самопроверка плана
 
