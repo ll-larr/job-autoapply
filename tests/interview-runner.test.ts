@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { vi } from 'vitest';
@@ -36,6 +36,26 @@ describe('состояние', () => {
     const s = readState(path);
     expect(s.windowUntil).toBe(1_000_000 + 120 * 60_000);
     expect(s.lastMessageId).toBe(42);
+  });
+
+  it('после writeState нет .tmp файла рядом, содержимое круглый путь', () => {
+    const dir = dirname(path);
+    writeState({ lastMessageId: 42, windowUntil: 100, lastPollAt: 50 }, path);
+    const files = readdirSync(dir);
+    expect(files).not.toContain('state.json.tmp');
+    expect(readState(path)).toEqual({ lastMessageId: 42, windowUntil: 100, lastPollAt: 50 });
+  });
+
+  it('читает значения, не числа переводит в 0: {"lastMessageId":"abc",...} → lastMessageId: 0, остальное на месте', () => {
+    const corruptPath = join(dirname(path), 'corrupt.json');
+    require('node:fs').writeFileSync(corruptPath, '{"lastMessageId":"abc","windowUntil":5,"lastPollAt":7}', 'utf8');
+    expect(readState(corruptPath)).toEqual({ lastMessageId: 0, windowUntil: 5, lastPollAt: 7 });
+  });
+
+  it('усечённый JSON парсит как ошибку: все поля → 0', () => {
+    const truncatedPath = join(dirname(path), 'truncated.json');
+    require('node:fs').writeFileSync(truncatedPath, '{"lastMessageId": 4', 'utf8');
+    expect(readState(truncatedPath)).toEqual({ lastMessageId: 0, windowUntil: 0, lastPollAt: 0 });
   });
 });
 

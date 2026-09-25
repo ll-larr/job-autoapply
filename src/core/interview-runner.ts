@@ -1,7 +1,6 @@
-import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { DialogMessage } from '../telegram/interview-session.js';
-import type { TgDialog } from '../telegram/interview-session.js';
+import type { DialogMessage, TgDialog } from '../telegram/interview-session.js';
 import type { Turn } from './interview.js';
 
 /**
@@ -35,9 +34,9 @@ export function readState(path: string = STATE_PATH): RunnerState {
   try {
     const raw = JSON.parse(readFileSync(path, 'utf8')) as Partial<RunnerState>;
     return {
-      lastMessageId: Number(raw.lastMessageId ?? 0),
-      windowUntil: Number(raw.windowUntil ?? 0),
-      lastPollAt: Number(raw.lastPollAt ?? 0),
+      lastMessageId: Number.isFinite(raw.lastMessageId) ? Number(raw.lastMessageId) : 0,
+      windowUntil: Number.isFinite(raw.windowUntil) ? Number(raw.windowUntil) : 0,
+      lastPollAt: Number.isFinite(raw.lastPollAt) ? Number(raw.lastPollAt) : 0,
     };
   } catch {
     // Битый файл не должен ронять цикл: начинаем с нуля.
@@ -47,7 +46,9 @@ export function readState(path: string = STATE_PATH): RunnerState {
 
 export function writeState(s: RunnerState, path: string = STATE_PATH): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(s, null, 2), 'utf8');
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, JSON.stringify(s, null, 2), 'utf8');
+  renameSync(tmp, path);
 }
 
 export function openWindow(now: number, minutes: number, path: string = STATE_PATH): void {
