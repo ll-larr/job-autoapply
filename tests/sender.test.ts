@@ -274,6 +274,57 @@ describe('Sender остановка', () => {
   });
 });
 
+/**
+ * Хук onSent (задача 8, спека 2026-09-25, 3.1): отклик на Сбер должен
+ * запускать автоответ, но Sender ничего не знает про Сбер или интервью — он
+ * лишь зовёт внедрённую функцию после настоящей отправки.
+ */
+describe('Sender — хук onSent', () => {
+  it('вызывается ровно один раз для sent, с вакансией строки', async () => {
+    seed(q, 1);
+    const calls: Array<{ title: string; company: string }> = [];
+    const s = new Sender(q, new Map([['hh', mkAdapter([{ status: 'sent' }])]]), CONFIG, {
+      sleep: async () => {},
+      onSent: (v) => { calls.push({ title: v.title, company: v.company }); },
+    });
+    const rep = await s.run();
+    expect(rep.sent).toBe(1);
+    expect(calls).toEqual([{ title: 'Бизнес-аналитик', company: 'C' }]);
+  });
+
+  it('не вызывается для already_applied', async () => {
+    seed(q, 1);
+    let calls = 0;
+    const s = new Sender(q, new Map([['hh', mkAdapter([{ status: 'already_applied' }])]]), CONFIG, {
+      sleep: async () => {},
+      onSent: () => { calls++; },
+    });
+    await s.run();
+    expect(calls).toBe(0);
+  });
+
+  it('бросающий хук не ломает отправку — строка всё равно уходит в sent', async () => {
+    seed(q, 2);
+    const s = new Sender(q, new Map([['hh', mkAdapter([{ status: 'sent' }])]]), CONFIG, {
+      sleep: async () => {},
+      onSent: () => { throw new Error('хук упал'); },
+    });
+    const rep = await s.run();
+    expect(rep.sent).toBe(2);
+    expect(q.listByStatus('sent')).toHaveLength(2);
+    expect(q.listByStatus('failed')).toHaveLength(0);
+  });
+
+  it('без хука поведение не меняется', async () => {
+    seed(q, 1);
+    const s = new Sender(q, new Map([['hh', mkAdapter([{ status: 'sent' }])]]), CONFIG, {
+      sleep: async () => {},
+    });
+    const rep = await s.run();
+    expect(rep.sent).toBe(1);
+  });
+});
+
 describe('Sender kill switch', () => {
   it('поднятый флаг останавливает отправку до первой подачи', async () => {
     seed(q, 3);

@@ -23,6 +23,8 @@ import {
   loadConfig, resolveBotConfig, resolveGigarecruiterConfig, type Config, type GigarecruiterConfig,
 } from './core/config.js';
 import { runInterview, openWindow, log as logInterview } from './core/interview-runner.js';
+import { triggerInterview, spawnInterview as spawnInterviewProcess } from './core/interview-trigger.js';
+import type { Vacancy } from './core/vacancy.js';
 import { runSearch, type SearchReport, type SearchQuery } from './pipeline.js';
 import {
   loadSettings, seedSettings, saveSettings, validateSettings, enabledSpecialties, SETTINGS_PATH, type Settings,
@@ -684,6 +686,25 @@ export function formatProxyReport(d: ProxyDiscovery): string[] {
   ];
 }
 
+/**
+ * Хук Sender: отклик на вакансию Сбера открывает окно автоответа и поднимает
+ * демон `npm run interview` отдельным процессом (задача 8, спека 2026-09-25,
+ * 3.1). Вызывается и после автоотклика в `search`, и в команде `send` — оба
+ * места шлют отклики от имени владельца, и оба обязаны запускать интервью.
+ * `triggerInterview` сама решает, Сбер это или нет и настроен ли блок
+ * `gigarecruiter`; здесь только боевые зависимости.
+ */
+function gigarecruiterOnSent(config: Config): (v: Vacancy) => void {
+  return (v) => {
+    triggerInterview(v, {
+      config: config.gigarecruiter,
+      now: () => Date.now(),
+      openWindow,
+      spawnInterview: () => spawnInterviewProcess(process.cwd()),
+    });
+  };
+}
+
 async function reportProxy(): Promise<void> {
   const d = await proxyResolver.get();
   const lines = formatProxyReport(d);
@@ -971,7 +992,9 @@ async function main(): Promise<void> {
       // же лимитами и предохранителями (спека 7.2).
       if (autoApproved > 0) {
         clearStop();
-        const sendReport = await new Sender(queue, buildAdapterMap(adapters), config).run();
+        const sendReport = await new Sender(queue, buildAdapterMap(adapters), config, {
+          onSent: gigarecruiterOnSent(config),
+        }).run();
         const { lines, exitCode } = formatSendResult(sendReport);
         for (const line of lines) console.log(line);
         process.exitCode = exitCode;
@@ -999,7 +1022,9 @@ async function main(): Promise<void> {
 
       clearStop(); // прошлый kill switch не должен блокировать новый прогон
       const adapterMap = buildAdapterMap(buildAdapters({ queue, settings: () => currentSettings(config), session: tg }, config));
-      const report = await new Sender(queue, adapterMap, config).run();
+      const report = await new Sender(queue, adapterMap, config, {
+        onSent: gigarecruiterOnSent(config),
+      }).run();
 
       const { lines, exitCode } = formatSendResult(report);
       for (const line of lines) console.log(line);

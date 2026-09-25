@@ -2,6 +2,7 @@ import { existsSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Queue } from './queue.js';
 import type { Config } from './config.js';
+import type { Vacancy } from './vacancy.js';
 import type { Adapter, ApplyResult } from '../adapters/types.js';
 
 const STOP_FLAG = 'data/STOP';
@@ -83,6 +84,14 @@ interface Deps {
   now?: () => number;
   random?: () => number;
   stopRequested?: () => boolean;
+  /**
+   * Вызывается после успешной отправки (только 'sent', не 'already_applied' —
+   * дедуп не значит, что отклик ушёл только что). По умолчанию не задан:
+   * Sender ничего не знает про Сбер или автоответ, это забота вызывающей
+   * стороны (задача 8, спека 2026-09-25, 3.1). Исключение из хука не должно
+   * ронять отправку — ловится и отбрасывается.
+   */
+  onSent?: (v: Vacancy) => void;
 }
 
 const HOUR = 3600_000;
@@ -93,6 +102,7 @@ export class Sender {
   private now: () => number;
   private random: () => number;
   private stopRequested: () => boolean;
+  private onSent?: (v: Vacancy) => void;
 
   constructor(
     private queue: Queue,
@@ -104,6 +114,7 @@ export class Sender {
     this.now = deps.now ?? (() => Date.now());
     this.random = deps.random ?? Math.random;
     this.stopRequested = deps.stopRequested ?? isStopRequested;
+    this.onSent = deps.onSent;
   }
 
   async run(): Promise<SendReport> {
@@ -260,8 +271,18 @@ export class Sender {
       if (result.status === 'sent' || result.status === 'already_applied') {
         this.queue.markSent(row.id);
         report.sent++;
-        if (result.status === 'sent' && result.warning !== undefined) {
-          report.warnings.push(`${row.vacancy.title}: ${result.warning}`);
+        if (result.status === 'sent') {
+          if (result.warning !== undefined) {
+            report.warnings.push(`${row.vacancy.title}: ${result.warning}`);
+          }
+          // Не для already_applied: дедуп — это не «отклик ушёл только что»,
+          // а находка задним числом, и повторный запуск автоответа на него
+          // означал бы триггер без нового отклика (задача 8, спека 3.1).
+          // Хук — забота вызывающей стороны (Сбер, автоответ), Sender о ней
+          // не знает; исключение из хука не должно ронять отправку.
+          try {
+            this.onSent?.(row.vacancy);
+          } catch { /* хук не должен ронять отправку */ }
         }
         // Успех сбрасывает счётчик: предохранитель ловит именно череду отказов
         // подряд, а не их общее число за прогон.
