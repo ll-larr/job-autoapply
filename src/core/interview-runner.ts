@@ -35,9 +35,16 @@ export interface RunnerState {
   lastMessageId: number;
   windowUntil: number;
   lastPollAt: number;
+  /**
+   * Когда сработал потолок ответов за сессию (FR-6); 0 — не срабатывал. Пока
+   * он стоит, ни поллинг, ни запуск в старом окне не отвечают: встречная
+   * реплика ГигаРекрутёра на наш последний ответ иначе завела бы разговор
+   * заново на следующем поллинге. Снимает только новое окно (openWindow).
+   */
+  capTrippedAt: number;
 }
 
-const EMPTY: RunnerState = { lastMessageId: 0, windowUntil: 0, lastPollAt: 0 };
+const EMPTY: RunnerState = { lastMessageId: 0, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0 };
 
 export function backoffFor(round: number): number {
   const i = Math.min(round, RETRY_BACKOFF_MS.length - 1);
@@ -52,6 +59,7 @@ export function readState(path: string = STATE_PATH): RunnerState {
       lastMessageId: Number.isFinite(raw.lastMessageId) ? Number(raw.lastMessageId) : 0,
       windowUntil: Number.isFinite(raw.windowUntil) ? Number(raw.windowUntil) : 0,
       lastPollAt: Number.isFinite(raw.lastPollAt) ? Number(raw.lastPollAt) : 0,
+      capTrippedAt: Number.isFinite(raw.capTrippedAt) ? Number(raw.capTrippedAt) : 0,
     };
   } catch {
     // Битый файл не должен ронять цикл: начинаем с нуля.
@@ -66,9 +74,10 @@ export function writeState(s: RunnerState, path: string = STATE_PATH): void {
   renameSync(tmp, path);
 }
 
+/** Новое окно — новый разговор: запомненный потолок ответов снимается (FR-6). */
 export function openWindow(now: number, minutes: number, path: string = STATE_PATH): void {
   const s = readState(path);
-  writeState({ ...s, windowUntil: now + minutes * 60_000 }, path);
+  writeState({ ...s, windowUntil: now + minutes * 60_000, capTrippedAt: 0 }, path);
 }
 
 export function log(line: string, path: string = LOG_PATH): void {
@@ -83,9 +92,10 @@ export type GenerateFn = (input: { transcript: Turn[]; question: string }) =>
  * 'sent' — ответ ушёл. 'retry' — модели не дали годного текста, в чат не ушло
  * ничего, вызывающая сторона ставит бэкофф. 'idle' — на это уже отвечали.
  * 'superseded' — пока шла пауза, в чате появилось новое: ответ не отправлен,
- * группу надо собрать заново.
+ * группу надо собрать заново. 'lost' — блокировку перехватил другой
+ * экземпляр: ответ не отправлен, метка не сдвинута, вопрос — его.
  */
-export type AnswerOutcome = 'sent' | 'retry' | 'idle' | 'superseded';
+export type AnswerOutcome = 'sent' | 'retry' | 'idle' | 'superseded' | 'lost';
 
 export interface AnswerDeps {
   dialog: TgDialog;
@@ -107,6 +117,12 @@ export interface GroupDeps extends Omit<AnswerDeps, 'question'> {
    * Не задан — последний id группы.
    */
   seenUpTo?: number;
+  /**
+   * Блокировка всё ещё наша? Спрашивается последним перед отправкой (FR-5):
+   * процесс, простоявший на модели или паузе дольше срока блокировки, мог
+   * её потерять. Не задан — считаем, что наша.
+   */
+  owns?: () => boolean;
 }
 
 /** Один вопрос — один ответ. Частный случай группы из одного сообщения. */
@@ -143,6 +159,7 @@ export async function answerGroup(deps: GroupDeps): Promise<AnswerOutcome> {
     log(`к ${ids} пришло продолжение, ответ пересобирается`, logPath);
     return 'superseded';
   }
+  if (deps.owns !== undefined && !deps.owns()) return 'lost';
   await deps.dialog.setTyping();
   // Метку двигаем до отправки: падение на полпути не даст ответить дважды.
   // Состояние перечитывается: за время паузы окно мог сдвинуть другой процесс.
@@ -201,6 +218,13 @@ export async function runInterview(opts: RunOptions): Promise<void> {
 
   let dialog: TgDialog | null = null;
   try {
+    // Потолок ответов сработал, нового окна с тех пор не было (FR-6): ни
+    // VPN, ни Telegram не трогаем — отвечать всё равно не будем.
+    const capped = readState(statePath).capTrippedAt;
+    if (capped > 0) {
+      note(`потолок ответов сработал ${new Date(capped).toISOString()}, до нового окна не отвечаю — выхожу`);
+      return;
+    }
     const vpn = opts.vpn ?? { isUp: () => isUp(defaultVpnDeps), restart: (exe: string) => restart(exe) };
     if (!(await vpn.isUp())) {
       note('VPN не отвечает, пробую рестарт');
@@ -379,7 +403,12 @@ async function converse(
         const transcript = toTranscript((await dialog.history(0))
           .filter((m) => m.id < head.id && t - m.date.getTime() <= STALE_MS));
         const seenUpTo = msgs.at(-1)?.id ?? head.id;
-        const r = await answerGroup({ dialog, group, seenUpTo, transcript, generate, delay, statePath, logPath });
+        const owns = (): boolean => refreshLock(lock.path, lock.pid, now());
+        const r = await answerGroup({ dialog, group, seenUpTo, transcript, generate, delay, statePath, logPath, owns });
+        if (r === 'lost') {
+          note(`блокировку перехватил другой экземпляр перед отправкой, ответ не ушёл: ответов ${sentCount}`);
+          return;
+        }
         if (r === 'superseded') continue;
         if (r === 'sent') {
           replies += 1;
@@ -388,8 +417,10 @@ async function converse(
           round = 0;
           lastActivity = now();
           if (replies >= cfg.maxRepliesPerSession) {
-            // Два бота могут переписываться бесконечно (C1): дальше не отвечаем.
-            note(`потолок ${cfg.maxRepliesPerSession} ответов за сессию, сессия закрыта`);
+            // Два бота могут переписываться бесконечно (C1): дальше не отвечаем,
+            // и следующие запуски тоже — до нового окна (FR-6).
+            writeState({ ...readState(statePath), capTrippedAt: now() }, statePath);
+            note(`потолок ${cfg.maxRepliesPerSession} ответов за сессию, сессия закрыта; до нового окна не отвечаю`);
             return;
           }
         }

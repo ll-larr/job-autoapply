@@ -50,7 +50,7 @@ describe('сквозной прогон шести вопросов', () => {
     const dialog = fakeDialog();
     const statePath = join(mkdtempSync(join(tmpdir(), 'loop2-')), 'state.json');
     const logPath = join(dirname(statePath), 'run.log');
-    writeState({ lastMessageId: 6, windowUntil: 0, lastPollAt: 0 }, statePath);
+    writeState({ lastMessageId: 6, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0 }, statePath);
 
     for (const [i, text] of QUESTIONS.entries()) {
       const r = await answerOnce({
@@ -89,7 +89,7 @@ function harness(seed: DialogMessage[] = [], state?: Partial<RunnerState>) {
   const statePath = join(dir, 'interview-state.json');
   const logPath = join(dir, 'interview.log');
   const lockPath = join(dir, 'interview.lock');
-  if (state !== undefined) writeState({ lastMessageId: 0, windowUntil: 0, lastPollAt: 0, ...state }, statePath);
+  if (state !== undefined) writeState({ lastMessageId: 0, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0, ...state }, statePath);
   const t0 = Date.now();
   let clock = t0;
   const events: { at: number; run: () => void }[] = [];
@@ -301,11 +301,15 @@ describe('runInterview: что отвечается', () => {
 });
 
 describe('runInterview: потолок ответов и конец интервью (C1)', () => {
-  /** ГигаРекрутёр — тоже модель: на каждый наш ответ приходит встречная реплика. */
-  function chatty(h: ReturnType<typeof harness>): void {
+  /**
+   * ГигаРекрутёр — тоже модель: на каждый наш ответ приходит встречная
+   * реплика. Возвращает функцию, которая его успокаивает.
+   */
+  function chatty(h: ReturnType<typeof harness>): () => void {
     const send = h.dialog.send;
     let n = 0;
     h.dialog.send = async (text) => { await send(text); h.dialog.push(`Встречная реплика ${++n}`); };
+    return () => { h.dialog.send = send; };
   }
 
   it('бот отвечает на каждый ответ — уходит ровно maxRepliesPerSession ответов, строка в журнал, выход', async () => {
@@ -331,6 +335,57 @@ describe('runInterview: потолок ответов и конец интерв
     expect(h.dialog.sent).toHaveLength(3);
   });
 
+  it('потолок запоминается: следующий поллинг с новыми входящими не отвечает — одна строка и выход (FR-6)', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.dialog.push('Первый вопрос');
+    chatty(h);
+    await h.run({ config: { ...CFG, maxRepliesPerSession: 3 } });
+    expect(h.dialog.sent).toHaveLength(3);
+    expect(readState(h.statePath).capTrippedAt).toBe(h.now());
+
+    // Четыре часа спустя поллинг: в чате встречная реплика и ещё один вопрос.
+    h.dialog.push('Ещё вопрос');
+    const later = (): number => h.now() + 4 * 60 * MIN;
+    const linesBefore = h.journal().trim().split('\n').length;
+    h.openDialog.mockClear();
+    h.generate.mockClear();
+    await h.run({ now: later });
+    expect(h.dialog.sent).toHaveLength(3);
+    expect(h.openDialog).not.toHaveBeenCalled();
+    expect(h.generate).not.toHaveBeenCalled();
+    const added = h.journal().trim().split('\n').slice(linesBefore);
+    expect(added).toHaveLength(1);
+    expect(added[0]).toMatch(/потолок/);
+    expect(existsSync(h.lockPath)).toBe(false);
+  });
+
+  it('потолок запомнен, окно ещё открыто, но не новое — тоже ничего (FR-6)', async () => {
+    const h = harness([msg(1, 'Вопрос')], { windowUntil: Date.now() + 60 * MIN, capTrippedAt: Date.now() - MIN });
+    await h.run();
+    expect(h.dialog.sent).toEqual([]);
+    expect(h.openDialog).not.toHaveBeenCalled();
+    expect(h.journal()).toMatch(/потолок/);
+  });
+
+  it('новое окно (отклик на Сбер или --window) снимает запомненный потолок — следующий запуск отвечает (FR-6)', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.dialog.push('Первый вопрос');
+    const calm = chatty(h);
+    await h.run({ config: { ...CFG, maxRepliesPerSession: 3 } });
+    expect(readState(h.statePath).capTrippedAt).toBeGreaterThan(0);
+    calm();
+
+    const later = (): number => h.now() + 4 * 60 * MIN;
+    openWindow(later(), CFG.windowMinutes, h.statePath);
+    expect(readState(h.statePath).capTrippedAt).toBe(0);
+    h.dialog.push('Здравствуйте! Это новое интервью.');
+    await h.run({ now: later });
+    expect(h.dialog.sent).toHaveLength(4);
+    expect(readState(h.statePath).capTrippedAt).toBe(0);
+  });
+
   it('после ответа пришли прощание и оценка с кнопками — не отвечается ничего, метка за обоими, выход', async () => {
     const h = harness();
     openWindow(h.t0, CFG.windowMinutes, h.statePath);
@@ -347,6 +402,8 @@ describe('runInterview: потолок ответов и конец интерв
     expect(readState(h.statePath).lastMessageId).toBe(rating.id);
     expect(h.journal()).toMatch(/конец интервью/);
     expect(h.now()).toBe(h.t0 + 5 * MIN);
+    // Обычный конец интервью — не потолок: следующий отклик отвечается как обычно.
+    expect(readState(h.statePath).capTrippedAt).toBe(0);
   });
 
   it('оценка пришла во время паузы перед ответом на прощание — прощание тоже остаётся без ответа', async () => {
@@ -557,6 +614,20 @@ describe('runInterview: один экземпляр и уборка', () => {
     expect(h.journal()).toMatch(/другой экземпляр/);
     expect(readFileSync(h.lockPath, 'utf8')).toBe(foreign);
     expect(h.now()).toBe(h.t0 + 10 * MIN);
+  });
+
+  it('блокировку перехватили во время паузы перед ответом — ответ не уходит, метка не двигается, выход (FR-5)', async () => {
+    const h = harness([msg(1, 'Вопрос')]);
+    const foreign = JSON.stringify({ pid: 7, at: h.t0 });
+    // Пауза перед ответом — 40 с; перехват посреди неё.
+    h.at(20_000, () => writeFileSync(h.lockPath, foreign, 'utf8'));
+    await h.run();
+    expect(h.generate).toHaveBeenCalledTimes(1);
+    expect(h.dialog.sent).toEqual([]);
+    // Вопрос остаётся новому владельцу: метка за него не ушла.
+    expect(readState(h.statePath).lastMessageId).toBe(0);
+    expect(h.journal()).toMatch(/другой экземпляр/);
+    expect(readFileSync(h.lockPath, 'utf8')).toBe(foreign);
   });
 
   it('history() бросает — ошибка в журнал, диалог закрыт, блокировка снята, промис не отклонён', async () => {
