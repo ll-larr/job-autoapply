@@ -8,6 +8,7 @@ import type { Config } from '../core/config.js';
 import type { Adapter } from '../adapters/types.js';
 import type { Settings } from '../core/settings.js';
 import type { SpecialtySuggestion } from '../core/suggest.js';
+import type { Vacancy } from '../core/vacancy.js';
 import { Sender, clearStop, requestStop, type SendReport } from '../core/sender.js';
 
 /** Сколько времени отменённая вакансия остаётся во вкладке «Отменённые». */
@@ -72,6 +73,13 @@ export interface PanelDeps {
   /** Нужны только для отправки. Без них кнопка «Отправить всё» недоступна. */
   adapters?: Adapter[];
   config?: Config;
+  /**
+   * Хук Sender после успешного отклика — тот же, что у `npm run send` и
+   * автоотклика в `search` (cli.ts, gigarecruiterOnSent): отклик на Сбер из
+   * панели тоже открывает окно автоответа ГигаРекрутёру (I2). Не задан —
+   * отправка идёт без хука.
+   */
+  onSent?: (v: Vacancy) => void;
   /**
    * Запуск поиска. Передаётся готовой функцией, а не собирается здесь из
    * кусков: панель — это http-слой, ей незачем знать про резюме, скелеты
@@ -170,6 +178,7 @@ export async function startPanel(
           queue,
           new Map((deps.adapters ?? []).map((a) => [a.name, a])),
           deps.config!,
+          { onSent: deps.onSent },
         );
         send.report = await sender.run();
       } catch (e) {

@@ -668,6 +668,19 @@ describe('панель — автоотклик (спека 7.2–7.4)', () => {
     await auto.close();
   });
 
+  it('отправка из панели зовёт хук onSent на каждый ушедший отклик — окно автоответа открывается и отсюда (I2)', async () => {
+    const spy = spyAdapter();
+    const hooked: string[] = [];
+    approvedRow('hook-1');
+    const p = await startPanel(q, 0, {
+      adapters: [spy.adapter], config: CONFIG,
+      onSent: (v) => { hooked.push(v.sourceId); },
+    });
+    await post(`http://127.0.0.1:${p.port}/api/send/start`, {});
+    await expect.poll(() => hooked).toEqual(['hook-1']);
+    await p.close();
+  });
+
   it('поиск ничего не одобрил — отправка не стартует', async () => {
     const spy = spyAdapter();
     const auto = await startPanel(q, 0, {

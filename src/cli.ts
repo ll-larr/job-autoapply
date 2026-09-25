@@ -23,7 +23,9 @@ import {
   loadConfig, resolveBotConfig, resolveGigarecruiterConfig, type Config, type GigarecruiterConfig,
 } from './core/config.js';
 import { runInterview, openWindow, log as logInterview } from './core/interview-runner.js';
-import { triggerInterview, spawnInterview as spawnInterviewProcess } from './core/interview-trigger.js';
+import {
+  triggerInterview, isSberVacancy, spawnInterview as spawnInterviewProcess, type TriggerDeps,
+} from './core/interview-trigger.js';
 import type { Vacancy } from './core/vacancy.js';
 import { runSearch, type SearchReport, type SearchQuery } from './pipeline.js';
 import {
@@ -689,19 +691,28 @@ export function formatProxyReport(d: ProxyDiscovery): string[] {
 /**
  * Хук Sender: отклик на вакансию Сбера открывает окно автоответа и поднимает
  * демон `npm run interview` отдельным процессом (задача 8, спека 2026-09-25,
- * 3.1). Вызывается и после автоотклика в `search`, и в команде `send` — оба
- * места шлют отклики от имени владельца, и оба обязаны запускать интервью.
- * `triggerInterview` сама решает, Сбер это или нет и настроен ли блок
- * `gigarecruiter`; здесь только боевые зависимости.
+ * 3.1). Вызывается после автоотклика в `search`, в команде `send` и при
+ * отправке из панели (I2) — все три места шлют отклики от имени владельца, и
+ * все обязаны запускать интервью. `triggerInterview` решает, Сбер это или
+ * нет; здесь — резолвер конфига и боевые зависимости.
  */
-function gigarecruiterOnSent(config: Config): (v: Vacancy) => void {
+export function gigarecruiterOnSent(
+  config: Config,
+  deps: Omit<TriggerDeps, 'config'> = {
+    now: () => Date.now(),
+    openWindow,
+    spawnInterview: () => spawnInterviewProcess(process.cwd(), {
+      // Асинхронный сбой запуска (M2): уведомлений нет, след — только журнал.
+      onError: (e) => logInterview(`демон автоответа не запустился: ${e.message}`),
+    }),
+  },
+): (v: Vacancy) => void {
   return (v) => {
-    triggerInterview(v, {
-      config: config.gigarecruiter,
-      now: () => Date.now(),
-      openWindow,
-      spawnInterview: () => spawnInterviewProcess(process.cwd()),
-    });
+    if (config.gigarecruiter === undefined || !isSberVacancy(v)) return;
+    // Тот же резолвер, что у команды interview (M1): сырой блок без
+    // windowMinutes записал бы в windowUntil NaN, и окно не открылось бы
+    // никогда. Кривой блок бросает — Sender запишет причину в отчёт отправки.
+    triggerInterview(v, { config: resolveGigarecruiterConfig(config), ...deps });
   };
 }
 
@@ -800,6 +811,8 @@ async function main(): Promise<void> {
       await startPanel(queue, PANEL_PORT, {
         adapters,
         config,
+        // Отправка из панели — тот же отклик, что и `npm run send` (I2).
+        onSent: gigarecruiterOnSent(config),
         telegram: {
           dialogs: async () => {
             const reader = await tg.reader();

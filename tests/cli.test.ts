@@ -17,12 +17,14 @@ import { formatProxyReport,
   runSearchCommand,
   lazyTelegram,
   specialtyOf,
+  gigarecruiterOnSent,
 } from '../src/cli.js';
 import { Queue, type Status } from '../src/core/queue.js';
 import { normalizeVacancy } from '../src/core/vacancy.js';
 import type { Adapter } from '../src/adapters/types.js';
 import type { SearchReport } from '../src/pipeline.js';
 import type { SendReport } from '../src/core/sender.js';
+import type { Config } from '../src/core/config.js';
 import { seedSettings } from '../src/core/settings.js';
 import { DEFAULT_SPECIALTY } from '../src/core/specialty-defaults.js';
 
@@ -566,5 +568,48 @@ describe('formatProxyReport — что сказать в консоли про �
     expect(text).toMatch(/включи VPN/i);
     expect(text).toMatch(/127\.0\.0\.1:10809, 127\.0\.0\.1:10801/);
     expect(text).not.toMatch(/перезапус|Ctrl\+C|use-env-proxy/i);
+  });
+});
+
+describe('gigarecruiterOnSent: хук отправки резолвит блок gigarecruiter (M1)', () => {
+  const base = { minScore: 40, letterFullThreshold: 60, letterModels: ['m1'], throttle: {} };
+  const sber = normalizeVacancy({
+    source: 'hh', sourceId: 'sb-1', title: 'Бизнес-аналитик', company: 'ПАО Сбербанк', url: 'u',
+    description: 'd', geo: 'Москва', postedAt: '2026-09-25T00:00:00Z',
+  });
+  const other = { ...sber, company: 'Тинькофф' };
+  function spies() {
+    const opened: Array<[number, number]> = [];
+    let spawned = 0;
+    return {
+      opened,
+      spawned: () => spawned,
+      deps: { now: () => 1_000, openWindow: (n: number, m: number) => { opened.push([n, m]); }, spawnInterview: () => { spawned += 1; } },
+    };
+  }
+
+  it('в блоке нет windowMinutes — окно открывается на умолчание 120 минут, а не на NaN', () => {
+    const s = spies();
+    const config = { ...base, gigarecruiter: { username: 'Giga_recruiter_bot', vpnExe: 'vpn.exe' } } as unknown as Config;
+    gigarecruiterOnSent(config, s.deps)(sber);
+    expect(s.opened).toEqual([[1_000, 120]]);
+    expect(s.spawned()).toBe(1);
+  });
+
+  it('кривой блок — исключение (Sender запишет его в отчёт), окно не открыто, процесс не поднят', () => {
+    const s = spies();
+    const config = { ...base, gigarecruiter: { username: 'Giga_recruiter_bot', vpnExe: 'vpn.exe', windowMinutes: 0 } } as unknown as Config;
+    expect(() => gigarecruiterOnSent(config, s.deps)(sber)).toThrow(/windowMinutes/);
+    expect(s.opened).toEqual([]);
+    expect(s.spawned()).toBe(0);
+  });
+
+  it('не Сбер или блока нет — ничего, даже при кривом блоке', () => {
+    const s = spies();
+    const broken = { ...base, gigarecruiter: { username: '', vpnExe: '' } } as unknown as Config;
+    expect(() => gigarecruiterOnSent(broken, s.deps)(other)).not.toThrow();
+    gigarecruiterOnSent(base as Config, s.deps)(sber);
+    expect(s.opened).toEqual([]);
+    expect(s.spawned()).toBe(0);
   });
 });

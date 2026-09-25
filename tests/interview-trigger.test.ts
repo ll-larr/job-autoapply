@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import { isSberVacancy, triggerInterview, spawnInterview, type SpawnFn } from '../src/core/interview-trigger.js';
 import type { GigarecruiterConfig } from '../src/core/config.js';
 
@@ -78,7 +79,7 @@ describe('spawnInterview (боевой запуск)', () => {
     const calls: unknown[] = [];
     const fakeSpawn: SpawnFn = (command, args, options) => {
       calls.push([command, args, options]);
-      return { unref: () => { calls.push('unref'); } };
+      return Object.assign(new EventEmitter(), { unref: () => { calls.push('unref'); } });
     };
 
     spawnInterview('C:\\repo', { spawn: fakeSpawn });
@@ -89,5 +90,23 @@ describe('spawnInterview (боевой запуск)', () => {
       { cwd: 'C:\\repo', detached: true, stdio: 'ignore', windowsHide: true },
     ]);
     expect(calls[1]).toBe('unref');
+  });
+});
+
+describe('spawnInterview: асинхронный сбой запуска (M2)', () => {
+  it('событие error отсоединённого процесса не роняет вызывающий процесс и уходит в onError', () => {
+    const child = Object.assign(new EventEmitter(), { unref: () => {} });
+    const errors: string[] = [];
+    spawnInterview('C:\\repo', { spawn: () => child, onError: (e) => { errors.push(e.message); } });
+    // Без слушателя EventEmitter бросает 'error' наружу — `npm run send` упал бы
+    // уже после того, как хук вернулся и его try/catch в Sender остался позади.
+    expect(() => child.emit('error', new Error('spawn cmd.exe ENOENT'))).not.toThrow();
+    expect(errors).toEqual(['spawn cmd.exe ENOENT']);
+  });
+
+  it('без onError ошибка просто проглатывается', () => {
+    const child = Object.assign(new EventEmitter(), { unref: () => {} });
+    spawnInterview('C:\\repo', { spawn: () => child });
+    expect(() => child.emit('error', new Error('EACCES'))).not.toThrow();
   });
 });

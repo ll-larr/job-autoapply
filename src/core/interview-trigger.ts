@@ -40,10 +40,12 @@ export type SpawnFn = (
   command: string,
   args: readonly string[],
   options: { cwd: string; detached: boolean; stdio: 'ignore'; windowsHide: boolean },
-) => { unref(): void };
+) => { unref(): void; on(event: 'error', listener: (err: Error) => void): unknown };
 
 export interface SpawnInterviewDeps {
   spawn?: SpawnFn;
+  /** Куда сообщить об асинхронном сбое запуска. Не задано — ошибка проглатывается. */
+  onError?: (err: Error) => void;
 }
 
 /**
@@ -54,10 +56,18 @@ export interface SpawnInterviewDeps {
  */
 export function spawnInterview(repoRoot: string, deps: SpawnInterviewDeps = {}): void {
   const spawnFn = deps.spawn ?? nodeSpawn;
-  spawnFn('cmd.exe', ['/c', 'npm', 'run', 'interview'], {
+  const child = spawnFn('cmd.exe', ['/c', 'npm', 'run', 'interview'], {
     cwd: repoRoot,
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
-  }).unref();
+  });
+  // Сбой запуска (ENOENT, EACCES) приходит событием 'error' уже после того,
+  // как хук вернулся и try/catch в Sender остался позади. Без слушателя
+  // EventEmitter бросает его наружу и роняет `npm run send` посреди
+  // очереди (M2).
+  child.on('error', (err) => {
+    try { deps.onError?.(err); } catch { /* сообщить некуда — не роняем отправку */ }
+  });
+  child.unref();
 }
