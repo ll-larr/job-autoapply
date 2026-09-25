@@ -21,6 +21,7 @@
     "login": "tsx scripts/login.ts",
     "letters": "tsx src/cli.ts letters",
     "bot": "tsx src/cli.ts bot",
+    "interview": "tsx src/cli.ts interview",
     "tg:login": "tsx scripts/tg-login.ts"
   },
   "devDependencies": {

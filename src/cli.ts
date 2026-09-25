@@ -19,7 +19,10 @@ import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { Queue, type Status } from './core/queue.js';
-import { loadConfig, resolveBotConfig, type Config } from './core/config.js';
+import {
+  loadConfig, resolveBotConfig, resolveGigarecruiterConfig, type Config, type GigarecruiterConfig,
+} from './core/config.js';
+import { runInterview, openWindow, log as logInterview } from './core/interview-runner.js';
 import { runSearch, type SearchReport, type SearchQuery } from './pipeline.js';
 import {
   loadSettings, seedSettings, saveSettings, validateSettings, enabledSpecialties, SETTINGS_PATH, type Settings,
@@ -1073,7 +1076,43 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.error('Команды: search [запрос] [--specialty "название"] | panel | send | bot | stop | status');
+  if (cmd === 'interview') {
+    // Автоответ ГигаРекрутёру (спека 2026-09-25). Запускает планировщик без
+    // человека, поэтому всё, что пошло не так, дублируется в data/interview.log:
+    // консоль там не читает никто.
+    const config = loadConfig();
+    let cfg: GigarecruiterConfig;
+    try {
+      cfg = resolveGigarecruiterConfig(config);
+    } catch (e) {
+      console.error(e instanceof Error ? e.message : String(e));
+      process.exitCode = 1;
+      return;
+    }
+    // Окно — только по флагу (R8). Без него запуск — поллинг: иначе каждый
+    // запуск планировщика держал бы процесс по два часа.
+    if (rest.includes('--window')) openWindow(Date.now(), cfg.windowMinutes);
+
+    let resume: string;
+    try {
+      const settings = currentSettings(config);
+      await refreshResumes(settings, (line) => { console.error(line); logInterview(line); });
+      // Резюме — как у бота: специальность по умолчанию (R15). Модели — блока
+      // или те же, что у писем; currentSettings уже поставил выбранную в панели первой.
+      resume = resumeTextFor(enabledSpecialties(currentSettings(config))[0] ?? DEFAULT_SPECIALTY);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      console.error(message);
+      logInterview(`резюме не прочиталось, запуск отменён: ${message}`);
+      process.exitCode = 1;
+      return;
+    }
+    await runInterview({ config: cfg, resume, models: cfg.models ?? config.letterModels });
+    console.log('interview: запуск завершён, события — в data/interview.log');
+    return;
+  }
+
+  console.error('Команды: search [запрос] [--specialty "название"] | panel | send | bot | interview [--window] | stop | status');
   process.exitCode = 1;
 }
 
