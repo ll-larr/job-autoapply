@@ -20,7 +20,12 @@ import type { TgMessage } from './types.js';
 export interface DialogMessage extends TgMessage {
   /** true — сообщение отправили мы (Api.Message.out). */
   out: boolean;
-  /** true — у сообщения есть клавиатура/кнопки (Api.Message.replyMarkup). Кнопки не нажимаем никогда. */
+  /**
+   * true — у сообщения настоящие кнопки: инлайн-клавиатура или обычная
+   * клавиатура (Api.Message.replyMarkup). Снятие клавиатуры и «ответить» —
+   * тоже replyMarkup, но кнопок в них нет, это обычный вопрос. Кнопки не
+   * нажимаем никогда.
+   */
   hasButtons: boolean;
 }
 
@@ -41,7 +46,7 @@ function toDialogMessage(m: Api.Message): DialogMessage {
     text: m.message ?? '',
     urls: [],
     out: m.out === true,
-    hasButtons: m.replyMarkup !== undefined && m.replyMarkup !== null,
+    hasButtons: m.replyMarkup instanceof Api.ReplyInlineMarkup || m.replyMarkup instanceof Api.ReplyKeyboardMarkup,
   };
 }
 
@@ -85,7 +90,10 @@ export async function openDialog(
       return toDialogMessages(msgs).reverse();
     },
     async send(text: string) {
-      await client.sendMessage(peer, { message: text });
+      // Текст уходит как есть: разбор Markdown по умолчанию превратил бы
+      // `**`, `_` и `[x](url)` прошедшего валидацию ответа в разметку или
+      // скрытую ссылку. Превью ссылок тоже ни к чему.
+      await client.sendMessage(peer, { message: text, parseMode: false, linkPreview: false });
     },
     async setTyping() {
       await client.invoke(new Api.messages.SetTyping({ peer, action: new Api.SendMessageTypingAction() }));

@@ -71,6 +71,22 @@ describe('toDialogMessages', () => {
     expect(got[0]?.hasButtons).toBe(true);
   });
 
+  it('кнопки — только настоящие: инлайн и клавиатура да; снятие клавиатуры и «ответить» нет (I1)', () => {
+    const withMarkup = (id: number, replyMarkup: Api.TypeReplyMarkup | undefined): Api.Message => new Api.Message({
+      id, peerId: undefined, date: 1_700_000_000, message: `сообщение ${id}`, replyMarkup,
+    });
+    const got = toDialogMessages([
+      withMarkup(30, new Api.ReplyInlineMarkup({ rows: [] })),
+      withMarkup(31, new Api.ReplyKeyboardMarkup({ rows: [] })),
+      withMarkup(32, new Api.ReplyKeyboardHide({})),
+      withMarkup(33, new Api.ReplyKeyboardForceReply({})),
+      withMarkup(34, undefined),
+    ]);
+    expect(got.map((m) => [m.id, m.hasButtons])).toEqual([
+      [30, true], [31, true], [32, false], [33, false], [34, false],
+    ]);
+  });
+
   it('значения, которые вообще не Api.Message (null, объект, строка), не роняют функцию', () => {
     expect(toDialogMessages([null, undefined, {}, 'строка', 42])).toEqual([]);
   });
