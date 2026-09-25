@@ -90,7 +90,9 @@ export async function restart(exe: string, deps: VpnDeps = defaultVpnDeps): Prom
     await deps.kill();
     await deps.launch(exe);
     if (await waitForPort(deps)) return true;
-    await deps.sleep(VPN_BACKOFF_MS[attempt]!);
+    // Бэкофф нужен только перед следующей попыткой — после последней неудачи
+    // спать не для чего, вызывающий код и так узнаёт про false немедленно.
+    if (attempt < VPN_BACKOFF_MS.length - 1) await deps.sleep(VPN_BACKOFF_MS[attempt]!);
   }
   return false;
 }

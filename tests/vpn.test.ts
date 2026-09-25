@@ -62,6 +62,16 @@ describe('restart', () => {
     expect(d.launch).toHaveBeenCalledTimes(3);
   });
 
+  it('после провала всех трёх попыток бэкофф после последней не спит — только между попытками', async () => {
+    const d = fakeDeps({ discover: vi.fn(async () => false) });
+
+    expect(await restart('C:/v2RayTun.exe', d)).toBe(false);
+
+    expect(d.sleep).toHaveBeenCalledWith(VPN_BACKOFF_MS[0]);
+    expect(d.sleep).toHaveBeenCalledWith(VPN_BACKOFF_MS[1]);
+    expect(d.sleep).not.toHaveBeenCalledWith(VPN_BACKOFF_MS[2]);
+  });
+
   it('kill вызывается строго раньше launch, иначе оболочка переподнимет старое ядро', async () => {
     const order: string[] = [];
     const d = fakeDeps({
