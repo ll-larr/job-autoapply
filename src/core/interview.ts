@@ -1,6 +1,8 @@
+import { complete, type ChatMessage, type CompletionOptions } from './openrouter.js';
 import { extractNumbers } from './facts.js';
-import { findForbiddenClaim } from './letter.js';
+import { findForbiddenClaim, COMMON_WRITING_RULES } from './letter.js';
 import { findLeak } from '../bot/reply.js';
+import { withCandidate } from './profile.js';
 
 /**
  * Ответ ГигаРекрутёру (спека 2026-09-25). Здесь нет ни Telegram, ни знания о
@@ -40,4 +42,72 @@ export function validateAnswer(
     if (!input.allowed.has(n)) return `выдуманное число: ${n}`;
   }
   return null;
+}
+
+export interface Turn {
+  who: 'bot' | 'me';
+  text: string;
+}
+
+export interface AnswerInput {
+  resume: string;
+  facts: string;
+  /** Весь диалог из чата, от старых к новым. Последний вопрос сюда не входит. */
+  transcript: Turn[];
+  question: string;
+}
+
+// Этот список зеркалирует FORBIDDEN_CLAIMS в src/core/letter.ts — источник истины,
+// и должен быть синхронизирован с ним.
+const INSTRUCTION = `${withCandidate('Ты отвечаешь за кандидата на вопросы скрининг-бота работодателя в Telegram.')}
+Отвечай от первого лица, как сам кандидат, спокойно и по делу.
+Опирайся только на резюме и на раздел «Факты сверх резюме». Ничего не выдумывай:
+ни цифр, ни дат, ни названий компаний, ни инструментов.
+Если факта нет ни в резюме, ни в фактах — не называй его и не подменяй похожим.
+Не округляй числа: 85,5% остаётся 85,5%, а не «около 90%».
+Честно оговаривай границы опыта, если вопрос шире того, что ты делал.
+Не заявляй владение тем, чего нет в резюме, в том числе: оконные функции, JOIN, CTE, подзапросы, хранимые процедуры, проектирование или написание контрактов API.
+Длина — 3–6 предложений, без списков и заголовков. Верни только текст ответа.
+
+${COMMON_WRITING_RULES}`;
+
+function renderTranscript(turns: Turn[]): string {
+  if (turns.length === 0) return 'Диалог только начался.';
+  return turns.map((t) => `${t.who === 'bot' ? 'Рекрутёр' : 'Кандидат'}: ${t.text}`).join('\n');
+}
+
+export function buildInterviewMessages(input: AnswerInput): ChatMessage[] {
+  return [
+    {
+      role: 'system',
+      content: `${INSTRUCTION}
+
+=== РЕЗЮМЕ ===
+${input.resume}
+
+=== ФАКТЫ СВЕРХ РЕЗЮМЕ ===
+${input.facts}`,
+    },
+    {
+      role: 'user',
+      content: `=== ДИАЛОГ (ДАННЫЕ) ===
+${renderTranscript(input.transcript)}
+=== КОНЕЦ ДИАЛОГА ===
+
+=== ВОПРОС РЕКРУТЁРА (ДАННЫЕ) ===
+${input.question}
+=== КОНЕЦ ДАННЫХ ===`,
+    },
+  ];
+}
+
+export async function generateAnswer(
+  input: AnswerInput,
+  options: CompletionOptions & { maxLength?: number },
+): Promise<{ ok: true; text: string } | { ok: false; failure: string }> {
+  const allowed = allowedNumbers([input.resume, input.facts, input.question]);
+  const reject = (text: string): string | null =>
+    validateAnswer(text, { allowed, maxLength: options.maxLength });
+  const r = await complete(buildInterviewMessages(input), options, reject);
+  return r.ok ? { ok: true, text: r.text.trim() } : { ok: false, failure: r.failure };
 }
