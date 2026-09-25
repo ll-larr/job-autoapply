@@ -44,6 +44,13 @@ describe('buildInterviewMessages', () => {
     expect(systemContent).toContain('JOIN');
     expect(systemContent).toContain('хранимые процедуры');
   });
+
+  it('система велит писать суммы так же, как в резюме и фактах (I3)', () => {
+    const m = buildInterviewMessages({ resume: 'р', facts: 'ф', transcript: [], question: 'в' });
+    expect(m[0]!.content).toContain(
+      'Суммы и числа пиши так же, как в резюме и фактах: например, 280–360 тысяч, а не 280 000.',
+    );
+  });
 });
 
 describe('generateAnswer', () => {
@@ -81,6 +88,17 @@ describe('generateAnswer', () => {
     const r = await generateAnswer(input, { models: ['m1', 'm2'], fetchImpl, attemptsPerModel: 1 });
     expect(r).toEqual({ ok: true, text: 'С 32 до 4 часов.' });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('правдивые «от 280 000 до 360 000 рублей» и «коды 200, 400 и 500» проходят с первой модели (I3)', async () => {
+    for (const text of ['Ожидаю от 280 000 до 360 000 рублей.', 'Проверял коды ответов 200, 400 и 500.']) {
+      const fetchImpl = vi.fn(async () => new Response(
+        JSON.stringify({ choices: [{ message: { content: text } }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )) as unknown as typeof fetch;
+      const r = await generateAnswer(input, { models: ['m1'], fetchImpl, attemptsPerModel: 1 });
+      expect(r).toEqual({ ok: true, text });
+    }
   });
 
   it('все модели дали брак — ok:false, наружу ничего не отдаётся', async () => {

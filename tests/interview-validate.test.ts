@@ -53,6 +53,31 @@ describe('validateAnswer', () => {
       .toBeNull();
   });
 
+  it('сумма с разрядами «280 000» проходит: ноль разрешён всегда (I3)', () => {
+    expect(validateAnswer('Ожидаю от 280 000 до 360 000 рублей.', { allowed })).toBeNull();
+  });
+
+  it('частые HTTP-коды разрешены всегда (I3)', () => {
+    expect(validateAnswer('Проверял коды ответов 200, 400 и 500.', { allowed })).toBeNull();
+    expect(validateAnswer('Разбирал 201, 204, 301, 302, 304, 401, 403, 404, 409, 422, 429, 502, 503 и 504.', { allowed }))
+      .toBeNull();
+  });
+
+  it('число вне белого списка и вне HTTP-кодов по-прежнему режется', () => {
+    expect(validateAnswer('Возвращал код 418.', { allowed })).toBe('выдуманное число: 418');
+  });
+
+  it('«Как ИИ» и «я бот» на кириллице ловятся: граница слова в JS-регэкспе только латинская (I4)', () => {
+    expect(validateAnswer('Как ИИ, я отвечаю за кандидата.', { allowed })).toBe('маркер автомата');
+    expect(validateAnswer('Отвечаю как ИИ', { allowed })).toBe('маркер автомата');
+    expect(validateAnswer('Я бот, отвечаю за кандидата.', { allowed })).toBe('маркер автомата');
+  });
+
+  it('слово, которое лишь начинается с «бот», — не маркер (I4)', () => {
+    expect(validateAnswer('Вчера я ботинки купил.', { allowed })).toBeNull();
+    expect(validateAnswer('По первому образованию я ботаник.', { allowed })).toBeNull();
+  });
+
   it('режет приписанный навык', () => {
     expect(validateAnswer('Писал JOIN и CTE каждый день.', { allowed }))
       .toMatch(/^выдуман навык:/);
