@@ -15,7 +15,8 @@ import { acquireLock, releaseLock, refreshLock, LOCK_PATH } from './interview-lo
  * первого ответа гаснет по `idleMinutes` тишины. Окна нет — это поллинг: нет
  * новых входящих — выход сразу, есть — отвечаем и живём до тишины. В любом
  * режиме сессию заканчивают потолок `maxRepliesPerSession` и сообщение с
- * кнопками после нашего ответа — так ГигаРекрутёр закрывает интервью (C1).
+ * кнопками после нашего ответа — так ГигаРекрутёр закрывает интервью (C1);
+ * «после ответа» — этой сессии или по истории чата моложе суток (H2).
  *
  * Уведомлений владельцу нет по его решению: единственный след — журнал, и в
  * нём только события (номера, длины, причины), текстов диалога там нет.
@@ -288,6 +289,24 @@ function tolerantDialog(dialog: TgDialog, note: (line: string) => void): TgDialo
   };
 }
 
+/**
+ * Пачка идёт сразу за нашим ответом моложе суток (H2)? Тогда сообщение с
+ * кнопками в ней — оценка после нашего интервью, даже если отвечал другой
+ * процесс или окно открылось заново. Выбор вакансии в новом интервью идёт за
+ * старой оценкой бота или за нашим ответом старше суток — это не конец.
+ */
+async function followsOurRecentReply(
+  dialog: TgDialog,
+  msgs: DialogMessage[],
+  floor: number,
+  t: number,
+): Promise<boolean> {
+  const head = msgs.find((m) => !m.out && m.id > floor);
+  if (head === undefined) return false;
+  const prev = (await dialog.history(0)).filter((m) => m.id < head.id).at(-1);
+  return prev !== undefined && prev.out && t - prev.date.getTime() <= STALE_MS;
+}
+
 /** Последовательный цикл разговора (R9): без рекурсии, без подписки, без гонок с close(). */
 async function converse(
   raw: TgDialog,
@@ -376,10 +395,12 @@ async function converse(
         }
         group.push(m);
       }
-      if (buttons && replies > 0) {
+      if (buttons && (replies > 0 || await followsOurRecentReply(dialog, msgs, floor, t))) {
         // Конец интервью (C1): после наших ответов ГигаРекрутёр прощается и
         // сразу шлёт оценку с кнопками. Прощание без кнопок, но отвечать на
         // него — значит начать новый круг; вся пачка остаётся без ответа.
+        // Счётчик ответов — только этого процесса и сбрасывается новым окном,
+        // поэтому «после ответа» проверяется ещё и по истории чата (H2).
         bump(batchEnd);
         note(`конец интервью: после ответа пришло сообщение с кнопками, пачка до ${batchEnd} без ответа; ответов ${sentCount}`);
         return;

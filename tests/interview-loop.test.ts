@@ -430,6 +430,135 @@ describe('runInterview: потолок ответов и конец интерв
   });
 });
 
+describe('runInterview: конец интервью виден и новому процессу (H2)', () => {
+  const ago = (ms: number): Date => new Date(Date.now() - ms);
+  const DAY = 24 * 60 * MIN;
+
+  it('(a) сессия погасла по тишине, потом пришли прощание и оценка — новый процесс не отвечает ничего', async () => {
+    // Прошлая сессия ответила 30 минут назад и сдвинула метку за свой ответ.
+    const h = harness([
+      msg(1, 'Почему ищете работу?', { date: ago(40 * MIN) }),
+      msg(2, 'Хочу больше масштаба.', { out: true, date: ago(30 * MIN) }),
+      msg(3, 'Спасибо за интервью!'),
+      msg(4, 'Оцените собеседование', { hasButtons: true }),
+    ], { lastMessageId: 2 });
+    await h.run();
+    expect(h.dialog.sent).toEqual([]);
+    expect(h.generate).not.toHaveBeenCalled();
+    expect(readState(h.statePath).lastMessageId).toBe(4);
+    expect(h.journal().match(/конец интервью/g)).toHaveLength(1);
+    expect(h.now()).toBe(h.t0);
+    expect(readState(h.statePath).capTrippedAt).toBe(0);
+  });
+
+  it('(a) то же, когда метка стоит на вопросе, а наш ответ ещё в пачке', async () => {
+    const h = harness([
+      msg(1, 'Почему ищете работу?', { date: ago(40 * MIN) }),
+      msg(2, 'Хочу больше масштаба.', { out: true, date: ago(30 * MIN) }),
+      msg(3, 'Спасибо за интервью!'),
+      msg(4, 'Оцените собеседование', { hasButtons: true }),
+    ], { lastMessageId: 1 });
+    await h.run();
+    expect(h.dialog.sent).toEqual([]);
+    expect(readState(h.statePath).lastMessageId).toBe(4);
+    expect(h.journal()).toMatch(/конец интервью/);
+  });
+
+  it('(b) окно переоткрыли посреди интервью (счётчик ответов сброшен) — прощание с оценкой без ответа', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push('Почему ищете работу?'));
+    // Новый отклик на Сбер открыл окно заново, пока шло интервью.
+    h.at(3 * MIN, () => openWindow(h.now(), CFG.windowMinutes, h.statePath));
+    h.at(5 * MIN, () => {
+      h.dialog.push('Спасибо за интервью!');
+      h.dialog.push('Оцените собеседование', { hasButtons: true });
+    });
+    await h.run();
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(h.generate).toHaveBeenCalledTimes(1);
+    const rating = (await h.dialog.history(0)).at(-1)!;
+    expect(readState(h.statePath).lastMessageId).toBe(rating.id);
+    expect(h.journal().match(/конец интервью/g)).toHaveLength(1);
+    expect(h.now()).toBe(h.t0 + 5 * MIN);
+    expect(readState(h.statePath).capTrippedAt).toBe(0);
+  });
+
+  it('(c) наш ответ двухдневной давности, старая оценка, новый выбор вакансии и вопрос — вопрос отвечается, это не конец', async () => {
+    const h = harness([
+      msg(1, 'Вопрос прошлого интервью', { date: ago(2 * DAY + 10 * MIN) }),
+      msg(2, 'Ответ про другую вакансию', { out: true, date: ago(2 * DAY) }),
+      msg(3, 'Оцените собеседование', { hasButtons: true, date: ago(2 * DAY - MIN) }),
+      msg(4, 'Выберите вакансию', { hasButtons: true }),
+      msg(5, 'Почему ищете работу?'),
+    ], { lastMessageId: 3 });
+    await h.run();
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(h.generate.mock.calls[0]![0].question).toBe('Почему ищете работу?');
+    expect(h.journal()).toMatch(/пропущено сообщение с кнопками 4/);
+    expect(h.journal()).not.toMatch(/конец интервью/);
+  });
+
+  it('(c) то же без файла состояния: старые сообщения в пачке, наш ответ старше суток — не конец', async () => {
+    const h = harness([
+      msg(1, 'Вопрос прошлого интервью', { date: ago(2 * DAY + 10 * MIN) }),
+      msg(2, 'Ответ про другую вакансию', { out: true, date: ago(2 * DAY) }),
+      msg(3, 'Оцените собеседование', { hasButtons: true, date: ago(2 * DAY - MIN) }),
+      msg(4, 'Выберите вакансию', { hasButtons: true }),
+      msg(5, 'Почему ищете работу?'),
+    ]);
+    await h.run();
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(h.journal()).not.toMatch(/конец интервью/);
+  });
+
+  it('(c) новое интервью в тот же день: выбор вакансии идёт за оценкой бота, а не за нашим ответом — не конец', async () => {
+    const h = harness([
+      msg(1, 'Вопрос прошлого интервью', { date: ago(3 * 60 * MIN + 5 * MIN) }),
+      msg(2, 'Ответ про другую вакансию', { out: true, date: ago(3 * 60 * MIN) }),
+      msg(3, 'Спасибо за интервью!', { date: ago(3 * 60 * MIN - MIN) }),
+      msg(4, 'Оцените собеседование', { hasButtons: true, date: ago(3 * 60 * MIN - MIN) }),
+      msg(5, 'Выберите вакансию', { hasButtons: true }),
+      msg(6, 'Почему ищете работу?'),
+    ], { lastMessageId: 4 });
+    await h.run();
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(h.journal()).not.toMatch(/конец интервью/);
+  });
+
+  it('(c) выбор вакансии сразу за нашим ответом старше суток — не конец, вопрос отвечается', async () => {
+    const h = harness([
+      msg(1, 'Вопрос прошлого интервью', { date: ago(DAY + 70 * MIN) }),
+      msg(2, 'Ответ про другую вакансию', { out: true, date: ago(DAY + 60 * MIN) }),
+      msg(3, 'Выберите вакансию', { hasButtons: true }),
+      msg(4, 'Почему ищете работу?'),
+    ], { lastMessageId: 2 });
+    await h.run();
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(h.journal()).not.toMatch(/конец интервью/);
+  });
+
+  it('(d) новый процесс: прощание пришло одно, оценка — во время паузы перед ответом; не уходит ничего', async () => {
+    const h = harness([
+      msg(1, 'Почему ищете работу?', { date: ago(40 * MIN) }),
+      msg(2, 'Хочу больше масштаба.', { out: true, date: ago(30 * MIN) }),
+    ], { lastMessageId: 2 });
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push('Спасибо за интервью!'));
+    // Пауза перед ответом — 40 с (random = 0): оценка приходит посреди неё.
+    h.at(1 * MIN + 20_000, () => h.dialog.push('Оцените собеседование', { hasButtons: true }));
+    await h.run();
+    expect(h.dialog.sent).toEqual([]);
+    expect(h.generate).toHaveBeenCalledTimes(1);
+    const rating = (await h.dialog.history(0)).at(-1)!;
+    expect(rating.text).toBe('Оцените собеседование');
+    expect(readState(h.statePath).lastMessageId).toBe(rating.id);
+    expect(h.journal()).toMatch(/пересобирается/);
+    expect(h.journal().match(/конец интервью/g)).toHaveLength(1);
+    expect(readState(h.statePath).capTrippedAt).toBe(0);
+  });
+});
+
 describe('runInterview: сбои history() (D2)', () => {
   /** history() падает на вызовах, для номера которых (с единицы) `fails` вернула true. */
   function flaky(h: ReturnType<typeof harness>, fails: (call: number) => boolean): { calls: () => number } {
