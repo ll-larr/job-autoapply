@@ -179,7 +179,8 @@ export interface RunOptions {
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
   openDialog?: typeof openDialog;
-  vpn?: { isUp(): Promise<boolean>; restart(target: VpnTarget): Promise<boolean> };
+  /** `note` в restart — журнал цикла: туда идут коды sc.exe и судьба GUI (FU-8). */
+  vpn?: { isUp(): Promise<boolean>; restart(target: VpnTarget, note: (line: string) => void): Promise<boolean> };
   generate?: GenerateFn;
   factsPath?: string;
   statePath?: string;
@@ -226,10 +227,13 @@ export async function runInterview(opts: RunOptions): Promise<void> {
       note(`потолок ответов сработал ${new Date(capped).toISOString()}, до нового окна не отвечаю — выхожу`);
       return;
     }
-    const vpn = opts.vpn ?? { isUp: () => isUp(defaultVpnDeps), restart: (target: VpnTarget) => restart(target) };
+    const vpn = opts.vpn ?? {
+      isUp: () => isUp(defaultVpnDeps),
+      restart: (target: VpnTarget, line: (l: string) => void) => restart(target, defaultVpnDeps, line),
+    };
     if (!(await vpn.isUp())) {
       note(`VPN не отвечает, пробую перезапустить службу ${opts.config.vpnService}`);
-      if (!(await vpn.restart({ service: opts.config.vpnService, app: opts.config.vpnApp }))) {
+      if (!(await vpn.restart({ service: opts.config.vpnService, app: opts.config.vpnApp }, note))) {
         note('VPN не поднялся за три попытки, жду следующего запуска');
         return;
       }

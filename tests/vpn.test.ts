@@ -186,6 +186,53 @@ describe('restart', () => {
     expect(sleeps(d.calls)).not.toContain(VPN_BACKOFF_MS[1]);
   });
 
+  it('журнал получает коды sc.exe stop и start и судьбу GUI — по порядку (FU-8)', async () => {
+    const d = fakeDeps({ stopCode: 0, startCode: 0, appRunning: false });
+    const lines: string[] = [];
+
+    expect(await restart(TARGET, d, (line) => lines.push(line))).toBe(true);
+
+    expect(lines).toEqual([
+      'VPN, попытка 1/3: sc.exe stop HappService — код 0',
+      'VPN, попытка 1/3: sc.exe start HappService — код 0',
+      'VPN, попытка 1/3: GUI Happ.exe не запущен — запускаю D:\\Happ\\Happ.exe',
+    ]);
+  });
+
+  it('ненулевые коды, GUI уже запущен, служба не остановилась — всё в журнале (FU-8)', async () => {
+    const d = fakeDeps({ stopCode: 1062, startCode: 1056, appRunning: true, query: () => STOP_PENDING });
+    const lines: string[] = [];
+
+    await restart(TARGET, d, (line) => lines.push(line));
+
+    expect(lines).toEqual([
+      'VPN, попытка 1/3: sc.exe stop HappService — код 1062',
+      'VPN, попытка 1/3: служба HappService не сообщила STOPPED за 15 с, запускаю всё равно',
+      'VPN, попытка 1/3: sc.exe start HappService — код 1056',
+      'VPN, попытка 1/3: GUI Happ.exe уже запущен',
+    ]);
+  });
+
+  it('sc.exe не запустился (код null) — так и пишется; три провала — три попытки в журнале по порядку (FU-8)', async () => {
+    const d = fakeDeps({ discover: () => false, appRunning: true });
+    const sc = d.sc;
+    d.sc = async (args) => (args[0] === 'query' ? sc(args) : { code: null, stdout: '' });
+    const lines: string[] = [];
+
+    expect(await restart(TARGET, d, (line) => lines.push(line))).toBe(false);
+
+    expect(lines.filter((l) => l.includes('sc.exe stop'))).toEqual([1, 2, 3].map(
+      (n) => `VPN, попытка ${n}/3: sc.exe stop HappService — кода нет (sc.exe не запустился или завис)`,
+    ));
+    expect(lines.map((l) => l.slice(0, 'VPN, попытка 1/3'.length))).toEqual([
+      ...Array(3).fill('VPN, попытка 1/3'), ...Array(3).fill('VPN, попытка 2/3'), ...Array(3).fill('VPN, попытка 3/3'),
+    ]);
+  });
+
+  it('без журнала restart работает как раньше: запись по умолчанию — пустая', async () => {
+    expect(await restart(TARGET, fakeDeps())).toBe(true);
+  });
+
   it('служба и GUI берутся из аргумента: другое имя — другие вызовы', async () => {
     const d = fakeDeps();
 

@@ -845,13 +845,34 @@ describe('runInterview: один экземпляр и уборка', () => {
 
   it('VPN не поднялся — диалог не открывается, строка в журнал, блокировка снята', async () => {
     const h = harness([msg(1, 'Вопрос')]);
-    const restart = vi.fn(async (_target: { service: string; app: string }) => false);
+    const restart = vi.fn(async (_target: { service: string; app: string }, _note: (line: string) => void) => false);
     await h.run({ vpn: { isUp: async () => false, restart } });
-    // Служба и GUI — из конфига (FU-2), а не зашитые в код.
-    expect(restart).toHaveBeenCalledWith({ service: 'VpnService', app: 'C:\\Vpn\\Gui.exe' });
+    // Служба и GUI — из конфига (FU-2), а не зашитые в код; журнал — цикла (FU-8).
+    expect(restart).toHaveBeenCalledWith({ service: 'VpnService', app: 'C:\\Vpn\\Gui.exe' }, expect.any(Function));
     expect(h.openDialog).not.toHaveBeenCalled();
     expect(h.journal()).toMatch(/VPN не поднялся/);
     expect(existsSync(h.lockPath)).toBe(false);
+  });
+
+  it('рестарт VPN пишет коды sc.exe в журнал цикла (FU-8)', async () => {
+    const h = harness([msg(1, 'Вопрос')]);
+    await h.run({
+      vpn: {
+        isUp: async () => false,
+        restart: async (_target, note) => {
+          note('VPN, попытка 1/3: sc.exe stop VpnService — код 0');
+          note('VPN, попытка 1/3: sc.exe start VpnService — код 5');
+          return false;
+        },
+      },
+    });
+    const lines = h.journal().trim().split('\n').map((l) => l.replace(/^\S+ /, ''));
+    expect(lines).toEqual([
+      'VPN не отвечает, пробую перезапустить службу VpnService',
+      'VPN, попытка 1/3: sc.exe stop VpnService — код 0',
+      'VPN, попытка 1/3: sc.exe start VpnService — код 5',
+      'VPN не поднялся за три попытки, жду следующего запуска',
+    ]);
   });
 
   it('VPN поднялся после рестарта — работа идёт дальше', async () => {

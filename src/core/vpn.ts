@@ -152,17 +152,40 @@ async function waitForPort(deps: Pick<VpnDeps, 'discover' | 'sleep'>): Promise<b
   }
 }
 
-/** true — прокси снова отвечает. false — три попытки не помогли. */
-export async function restart(target: VpnTarget, deps: VpnDeps = defaultVpnDeps): Promise<boolean> {
+const codeText = (code: number | null): string =>
+  (code === null ? 'кода нет (sc.exe не запустился или завис)' : `код ${code}`);
+
+/**
+ * true — прокси снова отвечает. false — три попытки не помогли.
+ *
+ * `note` — журнал вызывающего (FU-8): коды выхода `sc.exe stop` и `start` и
+ * запускался ли GUI. Решений по ним restart не принимает, но без них по журналу
+ * не понять, почему VPN не поднялся: отказ в доступе (5), служба не найдена
+ * (1060) или просто не подключилась.
+ */
+export async function restart(
+  target: VpnTarget,
+  deps: VpnDeps = defaultVpnDeps,
+  note: (line: string) => void = () => {},
+): Promise<boolean> {
   const image = win32.basename(target.app);
-  for (let attempt = 0; attempt < VPN_BACKOFF_MS.length; attempt += 1) {
+  const total = VPN_BACKOFF_MS.length;
+  for (let attempt = 0; attempt < total; attempt += 1) {
+    const say = (line: string): void => note(`VPN, попытка ${attempt + 1}/${total}: ${line}`);
     // Коды выхода не проверяются намеренно (см. шапку): решает только порт.
-    await deps.sc(['stop', target.service]);
+    say(`sc.exe stop ${target.service} — ${codeText((await deps.sc(['stop', target.service])).code)}`);
     // Не остановилась за отведённое время — всё равно пробуем запустить:
     // start на зависшей службе провалится, и попытку засчитает ожидание порта.
-    await waitForStopped(target.service, deps);
-    await deps.sc(['start', target.service]);
-    if (!(await deps.isRunning(image))) await deps.launch(target.app);
+    if (!(await waitForStopped(target.service, deps))) {
+      say(`служба ${target.service} не сообщила STOPPED за ${SERVICE_STOP_WAIT_MS / 1000} с, запускаю всё равно`);
+    }
+    say(`sc.exe start ${target.service} — ${codeText((await deps.sc(['start', target.service])).code)}`);
+    if (await deps.isRunning(image)) {
+      say(`GUI ${image} уже запущен`);
+    } else {
+      say(`GUI ${image} не запущен — запускаю ${target.app}`);
+      await deps.launch(target.app);
+    }
     if (await waitForPort(deps)) return true;
     // Бэкофф нужен только перед следующей попыткой — после последней неудачи
     // спать не для чего, вызывающий код и так узнаёт про false немедленно.
