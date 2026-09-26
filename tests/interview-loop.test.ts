@@ -579,7 +579,8 @@ describe('runInterview: конец интервью виден и новому �
 
   it('(S1) старый конец до открытия окна и новое интервью одной пачкой — новый вопрос отвечается ровно один раз (FU-9)', async () => {
     const h = harness(oldEndThenNew(), { lastMessageId: 2 });
-    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    // Отклик — 5 минут назад; новое интервью началось после него (FU-14 делит пачку по этой дате).
+    openWindow(h.t0 - 5 * MIN, CFG.windowMinutes, h.statePath);
     await h.run();
     expect(h.dialog.sent).toHaveLength(1);
     expect(h.generate).toHaveBeenCalledTimes(1);
@@ -610,7 +611,7 @@ describe('runInterview: конец интервью виден и новому �
 
   it('хвост режется по первому сообщению с кнопками: метка встаёт на оценку, следующий проход читает после неё (FU-9)', async () => {
     const h = harness(oldEndThenNew().slice(0, 5), { lastMessageId: 2 });
-    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    openWindow(h.t0 - 5 * MIN, CFG.windowMinutes, h.statePath);
     const minIds: number[] = [];
     const history = h.dialog.history;
     h.dialog.history = async (minId) => { minIds.push(minId); return history(minId); };
@@ -638,6 +639,40 @@ describe('runInterview: конец интервью виден и новому �
     expect(h.journal().match(/хвост прошлого интервью/g)).toHaveLength(1);
     expect(h.journal()).not.toMatch(/конец интервью/);
     expect(readState(h.statePath).interviewEndedAt).toBe(0);
+  });
+
+  it('хвост прошлого интервью после оценки («Если появятся вопросы — пишите!») не отвечается (FU-14)', async () => {
+    const h = harness([
+      msg(1, 'Почему ищете работу?', { date: ago(45 * MIN) }),
+      msg(2, 'Хочу больше масштаба.', { out: true, date: ago(40 * MIN) }),
+      msg(3, 'Спасибо за интервью!', { date: ago(30 * MIN) }),
+      msg(4, 'Оцените собеседование', { hasButtons: true, date: ago(30 * MIN) }),
+      msg(5, 'Если появятся вопросы — пишите!', { date: ago(29 * MIN) }),
+    ], { lastMessageId: 2 });
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    await h.run();
+    expect(h.dialog.sent).toEqual([]);
+    expect(h.generate).not.toHaveBeenCalled();
+    expect(readState(h.statePath).lastMessageId).toBe(5);
+    expect(h.journal()).toMatch(/хвост прошлого интервью: сообщение с кнопками 4 .*пачка до 5 /);
+    expect(readState(h.statePath).interviewEndedAt).toBe(0);
+  });
+
+  it('хвост старше открытия окна уходит под метку, а новое после открытия — остаётся и отвечается (FU-14)', async () => {
+    const h = harness([
+      msg(1, 'Почему ищете работу?', { date: ago(45 * MIN) }),
+      msg(2, 'Хочу больше масштаба.', { out: true, date: ago(40 * MIN) }),
+      msg(3, 'Спасибо за интервью!', { date: ago(30 * MIN) }),
+      msg(4, 'Оцените собеседование', { hasButtons: true, date: ago(30 * MIN) }),
+      msg(5, 'Если появятся вопросы — пишите!', { date: ago(29 * MIN) }),
+      msg(6, 'Выберите вакансию', { hasButtons: true, date: ago(2 * MIN) }),
+      msg(7, 'Здравствуйте! Почему рассматриваете предложения?', { date: ago(MIN) }),
+    ], { lastMessageId: 2 });
+    openWindow(h.t0 - 5 * MIN, CFG.windowMinutes, h.statePath);
+    await h.run();
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(h.generate.mock.calls[0]![0].question).toBe('Здравствуйте! Почему рассматриваете предложения?');
+    expect(h.journal()).toMatch(/хвост прошлого интервью: сообщение с кнопками 4 .*пачка до 5 /);
   });
 
   it('без единого окна любой конец — свежий: пачка со старым концом и новым вопросом не отвечается (FU-9)', async () => {
