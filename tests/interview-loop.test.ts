@@ -676,11 +676,13 @@ describe('runInterview: конец интервью виден и новому �
   });
 
   it('без единого окна любой конец — свежий: пачка со старым концом и новым вопросом не отвечается (FU-9)', async () => {
-    const h = harness(oldEndThenNew(), { lastMessageId: 2 });
+    const seed = oldEndThenNew();
+    const h = harness(seed, { lastMessageId: 2 });
     await h.run();
     expect(h.dialog.sent).toEqual([]);
     expect(readState(h.statePath).lastMessageId).toBe(6);
-    expect(readState(h.statePath).interviewEndedAt).toBe(h.t0);
+    // Время конца — дата самой оценки, а не момент разбора (FU-15).
+    expect(readState(h.statePath).interviewEndedAt).toBe(seed[3]!.date.getTime());
   });
 });
 
@@ -751,6 +753,45 @@ describe('runInterview: запомненный конец интервью (FU-9
     expect(h.dialog.sent).toEqual([]);
     expect(h.now()).toBeLessThan(h.t0 + 2 * MIN);
     expect(h.journal().match(/интервью закончилось/g)).toHaveLength(1);
+  });
+
+  it('новое окно, открытое между чтением состояния и записью конца, не глушится: следующий запуск отвечает (FU-15)', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push('Почему ищете работу?'));
+    h.at(5 * MIN, () => {
+      h.dialog.push('Спасибо за интервью!');
+      h.dialog.push('Оцените собеседование', { hasButtons: true });
+    });
+    // Проход прочитал состояние и пачку с оценкой; в этот момент новый отклик на
+    // Сбер открывает окно, и к записи конца настоящие часы уже впереди.
+    let skew = 0;
+    let injected = false;
+    const history = h.dialog.history;
+    h.dialog.history = async (minId) => {
+      const r = await history(minId);
+      if (!injected && r.some((m) => m.hasButtons)) {
+        injected = true;
+        openWindow(h.now() + 1_000, CFG.windowMinutes, h.statePath);
+        skew = 2_000;
+      }
+      return r;
+    };
+    await h.run({ now: () => h.now() + skew });
+    expect(injected).toBe(true);
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(h.journal()).toMatch(/конец интервью/);
+    const rating = (await history(0)).at(-1)!;
+    expect(rating.text).toBe('Оцените собеседование');
+    const endedAt = readState(h.statePath).interviewEndedAt;
+
+    h.dialog.history = history;
+    h.dialog.push('Здравствуйте! Это новое интервью.');
+    await h.run({ now: () => h.now() + skew });
+    expect(h.dialog.sent).toHaveLength(2);
+    expect(h.generate.mock.calls.at(-1)![0].question).toBe('Здравствуйте! Это новое интервью.');
+    // Конец записан датой самой оценки — раньше открытия нового окна.
+    expect(endedAt).toBe(rating.date.getTime());
   });
 
   it('конец прошлого окна не мешает новому: interviewEndedAt раньше открытия окна не блокирует', async () => {

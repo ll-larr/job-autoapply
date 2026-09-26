@@ -46,8 +46,9 @@ export interface RunnerState {
    */
   capTrippedAt: number;
   /**
-   * Когда цикл увидел свежий конец интервью (FU-9): сообщение с кнопками после
-   * нашего ответа, пришедшее уже после открытия текущего окна. 0 — не было.
+   * Свежий конец интервью (FU-9): дата сообщения с кнопками после нашего
+   * ответа, пришедшего уже после открытия текущего окна (FU-15: дата самого
+   * сообщения, а не момент разбора). 0 — не было.
    * Пока оно позже открытия окна, ни поллинг, ни запуск не отвечают:
    * «Спасибо за оценку!» после оценки иначе снова завело бы разговор двух
    * ботов (C1). Снимает только новое окно (openWindow) — новый отклик.
@@ -463,8 +464,11 @@ async function converse(
         const cut = msgs.find((m) => !m.out && m.id > floor && m.hasButtons)!;
         const openedAt = windowOpenedAt(state, cfg.windowMinutes);
         if (cut.date.getTime() >= openedAt) {
+          // Время конца — дата самой оценки, а не «сейчас» (FU-15): окно, которое
+          // новый отклик открыл между чтением состояния и этой записью, началось
+          // позже оценки, и конец прошлого интервью его не заглушит.
           const s = readState(statePath);
-          writeState({ ...s, lastMessageId: Math.max(s.lastMessageId, batchEnd), interviewEndedAt: now() }, statePath);
+          writeState({ ...s, lastMessageId: Math.max(s.lastMessageId, batchEnd), interviewEndedAt: cut.date.getTime() }, statePath);
           note(`конец интервью: после ответа пришло сообщение с кнопками, пачка до ${batchEnd} без ответа; ответов ${sentCount}; до нового окна не отвечаю`);
           return;
         }
