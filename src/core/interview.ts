@@ -35,6 +35,13 @@ const ALWAYS_ALLOWED = new Set([
   '500', '502', '503', '504',
 ]);
 
+/**
+ * Ответ про деньги (FU-6): здесь HTTP-коды не исключение. «Ожидаю 400 рублей»
+ * или «вилка 200–260» — не общее знание про API, а сумма, и сверяется она
+ * только с резюме и фактами.
+ */
+const MONEY_WORDS = /руб|₽|зарплат|оклад|вилк|доход|на руки|тыс|млн/i;
+
 // Граница слова \b в JS знает только латиницу: `как ии\b` на кириллице не
 // срабатывал никогда. Вместо неё — «дальше не кириллическая буква» (I4).
 const ROBOT_MARKERS = /как языковая модель|как ии(?![а-яё])|я бот(?![а-яё])|не могу ответить|уточните вопрос/i;
@@ -53,8 +60,10 @@ export function validateAnswer(
   if (leak !== null) return `в ответе ${leak}`;
   const claim = findForbiddenClaim(t);
   if (claim !== null) return `выдуман навык: ${claim}`;
+  const httpExempt = !MONEY_WORDS.test(t);
   for (const n of extractNumbers(t)) {
-    if (!input.allowed.has(n) && !ALWAYS_ALLOWED.has(n)) return `выдуманное число: ${n}`;
+    if (input.allowed.has(n) || (httpExempt && ALWAYS_ALLOWED.has(n))) continue;
+    return `выдуманное число: ${n}`;
   }
   return null;
 }
