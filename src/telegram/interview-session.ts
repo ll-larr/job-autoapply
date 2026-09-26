@@ -110,9 +110,14 @@ export async function openDialog(
   return { ok: true, dialog };
 }
 
-/** Подмена для тестов: сети нет, всё в памяти. */
+/**
+ * Подмена для тестов: сети нет, всё в памяти. `now` — часы для дат новых
+ * сообщений (своих и пришедших): стенд цикла подставляет свои фейковые часы,
+ * иначе возраст сообщения мерился бы по настоящему времени.
+ */
 export function fakeDialog(
   seed: DialogMessage[] = [],
+  now: () => number = Date.now,
 ): TgDialog & { sent: string[]; push(text: string, opts?: { hasButtons?: boolean }): void } {
   const messages = [...seed];
   const sent: string[] = [];
@@ -128,7 +133,7 @@ export function fakeDialog(
       sent.push(text);
       // Как настоящий Telegram: своё сообщение тоже ложится в историю, иначе
       // цикл не отличит свой ответ от вопроса собеседника.
-      messages.push({ id: nextId++, date: new Date(), text, urls: [], out: true, hasButtons: false });
+      messages.push({ id: nextId++, date: new Date(now()), text, urls: [], out: true, hasButtons: false });
     },
     async setTyping() {},
     onMessage(cb) {
@@ -138,7 +143,7 @@ export function fakeDialog(
     push(text: string, opts?: { hasButtons?: boolean }) {
       const m: DialogMessage = {
         id: nextId++,
-        date: new Date(),
+        date: new Date(now()),
         text,
         urls: [],
         out: false,

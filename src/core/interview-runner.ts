@@ -16,7 +16,9 @@ import { acquireLock, releaseLock, refreshLock, LOCK_PATH } from './interview-lo
  * новых входящих — выход сразу, есть — отвечаем и живём до тишины. В любом
  * режиме сессию заканчивают потолок `maxRepliesPerSession` и сообщение с
  * кнопками после нашего ответа — так ГигаРекрутёр закрывает интервью (C1);
- * «после ответа» — этой сессии или по истории чата моложе суток (H2).
+ * «после ответа» — этой сессии или по истории чата моложе суток (H2). Такой
+ * конец, пришедший уже в текущем окне, запоминается до нового окна (FU-9);
+ * пришедший до его открытия — хвост прошлого интервью, разбор идёт дальше.
  *
  * Уведомлений владельцу нет по его решению: единственный след — журнал, и в
  * нём только события (номера, длины, причины), текстов диалога там нет.
@@ -43,9 +45,17 @@ export interface RunnerState {
    * заново на следующем поллинге. Снимает только новое окно (openWindow).
    */
   capTrippedAt: number;
+  /**
+   * Когда цикл увидел свежий конец интервью (FU-9): сообщение с кнопками после
+   * нашего ответа, пришедшее уже после открытия текущего окна. 0 — не было.
+   * Пока оно позже открытия окна, ни поллинг, ни запуск не отвечают:
+   * «Спасибо за оценку!» после оценки иначе снова завело бы разговор двух
+   * ботов (C1). Снимает только новое окно (openWindow) — новый отклик.
+   */
+  interviewEndedAt: number;
 }
 
-const EMPTY: RunnerState = { lastMessageId: 0, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0 };
+const EMPTY: RunnerState = { lastMessageId: 0, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0, interviewEndedAt: 0 };
 
 export function backoffFor(round: number): number {
   const i = Math.min(round, RETRY_BACKOFF_MS.length - 1);
@@ -61,6 +71,7 @@ export function readState(path: string = STATE_PATH): RunnerState {
       windowUntil: Number.isFinite(raw.windowUntil) ? Number(raw.windowUntil) : 0,
       lastPollAt: Number.isFinite(raw.lastPollAt) ? Number(raw.lastPollAt) : 0,
       capTrippedAt: Number.isFinite(raw.capTrippedAt) ? Number(raw.capTrippedAt) : 0,
+      interviewEndedAt: Number.isFinite(raw.interviewEndedAt) ? Number(raw.interviewEndedAt) : 0,
     };
   } catch {
     // Битый файл не должен ронять цикл: начинаем с нуля.
@@ -75,11 +86,34 @@ export function writeState(s: RunnerState, path: string = STATE_PATH): void {
   renameSync(tmp, path);
 }
 
-/** Новое окно — новый разговор: запомненный потолок ответов снимается (FR-6). */
+/**
+ * Новое окно — новый разговор: запомненные потолок ответов (FR-6) и конец
+ * интервью (FU-9) снимаются.
+ */
 export function openWindow(now: number, minutes: number, path: string = STATE_PATH): void {
   const s = readState(path);
-  writeState({ ...s, windowUntil: now + minutes * 60_000, capTrippedAt: 0 }, path);
+  writeState({ ...s, windowUntil: now + minutes * 60_000, capTrippedAt: 0, interviewEndedAt: 0 }, path);
 }
+
+/**
+ * Когда открылось текущее (или последнее) окно (FU-9): windowUntil минус его
+ * длина. Окна не было ни разу — отрицательное число, раньше любого сообщения.
+ */
+export function windowOpenedAt(s: RunnerState, windowMinutes: number): number {
+  return s.windowUntil - windowMinutes * 60_000;
+}
+
+/**
+ * Интервью текущего окна уже закончилось (FU-9)? Ноль — «не заканчивалось»:
+ * без проверки на него окно, которого не было (открытие в минусе), считалось
+ * бы закрытым навсегда.
+ */
+function interviewEnded(s: RunnerState, windowMinutes: number): boolean {
+  return s.interviewEndedAt > 0 && s.interviewEndedAt > windowOpenedAt(s, windowMinutes);
+}
+
+const endedLine = (s: RunnerState): string =>
+  `интервью закончилось ${new Date(s.interviewEndedAt).toISOString()}, до нового окна не отвечаю — выхожу`;
 
 export function log(line: string, path: string = LOG_PATH): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -222,9 +256,15 @@ export async function runInterview(opts: RunOptions): Promise<void> {
   try {
     // Потолок ответов сработал, нового окна с тех пор не было (FR-6): ни
     // VPN, ни Telegram не трогаем — отвечать всё равно не будем.
-    const capped = readState(statePath).capTrippedAt;
+    const initial = readState(statePath);
+    const capped = initial.capTrippedAt;
     if (capped > 0) {
       note(`потолок ответов сработал ${new Date(capped).toISOString()}, до нового окна не отвечаю — выхожу`);
+      return;
+    }
+    // Интервью этого окна закончилось (FU-9): то же — ни VPN, ни Telegram.
+    if (interviewEnded(initial, opts.config.windowMinutes)) {
+      note(endedLine(initial));
       return;
     }
     const vpn = opts.vpn ?? {
@@ -370,6 +410,10 @@ async function converse(
         windowMark = state.windowUntil;
         replies = 0;
       }
+      if (interviewEnded(state, cfg.windowMinutes)) {
+        note(endedLine(state));
+        return;
+      }
       if (!first && t >= endsAt(state.windowUntil)) {
         note(`сессия закрыта: ответов ${sentCount}, тишина ${Math.round((t - lastActivity) / 60_000)} мин`);
         return;
@@ -406,20 +450,24 @@ async function converse(
         // Счётчик ответов — только этого процесса и сбрасывается новым окном,
         // поэтому «после ответа» проверяется ещё и по истории чата (H2).
         //
-        // Срез — по первому сообщению с кнопками (FU-7): за оценкой в той же
-        // пачке может начаться новое интервью (клавиатура выбора вакансии и
-        // вопрос). Метка встаёт на оценку, остальное разбирает следующий проход:
-        // там клавиатура идёт за оценкой бота, а не за нашим ответом, — не конец.
+        // Какой это конец, решает дата сообщения с кнопками (FU-9). Пришло
+        // после открытия окна — конец текущего интервью: вся пачка без ответа,
+        // конец запоминается до нового окна, сессия выходит. Пришло раньше —
+        // хвост прошлого интервью, а новое (отклик открыл окно) может идти
+        // следом в той же пачке или позже: метка встаёт на это сообщение, и
+        // следующий проход разбирает остальное — там клавиатура нового
+        // интервью идёт за оценкой бота, а не за нашим ответом, это не конец.
         const cut = msgs.find((m) => !m.out && m.id > floor && m.hasButtons)!;
+        if (cut.date.getTime() >= windowOpenedAt(state, cfg.windowMinutes)) {
+          const s = readState(statePath);
+          writeState({ ...s, lastMessageId: Math.max(s.lastMessageId, batchEnd), interviewEndedAt: now() }, statePath);
+          note(`конец интервью: после ответа пришло сообщение с кнопками, пачка до ${batchEnd} без ответа; ответов ${sentCount}; до нового окна не отвечаю`);
+          return;
+        }
         bump(cut.id);
-        note(`конец интервью: после ответа пришло сообщение с кнопками, пачка до ${cut.id} без ответа; ответов ${sentCount}`);
-        const textAfterCut = msgs.some((m) => !m.out && m.id > cut.id && !m.hasButtons);
-        const windowOpen = state.windowUntil > t;
-        if (!textAfterCut && !windowOpen) return;
-        // Старое интервью закрыто, следом может идти новое: счёт ответов заново.
+        note(`хвост прошлого интервью: сообщение с кнопками ${cut.id} пришло до открытия окна, пачка до ${cut.id} без ответа — разбираю дальше`);
         replies = 0;
         pending = false;
-        note(textAfterCut ? 'после конца интервью в чате новое — разбираю дальше' : 'окно ещё открыто — жду нового интервью');
         continue;
       }
       bump(group.length === 0 ? batchEnd : floor);

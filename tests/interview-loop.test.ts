@@ -50,7 +50,7 @@ describe('сквозной прогон шести вопросов', () => {
     const dialog = fakeDialog();
     const statePath = join(mkdtempSync(join(tmpdir(), 'loop2-')), 'state.json');
     const logPath = join(dirname(statePath), 'run.log');
-    writeState({ lastMessageId: 6, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0 }, statePath);
+    writeState({ lastMessageId: 6, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0, interviewEndedAt: 0 }, statePath);
 
     for (const [i, text] of QUESTIONS.entries()) {
       const r = await answerOnce({
@@ -91,12 +91,13 @@ function harness(seed: DialogMessage[] = [], state?: Partial<RunnerState>) {
   const statePath = join(dir, 'interview-state.json');
   const logPath = join(dir, 'interview.log');
   const lockPath = join(dir, 'interview.lock');
-  if (state !== undefined) writeState({ lastMessageId: 0, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0, ...state }, statePath);
+  if (state !== undefined) writeState({ lastMessageId: 0, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0, interviewEndedAt: 0, ...state }, statePath);
   const t0 = Date.now();
   let clock = t0;
   const events: { at: number; run: () => void }[] = [];
   const sleeps: number[] = [];
-  const dialog = fakeDialog(seed);
+  // Даты новых сообщений — по фейковым часам стенда, как в живом чате (FU-9).
+  const dialog = fakeDialog(seed, () => clock);
   const generate = vi.fn<Gen>(async () => ({ ok: true, text: 'Ответ.' }));
   const openDialog = vi.fn<NonNullable<RunOptions['openDialog']>>(async () => ({ ok: true, dialog }));
 
@@ -388,7 +389,7 @@ describe('runInterview: потолок ответов и конец интерв
     expect(readState(h.statePath).capTrippedAt).toBe(0);
   });
 
-  it('после ответа пришли прощание и оценка с кнопками — не отвечается ничего, метка за обоими, окно дожидается', async () => {
+  it('после ответа пришли прощание и оценка с кнопками — не отвечается ничего, метка за обоими, выход', async () => {
     const h = harness();
     openWindow(h.t0, CFG.windowMinutes, h.statePath);
     h.at(1 * MIN, () => h.dialog.push('Почему ищете работу?'));
@@ -403,9 +404,10 @@ describe('runInterview: потолок ответов и конец интерв
     expect(rating.text).toBe('Оцените собеседование');
     expect(readState(h.statePath).lastMessageId).toBe(rating.id);
     expect(h.journal().match(/конец интервью/g)).toHaveLength(1);
-    // FU-7: окно ещё открыто — сессия не выходит на конце интервью, а ждёт
-    // нового до конца окна; больше не уходит ничего.
-    expect(h.now()).toBe(h.t0 + CFG.windowMinutes * MIN);
+    // Свежий конец (оценка пришла в текущем окне) заканчивает сессию сразу, хоть
+    // окно и открыто, и запоминается до нового окна (FU-9).
+    expect(h.now()).toBe(h.t0 + 5 * MIN);
+    expect(readState(h.statePath).interviewEndedAt).toBe(h.t0 + 5 * MIN);
     // Обычный конец интервью — не потолок: следующий отклик отвечается как обычно.
     expect(readState(h.statePath).capTrippedAt).toBe(0);
   });
@@ -484,8 +486,9 @@ describe('runInterview: конец интервью виден и новому �
     const rating = (await h.dialog.history(0)).at(-1)!;
     expect(readState(h.statePath).lastMessageId).toBe(rating.id);
     expect(h.journal().match(/конец интервью/g)).toHaveLength(1);
-    // FU-7: переоткрытое окно (до 3 + 120 мин) держит сессию для нового интервью.
-    expect(h.now()).toBe(h.t0 + (3 + CFG.windowMinutes) * MIN);
+    // Оценка пришла после переоткрытия окна — свежий конец: выход сразу (FU-9).
+    expect(h.now()).toBe(h.t0 + 5 * MIN);
+    expect(readState(h.statePath).interviewEndedAt).toBe(h.t0 + 5 * MIN);
     expect(readState(h.statePath).capTrippedAt).toBe(0);
   });
 
@@ -563,7 +566,8 @@ describe('runInterview: конец интервью виден и новому �
     expect(readState(h.statePath).capTrippedAt).toBe(0);
   });
 
-  // FU-7: конец старого интервью и начало нового могут прийти одной пачкой.
+  // FU-9: конец старого интервью (оценка до открытия окна) и начало нового
+  // могут прийти одной пачкой или подряд.
   const oldEndThenNew = (): DialogMessage[] => [
     msg(1, 'Почему ищете работу?', { date: ago(45 * MIN) }),
     msg(2, 'Хочу больше масштаба.', { out: true, date: ago(40 * MIN) }),
@@ -573,37 +577,51 @@ describe('runInterview: конец интервью виден и новому �
     msg(6, 'Здравствуйте! Почему рассматриваете предложения?'),
   ];
 
-  it('(S1) старый конец и новое интервью одной пачкой, окно открыто — новый вопрос отвечается ровно один раз (FU-7)', async () => {
+  it('(S1) старый конец до открытия окна и новое интервью одной пачкой — новый вопрос отвечается ровно один раз (FU-9)', async () => {
     const h = harness(oldEndThenNew(), { lastMessageId: 2 });
     openWindow(h.t0, CFG.windowMinutes, h.statePath);
     await h.run();
     expect(h.dialog.sent).toHaveLength(1);
     expect(h.generate).toHaveBeenCalledTimes(1);
     expect(h.generate.mock.calls[0]![0].question).toBe('Здравствуйте! Почему рассматриваете предложения?');
-    expect(h.journal().match(/конец интервью/g)).toHaveLength(1);
-    expect(h.journal()).toMatch(/конец интервью.*пачка до 4 /);
+    expect(h.journal().match(/хвост прошлого интервью/g)).toHaveLength(1);
+    expect(h.journal()).toMatch(/хвост прошлого интервью.* 4 /);
+    expect(h.journal()).not.toMatch(/конец интервью/);
+    expect(readState(h.statePath).interviewEndedAt).toBe(0);
     expect(readState(h.statePath).capTrippedAt).toBe(0);
   });
 
-  it('(S1) то же в поллинге без окна: за срезом есть текст — сессия продолжается, вопрос отвечается (FU-7)', async () => {
-    const h = harness(oldEndThenNew(), { lastMessageId: 2 });
+  it('(S1) в поллинге окно в прошлом: оценка раньше его открытия — хвост, новый вопрос отвечается (FU-9)', async () => {
+    // Окно открыли 3 часа назад (закрылось час назад); прошлое интервью кончилось до него.
+    const h = harness([
+      msg(1, 'Почему ищете работу?', { date: ago(4 * 60 * MIN + 5 * MIN) }),
+      msg(2, 'Хочу больше масштаба.', { out: true, date: ago(4 * 60 * MIN) }),
+      msg(3, 'Спасибо за интервью!', { date: ago(3 * 60 * MIN + 30 * MIN) }),
+      msg(4, 'Оцените собеседование', { hasButtons: true, date: ago(3 * 60 * MIN + 30 * MIN) }),
+      msg(5, 'Выберите вакансию', { hasButtons: true }),
+      msg(6, 'Здравствуйте! Почему рассматриваете предложения?'),
+    ], { lastMessageId: 2, windowUntil: Date.now() - 60 * MIN });
     await h.run();
     expect(h.dialog.sent).toHaveLength(1);
     expect(h.generate.mock.calls[0]![0].question).toBe('Здравствуйте! Почему рассматриваете предложения?');
-    expect(h.journal().match(/конец интервью/g)).toHaveLength(1);
+    expect(h.journal()).toMatch(/хвост прошлого интервью/);
+    expect(readState(h.statePath).interviewEndedAt).toBe(0);
   });
 
-  it('срез по первому сообщению с кнопками: метка встаёт на оценку, а не за следующую клавиатуру (FU-7)', async () => {
+  it('хвост режется по первому сообщению с кнопками: метка встаёт на оценку, следующий проход читает после неё (FU-9)', async () => {
     const h = harness(oldEndThenNew().slice(0, 5), { lastMessageId: 2 });
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    const minIds: number[] = [];
+    const history = h.dialog.history;
+    h.dialog.history = async (minId) => { minIds.push(minId); return history(minId); };
     await h.run();
     expect(h.dialog.sent).toEqual([]);
-    // Текста за срезом нет, окна нет — выход сразу; клавиатура 5 остаётся следующему запуску.
-    expect(readState(h.statePath).lastMessageId).toBe(4);
-    expect(h.now()).toBe(h.t0);
-    expect(h.journal().match(/конец интервью/g)).toHaveLength(1);
+    // Первый проход читал после 2, следующий — после оценки 4, а не после клавиатуры 5.
+    expect(minIds.slice(0, 3)).toEqual([2, 0, 4]);
+    expect(readState(h.statePath).lastMessageId).toBe(5);
   });
 
-  it('(S2) старый конец разобран при открытии окна, новое интервью через 10 минут — отвечается в окне (FU-7)', async () => {
+  it('(S2) хвост прошлого интервью разобран при открытии окна, новое интервью через 10 минут — отвечается в окне (FU-9)', async () => {
     const h = harness(oldEndThenNew().slice(0, 4), { lastMessageId: 2 });
     openWindow(h.t0, CFG.windowMinutes, h.statePath);
     h.at(10 * MIN, () => {
@@ -616,10 +634,96 @@ describe('runInterview: конец интервью виден и новому �
     await h.run();
     expect(h.dialog.sent).toHaveLength(1);
     expect(h.generate.mock.calls[0]![0].question).toBe('Здравствуйте! Почему рассматриваете предложения?');
-    expect(sentAt[0]!).toBeLessThan(h.t0 + CFG.windowMinutes * MIN);
     expect(sentAt[0]!).toBeLessThan(h.t0 + 12 * MIN);
-    expect(h.journal().match(/конец интервью/g)).toHaveLength(1);
+    expect(h.journal().match(/хвост прошлого интервью/g)).toHaveLength(1);
+    expect(h.journal()).not.toMatch(/конец интервью/);
+    expect(readState(h.statePath).interviewEndedAt).toBe(0);
+  });
+
+  it('без единого окна любой конец — свежий: пачка со старым концом и новым вопросом не отвечается (FU-9)', async () => {
+    const h = harness(oldEndThenNew(), { lastMessageId: 2 });
+    await h.run();
+    expect(h.dialog.sent).toEqual([]);
+    expect(readState(h.statePath).lastMessageId).toBe(6);
+    expect(readState(h.statePath).interviewEndedAt).toBe(h.t0);
+  });
+});
+
+describe('runInterview: запомненный конец интервью (FU-9)', () => {
+  /** Окно, вопрос, ответ, затем прощание и оценка на 5-й минуте: свежий конец. */
+  async function endedInterview(): Promise<ReturnType<typeof harness>> {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push('Почему ищете работу?'));
+    h.at(5 * MIN, () => {
+      h.dialog.push('Спасибо за интервью!');
+      h.dialog.push('Оцените собеседование', { hasButtons: true });
+    });
+    await h.run();
+    return h;
+  }
+
+  it('свежий конец в окне: ничего не уходит, interviewEndedAt запомнен, сессия выходит сразу', async () => {
+    const h = await endedInterview();
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(h.now()).toBe(h.t0 + 5 * MIN);
+    expect(readState(h.statePath).interviewEndedAt).toBe(h.t0 + 5 * MIN);
     expect(readState(h.statePath).capTrippedAt).toBe(0);
+    expect(h.journal().match(/конец интервью/g)).toHaveLength(1);
+  });
+
+  it('«Спасибо за оценку!» после конца — следующий поллинг не отвечает и не открывает Telegram, одна строка', async () => {
+    const h = await endedInterview();
+    h.dialog.push('Спасибо за оценку!');
+    const linesBefore = h.journal().trim().split('\n').length;
+    h.openDialog.mockClear();
+    h.generate.mockClear();
+    await h.run({ now: () => h.now() + 30 * MIN });
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(h.openDialog).not.toHaveBeenCalled();
+    expect(h.generate).not.toHaveBeenCalled();
+    const added = h.journal().trim().split('\n').slice(linesBefore);
+    expect(added).toHaveLength(1);
+    expect(added[0]).toMatch(/интервью закончилось/);
+    expect(existsSync(h.lockPath)).toBe(false);
+  });
+
+  it('то же, пока окно ещё открыто: запуск в том же окне не отвечает', async () => {
+    const h = await endedInterview();
+    h.dialog.push('Спасибо за оценку!');
+    await h.run({ now: () => h.now() + MIN });
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(h.journal()).toMatch(/интервью закончилось/);
+  });
+
+  it('новое окно (новый отклик) снимает конец интервью — следующий запуск отвечает', async () => {
+    const h = await endedInterview();
+    const later = (): number => h.now() + 60 * MIN;
+    openWindow(later(), CFG.windowMinutes, h.statePath);
+    expect(readState(h.statePath).interviewEndedAt).toBe(0);
+    h.dialog.push('Здравствуйте! Это новое интервью.');
+    await h.run({ now: later });
+    expect(h.dialog.sent).toHaveLength(2);
+    expect(h.generate.mock.calls.at(-1)![0].question).toBe('Здравствуйте! Это новое интервью.');
+  });
+
+  it('конец запомнили посреди сессии — следующий проход выходит одной строкой, не отвечая', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => writeState({ ...readState(h.statePath), interviewEndedAt: h.now() }, h.statePath));
+    h.at(2 * MIN, () => h.dialog.push('Вопрос после конца'));
+    await h.run();
+    expect(h.dialog.sent).toEqual([]);
+    expect(h.now()).toBeLessThan(h.t0 + 2 * MIN);
+    expect(h.journal().match(/интервью закончилось/g)).toHaveLength(1);
+  });
+
+  it('конец прошлого окна не мешает новому: interviewEndedAt раньше открытия окна не блокирует', async () => {
+    const h = harness([msg(1, 'Вопрос')], {
+      windowUntil: Date.now() + 60 * MIN, interviewEndedAt: Date.now() - 90 * MIN,
+    });
+    await h.run();
+    expect(h.dialog.sent).toHaveLength(1);
   });
 });
 
