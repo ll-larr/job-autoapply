@@ -112,7 +112,7 @@ function deps(
     dialog,
     statePath,
     logPath,
-    question: { id: 7, date: new Date(), text: 'Какой опыт с Kafka?', urls: [], out: false, hasButtons: false },
+    question: { id: 7, date: new Date(), text: 'Какой опыт с Kafka?', urls: [], out: false, hasButtons: false, buttons: [] },
     transcript: [],
     generate: vi.fn(async () => ({ ok: true as const, text: 'Проектировал контракт события.' })),
     delay: vi.fn(async () => {}),
@@ -157,7 +157,7 @@ describe('answerOnce', () => {
 });
 
 function incoming(id: number, text: string, over: Partial<DialogMessage> = {}): DialogMessage {
-  return { id, date: new Date(), text, urls: [], out: false, hasButtons: false, ...over };
+  return { id, date: new Date(), text, urls: [], out: false, hasButtons: false, buttons: [], ...over };
 }
 
 function groupDeps(seed: DialogMessage[]) {

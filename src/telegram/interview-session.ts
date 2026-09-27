@@ -9,8 +9,9 @@ import type { TgMessage } from './types.js';
  * resolveChat знает только каналы и группы.
  *
  * Интерфейс узкий сознательно: цикл не должен уметь ничего, кроме как читать
- * историю одного собеседника, писать ему и показывать «печатает». Ни списка
- * чатов, ни рассылки, ни кнопок.
+ * историю одного собеседника, писать ему, показывать «печатает» и нажимать
+ * инлайн-кнопку одного его сообщения — единственный разрешённый случай
+ * нажатия, выбор вакансии (G2). Ни списка чатов, ни рассылки.
  */
 
 /**
@@ -24,19 +25,41 @@ export interface DialogMessage extends TgMessage {
    * true — у сообщения настоящие кнопки: инлайн-клавиатура или обычная
    * клавиатура (Api.Message.replyMarkup). Снятие клавиатуры и «ответить» —
    * тоже replyMarkup, но кнопок в них нет, это обычный вопрос. Кнопки не
-   * нажимаем никогда.
+   * нажимаем, кроме выбора вакансии (G2).
    */
   hasButtons: boolean;
+  /**
+   * Тексты кнопок инлайн- или обычной клавиатуры по строкам слева направо
+   * (G2); кнопок нет — пусто.
+   */
+  buttons: string[];
 }
 
 export interface TgDialog {
   /** Сообщения новее minId, от старых к новым. */
   history(minId: number): Promise<DialogMessage[]>;
+  /**
+   * Одно сообщение по id в его нынешнем виде (G2): бот правит подсказку выбора
+   * вакансии на месте, и перед нажатием её надо перечитать. Нет такого — null.
+   */
+  getMessage(id: number): Promise<DialogMessage | null>;
   send(text: string): Promise<void>;
   setTyping(): Promise<void>;
+  /**
+   * Нажимает инлайн-кнопку с ровно этим текстом у сообщения `messageId` (G2).
+   * false — такого сообщения или такой кнопки нет (или её нельзя нажать без
+   * пароля или отправки текста): не нажато ничего.
+   */
+  pressButton(messageId: number, buttonText: string): Promise<boolean>;
   /** Подписка на входящие. Возвращает функцию отписки. */
   onMessage(cb: (m: DialogMessage) => void): () => void;
   close(): Promise<void>;
+}
+
+/** Тексты кнопок клавиатуры (G2). Снятие клавиатуры и «ответить» — не кнопки. */
+function buttonTexts(markup: Api.TypeReplyMarkup | undefined): string[] {
+  if (!(markup instanceof Api.ReplyInlineMarkup) && !(markup instanceof Api.ReplyKeyboardMarkup)) return [];
+  return markup.rows.flatMap((row) => row.buttons.map((b) => b.text));
 }
 
 function toDialogMessage(m: Api.Message): DialogMessage {
@@ -47,7 +70,49 @@ function toDialogMessage(m: Api.Message): DialogMessage {
     urls: [],
     out: m.out === true,
     hasButtons: m.replyMarkup instanceof Api.ReplyInlineMarkup || m.replyMarkup instanceof Api.ReplyKeyboardMarkup,
+    buttons: buttonTexts(m.replyMarkup),
   };
+}
+
+/**
+ * Инлайн-кнопка с данными и ровно этим текстом (G2). Только она и нажимается:
+ * кнопка обычной клавиатуры отправила бы свой текст сообщением (а в чат уходит
+ * только текст, прошедший валидатор), ссылка и прочее — не выбор, кнопке с
+ * паролем (как у BotFather) не место в интервью.
+ */
+export function findCallbackButton(
+  markup: Api.TypeReplyMarkup | undefined,
+  text: string,
+): Api.KeyboardButtonCallback | undefined {
+  if (!(markup instanceof Api.ReplyInlineMarkup)) return undefined;
+  for (const row of markup.rows) {
+    for (const b of row.buttons) {
+      if (b instanceof Api.KeyboardButtonCallback && b.text === text && b.requiresPassword !== true) return b;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Нажатие инлайн-кнопки — то же, что делает GramJS в MessageButton.click()
+ * (node_modules/telegram/tl/custom/messageButton.js): messages.GetBotCallbackAnswer
+ * с данными кнопки. BOT_RESPONSE_TIMEOUT значит, что бот нажатие получил, но
+ * не ответил на него всплывашкой вовремя, — нажатие состоялось (GramJS тоже
+ * его глотает).
+ */
+export async function pressCallback(
+  invoke: (request: Api.messages.GetBotCallbackAnswer) => Promise<unknown>,
+  peer: Api.TypeInputPeer,
+  msgId: number,
+  button: Api.KeyboardButtonCallback,
+): Promise<boolean> {
+  try {
+    await invoke(new Api.messages.GetBotCallbackAnswer({ peer, msgId, data: button.data }));
+  } catch (e) {
+    if ((e as { errorMessage?: unknown }).errorMessage === 'BOT_RESPONSE_TIMEOUT') return true;
+    throw e;
+  }
+  return true;
 }
 
 /**
@@ -108,6 +173,20 @@ export async function openDialog(
       const msgs = await client.getMessages(peer, { limit: 100, minId });
       return toDialogMessages(msgs).reverse();
     },
+    async getMessage(id: number) {
+      // getMessages с ids отбрасывает сообщения чужого чата (GramJS, _IDsIter):
+      // по id достаётся только сообщение этого собеседника.
+      const [m] = await client.getMessages(peer, { ids: [id] });
+      return toDialogMessages([m])[0] ?? null;
+    },
+    async pressButton(messageId: number, buttonText: string) {
+      // Кнопку берём из свежего сообщения, а не из того, что видел цикл: бот
+      // мог его уже поправить. Нажимается только инлайн-кнопка с данными.
+      const [m] = await client.getMessages(peer, { ids: [messageId] });
+      const button = m instanceof Api.Message ? findCallbackButton(m.replyMarkup, buttonText) : undefined;
+      if (button === undefined) return false;
+      return pressCallback((request) => client.invoke(request), peer, messageId, button);
+    },
     async send(text: string) {
       // Текст уходит как есть: разбор Markdown по умолчанию превратил бы
       // `**`, `_` и `[x](url)` прошедшего валидацию ответа в разметку или
@@ -129,6 +208,21 @@ export async function openDialog(
   return { ok: true, dialog };
 }
 
+export interface FakeDialog extends TgDialog {
+  sent: string[];
+  /** Нажатия кнопок по порядку (G2). */
+  presses: { messageId: number; button: string }[];
+  /** Что бот делает в ответ на нажатие: тест подставляет свой сценарий. */
+  onPress: ((messageId: number, button: string) => void) | null;
+  /**
+   * Входящее от собеседника; возвращает его id. `buttons` — тексты кнопок, с
+   * ними hasButtons по умолчанию true.
+   */
+  push(text: string, opts?: { hasButtons?: boolean; buttons?: string[] }): number;
+  /** Правка сообщения на месте, как делает бот: тот же id и дата (G2). */
+  edit(id: number, patch: { text?: string; buttons?: string[] }): void;
+}
+
 /**
  * Подмена для тестов: сети нет, всё в памяти. `now` — часы для дат новых
  * сообщений (своих и пришедших): стенд цикла подставляет свои фейковые часы,
@@ -137,40 +231,69 @@ export async function openDialog(
 export function fakeDialog(
   seed: DialogMessage[] = [],
   now: () => number = Date.now,
-): TgDialog & { sent: string[]; push(text: string, opts?: { hasButtons?: boolean }): void } {
+): FakeDialog {
   const messages = [...seed];
   const sent: string[] = [];
   const subs = new Set<(m: DialogMessage) => void>();
   let nextId = Math.max(0, ...messages.map((m) => m.id)) + 1;
+  const find = (id: number): number => messages.findIndex((m) => m.id === id);
 
-  return {
+  const dialog: FakeDialog = {
     sent,
+    presses: [],
+    onPress: null,
     async history(minId: number) {
       return messages.filter((m) => m.id > minId).sort((a, b) => a.id - b.id);
+    },
+    async getMessage(id: number) {
+      const m = messages[find(id)];
+      return m === undefined ? null : { ...m, buttons: [...m.buttons] };
     },
     async send(text: string) {
       sent.push(text);
       // Как настоящий Telegram: своё сообщение тоже ложится в историю, иначе
       // цикл не отличит свой ответ от вопроса собеседника.
-      messages.push({ id: nextId++, date: new Date(now()), text, urls: [], out: true, hasButtons: false });
+      messages.push({ id: nextId++, date: new Date(now()), text, urls: [], out: true, hasButtons: false, buttons: [] });
     },
     async setTyping() {},
+    async pressButton(messageId: number, buttonText: string) {
+      const m = messages[find(messageId)];
+      if (m === undefined || m.out || !m.buttons.includes(buttonText)) return false;
+      dialog.presses.push({ messageId, button: buttonText });
+      dialog.onPress?.(messageId, buttonText);
+      return true;
+    },
     onMessage(cb) {
       subs.add(cb);
       return () => subs.delete(cb);
     },
-    push(text: string, opts?: { hasButtons?: boolean }) {
+    push(text: string, opts?: { hasButtons?: boolean; buttons?: string[] }) {
+      const buttons = opts?.buttons ?? [];
       const m: DialogMessage = {
         id: nextId++,
         date: new Date(now()),
         text,
         urls: [],
         out: false,
-        hasButtons: opts?.hasButtons ?? false,
+        hasButtons: opts?.hasButtons ?? buttons.length > 0,
+        buttons,
       };
       messages.push(m);
       for (const cb of subs) cb(m);
+      return m.id;
+    },
+    edit(id: number, patch: { text?: string; buttons?: string[] }) {
+      const i = find(id);
+      const m = messages[i];
+      if (m === undefined) throw new Error(`fakeDialog.edit: нет сообщения ${id}`);
+      // Новый объект, а не правка старого: уже прочитанная циклом история не меняется задним числом.
+      messages[i] = {
+        ...m,
+        text: patch.text ?? m.text,
+        ...(patch.buttons === undefined ? {} : { buttons: patch.buttons, hasButtons: patch.buttons.length > 0 }),
+      };
     },
     async close() {},
   };
+  return dialog;
 }

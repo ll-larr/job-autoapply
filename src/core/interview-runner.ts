@@ -337,8 +337,10 @@ function tolerantDialog(dialog: TgDialog, note: (line: string) => void): TgDialo
         throw new HistoryHiccup();
       }
     },
+    getMessage: (id) => dialog.getMessage(id),
     send: (text) => dialog.send(text),
     setTyping: () => dialog.setTyping(),
+    pressButton: (messageId, text) => dialog.pressButton(messageId, text),
     onMessage: (cb) => dialog.onMessage(cb),
     close: () => dialog.close(),
   };

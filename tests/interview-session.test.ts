@@ -1,13 +1,15 @@
 import { Api } from 'telegram';
-import { describe, it, expect } from 'vitest';
-import { fakeDialog, toDialogMessages, openFailureReason } from '../src/telegram/interview-session.js';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  fakeDialog, toDialogMessages, openFailureReason, findCallbackButton, pressCallback,
+} from '../src/telegram/interview-session.js';
 
 describe('fakeDialog', () => {
   it('history отдаёт только сообщения новее minId, от старых к новым', async () => {
     const d = fakeDialog([
-      { id: 1, date: new Date(), text: 'первое', urls: [], out: false, hasButtons: false },
-      { id: 5, date: new Date(), text: 'второе', urls: [], out: false, hasButtons: false },
-      { id: 9, date: new Date(), text: 'третье', urls: [], out: false, hasButtons: false },
+      { id: 1, date: new Date(), text: 'первое', urls: [], out: false, hasButtons: false, buttons: [] },
+      { id: 5, date: new Date(), text: 'второе', urls: [], out: false, hasButtons: false, buttons: [] },
+      { id: 9, date: new Date(), text: 'третье', urls: [], out: false, hasButtons: false, buttons: [] },
     ]);
     const got = await d.history(5);
     expect(got.map((m) => m.id)).toEqual([9]);
@@ -104,5 +106,106 @@ describe('openFailureReason (G1)', () => {
   it('VPN и ключи — причина как есть', () => {
     expect(openFailureReason({ reason: 'no_proxy', message: 'VPN выключен' }, 'x.session')).toBe('VPN выключен');
     expect(openFailureReason({ reason: 'no_keys', message: 'нет TG_API_ID' }, 'x.session')).toBe('нет TG_API_ID');
+  });
+});
+
+describe('кнопки сообщения (G2)', () => {
+  const withMarkup = (id: number, replyMarkup: Api.TypeReplyMarkup | undefined): Api.Message => new Api.Message({
+    id, peerId: undefined, date: 1_700_000_000, message: `сообщение ${id}`, replyMarkup,
+  });
+  const cb = (text: string, data = text): Api.KeyboardButtonCallback =>
+    new Api.KeyboardButtonCallback({ text, data: Buffer.from(data) });
+
+  it('тексты кнопок по строкам и по порядку: инлайн и обычная клавиатура; без кнопок — пусто', () => {
+    const inline = new Api.ReplyInlineMarkup({
+      rows: [
+        new Api.KeyboardButtonRow({ buttons: [cb('1. Системный аналитик'), cb('2. Data analyst')] }),
+        new Api.KeyboardButtonRow({ buttons: [cb('Далее')] }),
+      ],
+    });
+    const keyboard = new Api.ReplyKeyboardMarkup({
+      rows: [new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButton({ text: 'Да' })] })],
+    });
+    const got = toDialogMessages([
+      withMarkup(40, inline),
+      withMarkup(41, keyboard),
+      withMarkup(42, new Api.ReplyKeyboardHide({})),
+      withMarkup(43, undefined),
+    ]);
+    expect(got.map((m) => [m.id, m.hasButtons, m.buttons])).toEqual([
+      [40, true, ['1. Системный аналитик', '2. Data analyst', 'Далее']],
+      [41, true, ['Да']],
+      [42, false, []],
+      [43, false, []],
+    ]);
+  });
+
+  it('findCallbackButton: только инлайн-кнопка с данными и ровно этим текстом', () => {
+    const url = new Api.KeyboardButtonUrl({ text: '1. Системный аналитик', url: 'https://example.com' });
+    const secret = new Api.KeyboardButtonCallback({ text: '2. Data analyst', data: Buffer.from('x'), requiresPassword: true });
+    const target = cb('1. Системный аналитик', 'vacancy-1');
+    const inline = new Api.ReplyInlineMarkup({ rows: [new Api.KeyboardButtonRow({ buttons: [url, secret, target] })] });
+    expect(findCallbackButton(inline, '1. Системный аналитик')).toBe(target);
+    // Кнопка с паролем (как у BotFather) и несуществующий текст — не нажимаются.
+    expect(findCallbackButton(inline, '2. Data analyst')).toBeUndefined();
+    expect(findCallbackButton(inline, '1. Системный')).toBeUndefined();
+    // Обычная клавиатура шлёт свой текст сообщением — это не проверенный валидатором текст.
+    const keyboard = new Api.ReplyKeyboardMarkup({
+      rows: [new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButton({ text: 'Далее' })] })],
+    });
+    expect(findCallbackButton(keyboard, 'Далее')).toBeUndefined();
+    expect(findCallbackButton(undefined, 'Далее')).toBeUndefined();
+  });
+
+  it('pressCallback: messages.GetBotCallbackAnswer с данными кнопки; таймаут ответа бота — нажатие состоялось', async () => {
+    const peer = new Api.InputPeerSelf();
+    const button = cb('1. Системный аналитик', 'vacancy-1');
+    const invoke = vi.fn(async (_r: Api.messages.GetBotCallbackAnswer) => ({}));
+    expect(await pressCallback(invoke, peer, 77, button)).toBe(true);
+    const req = invoke.mock.calls[0]![0];
+    expect(req).toBeInstanceOf(Api.messages.GetBotCallbackAnswer);
+    expect(req.msgId).toBe(77);
+    expect(req.peer).toBe(peer);
+    expect(Buffer.from(req.data!).toString()).toBe('vacancy-1');
+
+    const timeout = vi.fn(async () => { throw Object.assign(new Error('timeout'), { errorMessage: 'BOT_RESPONSE_TIMEOUT' }); });
+    expect(await pressCallback(timeout, peer, 77, button)).toBe(true);
+    const broken = vi.fn(async () => { throw Object.assign(new Error('flood'), { errorMessage: 'FLOOD_WAIT_30' }); });
+    await expect(pressCallback(broken, peer, 77, button)).rejects.toThrow('flood');
+  });
+});
+
+describe('fakeDialog: кнопки, нажатия и правка сообщения (G2)', () => {
+  it('push с кнопками — hasButtons и тексты; своё сообщение — без кнопок', async () => {
+    const d = fakeDialog();
+    d.push('Выберите вакансию', { buttons: ['1. Системный аналитик', 'Далее'] });
+    await d.send('ответ');
+    const got = await d.history(0);
+    expect(got.map((m) => [m.hasButtons, m.buttons])).toEqual([[true, ['1. Системный аналитик', 'Далее']], [false, []]]);
+  });
+
+  it('pressButton записывает нажатие и зовёт сценарий бота; чужой текст или id — false, без записи', async () => {
+    const d = fakeDialog();
+    const id = d.push('Выберите вакансию', { buttons: ['1. Системный аналитик'] });
+    const seen: [number, string][] = [];
+    d.onPress = (messageId, button) => { seen.push([messageId, button]); };
+    expect(await d.pressButton(id, '1. Системный аналитик')).toBe(true);
+    expect(await d.pressButton(id, '2. Data analyst')).toBe(false);
+    expect(await d.pressButton(id + 100, '1. Системный аналитик')).toBe(false);
+    expect(d.presses).toEqual([{ messageId: id, button: '1. Системный аналитик' }]);
+    expect(seen).toEqual([[id, '1. Системный аналитик']]);
+  });
+
+  it('edit меняет сообщение на месте: тот же id и дата, новый текст, кнопки сняты; getMessage видит правку', async () => {
+    const d = fakeDialog();
+    const id = d.push('Выберите вакансию', { buttons: ['1. Системный аналитик'] });
+    const before = (await d.history(0))[0]!;
+    d.edit(id, { text: 'Спасибо за выбор вакансии!', buttons: [] });
+    const after = (await d.history(0))[0]!;
+    expect([after.id, after.date, after.text, after.hasButtons, after.buttons])
+      .toEqual([id, before.date, 'Спасибо за выбор вакансии!', false, []]);
+    expect((await d.getMessage(id))?.text).toBe('Спасибо за выбор вакансии!');
+    expect(await d.getMessage(id + 100)).toBeNull();
+    expect(await d.pressButton(id, '1. Системный аналитик')).toBe(false);
   });
 });

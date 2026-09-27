@@ -28,7 +28,7 @@ describe('сквозной прогон шести вопросов', () => {
     const transcript: Turn[] = [];
 
     for (const [i, text] of QUESTIONS.entries()) {
-      const question = { id: i + 1, date: new Date(), text, urls: [], out: false, hasButtons: false };
+      const question = { id: i + 1, date: new Date(), text, urls: [], out: false, hasButtons: false, buttons: [] };
       const r = await answerOnce({
         dialog,
         question,
@@ -55,7 +55,7 @@ describe('сквозной прогон шести вопросов', () => {
     for (const [i, text] of QUESTIONS.entries()) {
       const r = await answerOnce({
         dialog,
-        question: { id: i + 1, date: new Date(), text, urls: [], out: false, hasButtons: false },
+        question: { id: i + 1, date: new Date(), text, urls: [], out: false, hasButtons: false, buttons: [] },
         transcript: [],
         statePath,
         logPath,
@@ -78,7 +78,7 @@ const CFG: GigarecruiterConfig = {
 type Gen = NonNullable<RunOptions['generate']>;
 
 function msg(id: number, text: string, over: Partial<DialogMessage> = {}): DialogMessage {
-  return { id, date: new Date(), text, urls: [], out: false, hasButtons: false, ...over };
+  return { id, date: new Date(), text, urls: [], out: false, hasButtons: false, buttons: [], ...over };
 }
 
 /**
