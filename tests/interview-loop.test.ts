@@ -1369,6 +1369,22 @@ describe('runInterview: выбор вакансии (G2)', () => {
     expect(h.dialog.presses).toEqual([]);
   });
 
+  // R2-1: проба ревью — M2 глушил любой текст с подвалом «сменить вакансию»
+  // или «по какой из них», даже настоящий вопрос интервью. Живьём (2026-09-27)
+  // подвал встречался только в самой подсказке — такой вопрос отвечается.
+  it.each([
+    ['вопрос с подвалом «сменить вакансию»', `Расскажите про опыт с Kafka? ${FOOTER}`],
+    ['вопрос со словами «по какой из них»', 'По какой из них у вас больше опыта?'],
+  ])('%s без кнопок — не служебная строка, отвечается (R2-1)', async (_name, text) => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push(text));
+    await h.run();
+    expect(h.generate).toHaveBeenCalledTimes(1);
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(h.dialog.presses).toEqual([]);
+  });
+
   it('прямо перед нажатием в чате появилось новое — подсказка не нажата (M3)', async () => {
     const h = harness();
     openWindow(h.t0, CFG.windowMinutes, h.statePath);
