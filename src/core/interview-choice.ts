@@ -22,11 +22,22 @@ import type { DialogMessage } from '../telegram/interview-session.js';
 /** Выдержка перед нажатием: бот часто выбирает сам в первую минуту. */
 export const CHOICE_GRACE_MS = 3 * 60_000;
 
-const PROMPT_RE = /по как(ой|ую) из (них|вакансий)|выберите вакансию|сменить вакансию/i;
+/**
+ * Слова самой подсказки (C1). «Сменить вакансию» сюда не входит: это подвал,
+ * который бот ставит и под обычный вопрос интервью.
+ */
+const PROMPT_RE = /по как(ой|ую) из (них|вакансий)|выберите вакансию/i;
+/** Любая строка про выбор вакансии, с подвалом, — служебная, не вопрос (M2). */
+const CHOICE_TEXT_RE = /по как(ой|ую) из (них|вакансий)|выберите вакансию|сменить вакансию/i;
 /** Оценка никогда не подсказка выбора, какие бы слова в ней ни встретились. */
 const RATING_RE = /оцените|оценить|звёзд|звезд/i;
+/** Кнопки, которые не жмутся ни при каком раскладе, даже из нумерованного списка (C1). */
+const DENY_RE = /оцен|звезд|звёзд|★|⭐|сменить|отмен|отказ/i;
 const CHOICE_MADE_RE = /спасибо за выбор вакансии/i;
 const START_RE = /получил[аи]?\s+ваш\s+отклик\s+на\s+позицию\s*:?\s*([^.\n]*)/i;
+/** «N. название» или «N) название» на кнопке. */
+const NUMBERED_RE = /^\s*(\d{1,2})\s*[.)]\s*(.*\S)\s*$/;
+const ELLIPSIS_RE = /\s*(?:…|\.\.\.)$/;
 
 /** «1. Системный аналитик» → «Системный аналитик». */
 function stripNumbering(text: string): string {
@@ -48,19 +59,56 @@ function navKind(text: string): 'next' | 'prev' | null {
   return null;
 }
 
-/** Вариант — кнопка с буквами в названии: звёзды оценки и стрелки вариантами не бывают. */
-function isOption(text: string): boolean {
-  return navKind(text) === null && /\p{L}/u.test(stripNumbering(text));
+/** Для сверки кнопки со списком: без разметки и кавычек, нижний регистр, ё как е, «N) » как «N. ». */
+function matchKey(text: string): string {
+  return clean(text).toLowerCase().replace(/ё/g, 'е').replace(/(\d{1,2})\s*[.)]\s*/g, '$1. ');
 }
 
 /**
- * Подсказка выбора вакансии: входящее с кнопками, текст которого спрашивает,
- * по какой вакансии продолжать, среди кнопок есть вариант или «Далее», и это
- * не оценка.
+ * Кнопка — пункт нумерованного списка из текста подсказки (C1): на ней «N.
+ * название», и в тексте есть то же «N. название» (обрезанное многоточием —
+ * по началу). Перед номером в тексте не цифра: «1. X» — не «11. X».
+ */
+function listedIn(button: string, text: string): boolean {
+  const m = NUMBERED_RE.exec(button);
+  if (m === null) return false;
+  const title = (m[2] ?? '').replace(ELLIPSIS_RE, '');
+  if (!/\p{L}/u.test(title)) return false;
+  const needle = matchKey(`${m[1]}. ${title}`);
+  const hay = matchKey(text);
+  for (let i = hay.indexOf(needle); i !== -1; i = hay.indexOf(needle, i + 1)) {
+    if (i === 0 || !/\d/.test(hay[i - 1]!)) return true;
+  }
+  return false;
+}
+
+/**
+ * Варианты подсказки по порядку (C1): только кнопки из её нумерованного списка
+ * и без слов оценки, отмены, отказа и смены. Кнопка без номера вариантом не
+ * бывает никогда; из них жмётся одна «Далее».
+ */
+function choiceOptions(m: Pick<DialogMessage, 'text' | 'buttons'>): string[] {
+  return m.buttons.filter((b) => !DENY_RE.test(b) && listedIn(b, m.text));
+}
+
+/**
+ * Подсказка выбора вакансии (C1): входящее с кнопками, текст спрашивает, по
+ * какой вакансии продолжать («по какой из них», «выберите вакансию»), и не
+ * меньше двух кнопок — пункты нумерованного списка из этого же текста. Не
+ * оценка. Подвал «сменить вакансию» сам по себе подсказкой не делает.
  */
 export function isChoicePrompt(m: DialogMessage): boolean {
   return !m.out && m.hasButtons && PROMPT_RE.test(m.text) && !RATING_RE.test(m.text)
-    && m.buttons.some((b) => isOption(b) || navKind(b) === 'next');
+    && choiceOptions(m).length >= 2;
+}
+
+/**
+ * Строка про выбор вакансии — с кнопками или без («Пожалуйста, выберите
+ * вакансию из списка выше.», подвал «сменить вакансию»). Служебная: не вопрос,
+ * не отвечается никогда (M2).
+ */
+export function isChoiceText(m: DialogMessage): boolean {
+  return !m.out && CHOICE_TEXT_RE.test(m.text);
 }
 
 /**
@@ -98,11 +146,20 @@ export function withInterviewed(list: readonly string[], title: string): string[
   return t === '' || list.includes(t) ? [...list] : [...list, t];
 }
 
-/** Название на кнопке пройдено? Обрезанное многоточием узнаётся по началу. */
-function interviewed(button: string, done: readonly string[]): boolean {
-  const t = normalizeTitle(button);
-  const cut = t.replace(/(?:…|\.\.\.)$/, '').trim();
-  return done.some((x) => x === t || (cut !== t && cut !== '' && x.startsWith(cut)));
+/**
+ * Одна и та же вакансия? Сравнение нормализованных названий; обрезанное
+ * многоточием (в кнопке или в записанном по такой кнопке) узнаётся по началу.
+ */
+function sameTitle(a: string, b: string): boolean {
+  const x = normalizeTitle(a);
+  const y = normalizeTitle(b);
+  const cx = x.replace(ELLIPSIS_RE, '');
+  const cy = y.replace(ELLIPSIS_RE, '');
+  if (cx === '' || cy === '') return false;
+  if (cx !== x && cy !== y) return cx.startsWith(cy) || cy.startsWith(cx);
+  if (cx !== x) return y.startsWith(cx);
+  if (cy !== y) return x.startsWith(cy);
+  return x === y;
 }
 
 export type ChoiceDecision =
@@ -110,22 +167,23 @@ export type ChoiceDecision =
   | { kind: 'next'; button: string }
   | { kind: 'none' };
 
-const NUMBERED_RE = /^\s*\d{1,2}\s*[.)]\s*\S/;
-
 /**
- * Первый по порядку вариант, которого нет среди пройденных. Все видимые
- * пройдены — «Далее», если она есть и на этой подсказке ещё не нажималась.
- * Если варианты пронумерованы («1. …»), кнопка без номера вариантом не
- * считается: «Отменить отклик» рядом с вакансиями нажать нельзя ни при каком
- * раскладе.
+ * Первый по порядку вариант подсказки (только из её нумерованного списка, C1),
+ * которого нет среди пройденных и который не вакансия идущего интервью
+ * (`current`). Все пройдены — «Далее», если она есть и на этой подсказке ещё
+ * не нажималась. Кроме «Далее», кнопка без номера не жмётся никогда.
  */
-export function decideChoice(buttons: readonly string[], done: readonly string[], nextUsed: boolean): ChoiceDecision {
-  const numbered = buttons.some((b) => isOption(b) && NUMBERED_RE.test(b));
-  for (const b of buttons) {
-    if (!isOption(b) || (numbered && !NUMBERED_RE.test(b))) continue;
-    if (!interviewed(b, done)) return { kind: 'option', button: b, title: clean(stripNumbering(b)) };
+export function decideChoice(
+  m: Pick<DialogMessage, 'text' | 'buttons'>,
+  done: readonly string[],
+  current: string,
+  nextUsed: boolean,
+): ChoiceDecision {
+  for (const b of choiceOptions(m)) {
+    if (done.some((x) => sameTitle(b, x)) || sameTitle(b, current)) continue;
+    return { kind: 'option', button: b, title: clean(stripNumbering(b)) };
   }
-  const next = buttons.find((b) => navKind(b) === 'next');
+  const next = m.buttons.find((b) => navKind(b) === 'next' && !DENY_RE.test(b));
   return next !== undefined && !nextUsed ? { kind: 'next', button: next } : { kind: 'none' };
 }
 
@@ -155,9 +213,13 @@ export interface ChoiceStepInput {
   now: number;
   /** Пройденные вакансии (RunnerState.interviewedTitles). */
   interviewed: readonly string[];
+  /** Вакансия идущего интервью (RunnerState.currentTitle): её вариант не жмётся; '' — нет. */
+  current: string;
   /** Кнопки подсказки, при которых этой сессией уже нажата «Далее»; не нажималась — undefined. */
   pagedAt: string | undefined;
   getMessage(id: number): Promise<DialogMessage | null>;
+  /** История чата новее id (TgDialog.history): перед нажатием — нет ли нового (M3). */
+  history(minId: number): Promise<DialogMessage[]>;
   press(messageId: number, button: string): Promise<boolean>;
   /** Блокировка всё ещё наша? Спрашивается последним перед нажатием (FR-5). */
   owns(): boolean;
@@ -190,7 +252,8 @@ export async function choiceStep(input: ChoiceStepInput): Promise<ChoiceStep> {
   const snapshot = prompt.buttons.join('\n');
   // «Далее» нажата, а страница ещё прежняя: бот её не успел поправить.
   if (input.pagedAt === snapshot) return { kind: 'wait', until: 0 };
-  const d = decideChoice(prompt.buttons, input.interviewed, input.pagedAt !== undefined);
+  const nextUsed = input.pagedAt !== undefined;
+  const d = decideChoice(prompt, input.interviewed, input.current, nextUsed);
   if (d.kind === 'none') return { kind: 'done', started: false, line: `${head}: все варианты уже пройдены, ничего не нажато` };
 
   // Перечитать прямо перед нажатием: выбрать могли и без нас.
@@ -201,7 +264,11 @@ export async function choiceStep(input: ChoiceStepInput): Promise<ChoiceStep> {
   if (current === null || !isChoicePrompt(current)) {
     return { kind: 'done', started: false, line: `${head}: подсказка изменилась, ничего не нажато` };
   }
-  if (!current.buttons.includes(d.button)) return { kind: 'wait', until: 0 };
+  // По свежей подсказке решение то же? Нет — решит следующий проход по новым кнопкам.
+  const again = decideChoice(current, input.interviewed, input.current, nextUsed);
+  if (again.kind === 'none' || again.kind !== d.kind || again.button !== d.button) return { kind: 'wait', until: 0 };
+  // В чате что-то новое (владелец написал, бот дописал) — в этот проход не жмём (M3).
+  if ((await input.history(prompt.id)).length > 0) return { kind: 'wait', until: 0 };
   if (!input.owns()) return { kind: 'lost' };
 
   const label = d.kind === 'option' ? d.title : d.button;

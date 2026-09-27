@@ -1,15 +1,17 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { DialogMessage } from '../src/telegram/interview-session.js';
 import {
-  CHOICE_GRACE_MS, isChoicePrompt, isChoiceMade, interviewTitle, normalizeTitle, withInterviewed,
+  CHOICE_GRACE_MS, isChoicePrompt, isChoiceMade, isChoiceText, interviewTitle, normalizeTitle, withInterviewed,
   decideChoice, promptStatus, choiceStep, type ChoiceStepInput,
 } from '../src/core/interview-choice.js';
 
 // Живые тексты ГигаРекрутёра 2026-09-27 (G2).
+const FOOTER = 'Вы всегда можете сменить вакансию, по которой хотите пройти первичное интервью - для этого нажмите '
+  + 'на кнопку "сменить вакансию", расположенную в "меню" рядом с полем для ввода.';
 const PROMPT = 'Вижу, что вы откликнулись на несколько вакансий. По какой из них вы хотели бы продолжить диалог?\n'
   + '1. Стажер системный аналитик\n2. Системный аналитик\n3. Системный аналитик (ОКТУС)\n4. Data analyst\n'
   + '5. Middle Системный аналитик (Продукт массовых зачислений)\n'
-  + 'Вы всегда можете сменить вакансию, написав мне об этом.';
+  + FOOTER;
 const OPTIONS = [
   '1. Стажер системный аналитик', '2. Системный аналитик', '3. Системный аналитик (ОКТУС)', '4. Data analyst',
   '5. Middle Системный аналитик (Продукт массовых зачислений)',
@@ -19,6 +21,9 @@ const CHOSEN = 'Спасибо за выбор вакансии! Дайте мн
 const start = (title: string): string =>
   `Здравствуйте, Артём! Меня зовут ГигаРекрутёр. Получил Ваш отклик на позицию ${title}. `
   + 'Будет удобно прямо сейчас ответить на несколько вопросов по этой позиции?';
+/** Вторая страница подсказки после «Далее»: бот правит и текст, и кнопки. */
+const PAGE2 = 'По какой из них вы хотели бы продолжить диалог?\n6. Бизнес-аналитик\n7. Аналитик данных\n' + FOOTER;
+const PAGE2_BUTTONS = ['6. Бизнес-аналитик', '7. Аналитик данных', 'Назад', 'Далее'];
 
 const T0 = 1_800_000_000_000;
 function msg(id: number, text: string, over: Partial<DialogMessage> = {}): DialogMessage {
@@ -31,8 +36,15 @@ const prompt = (id = 10, buttons = [...OPTIONS, 'Далее'], over: Partial<Dia
 describe('isChoicePrompt', () => {
   it('живая подсказка выбора вакансии с вариантами и «Далее» — да', () => {
     expect(isChoicePrompt(prompt())).toBe(true);
-    expect(isChoicePrompt(msg(1, 'Выберите вакансию', { buttons: ['1. Data analyst'] }))).toBe(true);
-    expect(isChoicePrompt(msg(1, 'По какую из вакансий продолжим?', { buttons: ['Далее'] }))).toBe(true);
+    expect(isChoicePrompt(prompt(10, OPTIONS))).toBe(true);
+    expect(isChoicePrompt(msg(1, 'Выберите вакансию:\n1. Data analyst\n2. Системный аналитик', {
+      buttons: ['1. Data analyst', '2. Системный аналитик'],
+    }))).toBe(true);
+    // Варианты одной строкой, длинное название в кнопке обрезано многоточием.
+    expect(isChoicePrompt(msg(1, 'По какой из них продолжим диалог? 1. Data analyst 2. Middle Системный аналитик '
+      + '(Продукт массовых зачислений) ' + FOOTER, {
+      buttons: ['1. Data analyst', '2. Middle Системный аналитик (Продукт мас…'],
+    }))).toBe(true);
   });
 
   it('оценка звёздами — нет, даже со словами о смене вакансии в тексте', () => {
@@ -45,7 +57,62 @@ describe('isChoicePrompt', () => {
     expect(isChoicePrompt(msg(1, PROMPT))).toBe(false);
     expect(isChoicePrompt(msg(1, 'Выберите вакансию', { hasButtons: true, buttons: [] }))).toBe(false);
     expect(isChoicePrompt(prompt(1, OPTIONS, { out: true }))).toBe(false);
-    expect(isChoicePrompt(msg(1, 'Какой у вас опыт с Kafka?', { buttons: ['1. Да'] }))).toBe(false);
+    expect(isChoicePrompt(msg(1, 'Какой у вас опыт с Kafka?', { buttons: ['1. Да', '2. Нет'] }))).toBe(false);
+  });
+
+  // C1: пробы ревью. Любая из них раньше нажимала первую кнопку через 3 минуты.
+  it('вопрос посреди интервью с подвалом «сменить вакансию» и кнопками [Да, Нет] — не подсказка', () => {
+    expect(isChoicePrompt(msg(1, `Готовы ли вы к переезду? ${FOOTER}`, { buttons: ['Да', 'Нет'] }))).toBe(false);
+  });
+
+  it('подвал «сменить вакансию» и кнопка «Сменить вакансию» — не подсказка', () => {
+    expect(isChoicePrompt(msg(1, FOOTER, { buttons: ['Сменить вакансию'] }))).toBe(false);
+  });
+
+  it('оценка без слов «оцените»/«звёзд» в тексте, но со звёздами в кнопках — не подсказка', () => {
+    const buttons = ['1 звезда', '2 звезды', '3 звезды', '4 звезды', '5 звёзд'];
+    expect(isChoicePrompt(msg(1, `Как вам наш диалог? ${FOOTER}`, { buttons }))).toBe(false);
+    expect(isChoicePrompt(msg(1, 'По какой из них продолжим?\n1. звезда\n2. звезды', { buttons: ['1. звезда', '2. звезды'] })))
+      .toBe(false);
+  });
+
+  it('«сменить вакансию» — не слова подсказки: нужны «по какой из них» или «выберите вакансию»', () => {
+    expect(isChoicePrompt(msg(1, 'Вы всегда можете сменить вакансию:\n1. Data analyst\n2. Системный аналитик', {
+      buttons: ['1. Data analyst', '2. Системный аналитик'],
+    }))).toBe(false);
+  });
+
+  it('нумерованные кнопки, которых нет в нумерованном списке текста, — не варианты', () => {
+    expect(isChoicePrompt(msg(1, 'По какой из них хотели бы продолжить диалог?', { buttons: ['1. Да', '2. Нет'] }))).toBe(false);
+    // «1. Data analyst» не то же, что «11. Data analyst» в тексте.
+    expect(isChoicePrompt(msg(1, 'По какой из них?\n11. Data analyst\n12. Системный аналитик', {
+      buttons: ['1. Data analyst', '2. Системный аналитик'],
+    }))).toBe(false);
+  });
+
+  it('нужно не меньше двух вариантов из списка: один вариант или одна «Далее» — не подсказка', () => {
+    expect(isChoicePrompt(msg(1, 'Выберите вакансию:\n1. Data analyst', { buttons: ['1. Data analyst'] }))).toBe(false);
+    expect(isChoicePrompt(msg(1, 'По какую из вакансий продолжим?', { buttons: ['Далее'] }))).toBe(false);
+  });
+
+  it('варианты со словами отказа, отмены, смены и оценки не считаются, даже если они в списке', () => {
+    expect(isChoicePrompt(msg(1, 'По какой из них продолжим?\n1. Отменить отклик\n2. Сменить вакансию\n3. Отказаться', {
+      buttons: ['1. Отменить отклик', '2. Сменить вакансию', '3. Отказаться'],
+    }))).toBe(false);
+  });
+});
+
+describe('isChoiceText (M2)', () => {
+  it('служебные строки выбора вакансии узнаются и без кнопок', () => {
+    expect(isChoiceText(msg(1, 'Пожалуйста, выберите вакансию из списка выше.'))).toBe(true);
+    expect(isChoiceText(msg(1, FOOTER))).toBe(true);
+    expect(isChoiceText(msg(1, PROMPT))).toBe(true);
+    expect(isChoiceText(msg(1, 'По какую из вакансий продолжим?'))).toBe(true);
+  });
+
+  it('обычный вопрос или своё сообщение — нет', () => {
+    expect(isChoiceText(msg(1, 'Какой у вас опыт с Kafka?'))).toBe(false);
+    expect(isChoiceText(msg(1, 'Выберите вакансию', { out: true }))).toBe(false);
   });
 });
 
@@ -79,7 +146,7 @@ describe('interviewTitle', () => {
 
 describe('normalizeTitle и withInterviewed', () => {
   it('нижний регистр, один пробел, без «N. », без кавычек, ё как е', () => {
-    expect(normalizeTitle('1. Стажер  системный\u00A0аналитик')).toBe('стажер системный аналитик');
+    expect(normalizeTitle('1. Стажер  системный аналитик')).toBe('стажер системный аналитик');
     expect(normalizeTitle('  12) «Стажёр» системный аналитик ')).toBe('стажер системный аналитик');
     expect(normalizeTitle('Системный аналитик (ОКТУС)')).toBe('системный аналитик (октус)');
   });
@@ -93,44 +160,70 @@ describe('normalizeTitle и withInterviewed', () => {
 
 describe('decideChoice', () => {
   it('ничего не пройдено — первый вариант', () => {
-    expect(decideChoice([...OPTIONS, 'Далее'], [], false))
+    expect(decideChoice(prompt(), [], '', false))
       .toEqual({ kind: 'option', button: '1. Стажер системный аналитик', title: 'Стажер системный аналитик' });
   });
 
   it('первый пройден — второй; «Системный аналитик» и «(ОКТУС)» — разные вакансии', () => {
-    expect(decideChoice(OPTIONS, ['стажер системный аналитик'], false))
+    expect(decideChoice(prompt(10, OPTIONS), ['стажер системный аналитик'], '', false))
       .toEqual({ kind: 'option', button: '2. Системный аналитик', title: 'Системный аналитик' });
-    expect(decideChoice(OPTIONS, ['стажер системный аналитик', 'системный аналитик'], false))
+    expect(decideChoice(prompt(10, OPTIONS), ['стажер системный аналитик', 'системный аналитик'], '', false))
       .toEqual({ kind: 'option', button: '3. Системный аналитик (ОКТУС)', title: 'Системный аналитик (ОКТУС)' });
+  });
+
+  it('вариант идущего интервью (currentTitle) не жмётся, даже если его нет в пройденных (C1)', () => {
+    expect(decideChoice(prompt(), [], 'Стажер системный аналитик', false))
+      .toMatchObject({ kind: 'option', button: '2. Системный аналитик' });
+    expect(decideChoice(prompt(10, ['5. Middle Системный аналитик (Продукт мас…', '4. Data analyst']), [],
+      'Middle Системный аналитик (Продукт массовых зачислений)', false))
+      .toMatchObject({ kind: 'option', button: '4. Data analyst' });
   });
 
   it('все видимые пройдены, есть «Далее» — «Далее»; второй раз на той же подсказке — ничего', () => {
     const all = OPTIONS.map(normalizeTitle);
-    expect(decideChoice([...OPTIONS, 'Далее'], all, false)).toEqual({ kind: 'next', button: 'Далее' });
-    expect(decideChoice([...OPTIONS, 'Далее ➡️'], all, false)).toEqual({ kind: 'next', button: 'Далее ➡️' });
-    expect(decideChoice([...OPTIONS, 'Далее'], all, true)).toEqual({ kind: 'none' });
+    expect(decideChoice(prompt(), all, '', false)).toEqual({ kind: 'next', button: 'Далее' });
+    expect(decideChoice(prompt(10, [...OPTIONS, 'Далее ➡️']), all, '', false)).toEqual({ kind: 'next', button: 'Далее ➡️' });
+    expect(decideChoice(prompt(), all, '', true)).toEqual({ kind: 'none' });
   });
 
   it('все пройдены и «Далее» нет — ничего; навигация и звёзды вариантами не считаются', () => {
-    expect(decideChoice(OPTIONS, OPTIONS.map(normalizeTitle), false)).toEqual({ kind: 'none' });
-    expect(decideChoice(['← Назад', '→'], [], true)).toEqual({ kind: 'none' });
-    expect(decideChoice(STARS, [], false)).toEqual({ kind: 'none' });
+    expect(decideChoice(prompt(10, OPTIONS), OPTIONS.map(normalizeTitle), '', false)).toEqual({ kind: 'none' });
+    expect(decideChoice(prompt(10, ['← Назад', '→']), [], '', true)).toEqual({ kind: 'none' });
+    expect(decideChoice(prompt(10, STARS), [], '', false)).toEqual({ kind: 'none' });
   });
 
-  it('рядом с нумерованными вариантами кнопка без номера («Отменить отклик») вариантом не считается', () => {
+  it('кнопка без номера — никогда не вариант: «Отменить отклик», «Ни одна из них» и просто названия (C1)', () => {
     const buttons = ['Отменить отклик', ...OPTIONS, 'Ни одна из них', 'Далее'];
-    expect(decideChoice(buttons, [], false)).toMatchObject({ kind: 'option', button: '1. Стажер системный аналитик' });
-    expect(decideChoice(buttons, OPTIONS.map(normalizeTitle), false)).toEqual({ kind: 'next', button: 'Далее' });
-    expect(decideChoice(buttons, OPTIONS.map(normalizeTitle), true)).toEqual({ kind: 'none' });
-    // Нет нумерации вовсе — вариантом считается любая кнопка с названием, как в находках G2.
-    expect(decideChoice(['Системный аналитик', 'Data analyst'], ['системный аналитик'], false))
-      .toEqual({ kind: 'option', button: 'Data analyst', title: 'Data analyst' });
+    expect(decideChoice(prompt(10, buttons), [], '', false)).toMatchObject({ kind: 'option', button: '1. Стажер системный аналитик' });
+    expect(decideChoice(prompt(10, buttons), OPTIONS.map(normalizeTitle), '', false)).toEqual({ kind: 'next', button: 'Далее' });
+    expect(decideChoice(prompt(10, buttons), OPTIONS.map(normalizeTitle), '', true)).toEqual({ kind: 'none' });
+    // Нет нумерации вовсе — вариантов нет: жать нечего.
+    const plain = msg(1, 'Выберите вакансию: Системный аналитик, Data analyst', { buttons: ['Системный аналитик', 'Data analyst'] });
+    expect(decideChoice(plain, ['системный аналитик'], '', false)).toEqual({ kind: 'none' });
+  });
+
+  it('нумерованная кнопка, которой нет в списке текста, — не вариант, даже первой по порядку (C1)', () => {
+    const m = prompt(10, ['1. Да', ...OPTIONS]);
+    expect(decideChoice(m, [], '', false)).toMatchObject({ kind: 'option', button: '1. Стажер системный аналитик' });
+    expect(decideChoice(prompt(10, ['1. Да', '2. Нет', 'Далее']), [], '', false)).toEqual({ kind: 'next', button: 'Далее' });
+  });
+
+  it('варианты со словами отказа, отмены, смены или оценки не жмутся никогда (C1)', () => {
+    const text = 'По какой из них продолжим?\n1. Отменить отклик\n2. Data analyst\n3. Оценить интервью';
+    expect(decideChoice(msg(1, text, { buttons: ['1. Отменить отклик', '2. Data analyst', '3. Оценить интервью'] }), [], '', false))
+      .toMatchObject({ kind: 'option', button: '2. Data analyst' });
+    expect(decideChoice(msg(1, text, { buttons: ['1. Отменить отклик', '2. Data analyst', '3. Оценить интервью'] }),
+      ['data analyst'], '', false)).toEqual({ kind: 'none' });
   });
 
   it('название, обрезанное в кнопке многоточием, узнаётся по началу', () => {
     const interviewed = ['middle системный аналитик (продукт массовых зачислений)'];
-    expect(decideChoice(['1. Middle Системный аналитик (Продукт мас…', '2. Data analyst'], interviewed, false))
-      .toEqual({ kind: 'option', button: '2. Data analyst', title: 'Data analyst' });
+    expect(decideChoice(prompt(10, ['5. Middle Системный аналитик (Продукт мас…', '4. Data analyst']), interviewed, '', false))
+      .toEqual({ kind: 'option', button: '4. Data analyst', title: 'Data analyst' });
+    // И наоборот: пройденное записано с многоточием (нажато по обрезанной кнопке), кнопка полная.
+    expect(decideChoice(prompt(10, ['5. Middle Системный аналитик (Продукт массовых зачислений)', '4. Data analyst']),
+      ['middle системный аналитик (продукт мас…'], '', false))
+      .toEqual({ kind: 'option', button: '4. Data analyst', title: 'Data analyst' });
   });
 });
 
@@ -159,8 +252,8 @@ describe('choiceStep', () => {
     const p = prompt();
     const press = vi.fn(async () => true);
     return {
-      prompt: p, msgs: [p], now: T0 + CHOICE_GRACE_MS, interviewed: [], pagedAt: undefined,
-      getMessage: async () => p, press, owns: () => true, ...over,
+      prompt: p, msgs: [p], now: T0 + CHOICE_GRACE_MS, interviewed: [], current: '', pagedAt: undefined,
+      getMessage: async () => p, history: async () => [], press, owns: () => true, ...over,
     } as ChoiceStepInput & { press: ReturnType<typeof vi.fn> };
   }
 
@@ -168,7 +261,7 @@ describe('choiceStep', () => {
     const i = input();
     const step = await choiceStep(i);
     expect(i.press).toHaveBeenCalledWith(10, '1. Стажер системный аналитик');
-    expect(step).toEqual({ kind: 'done', started: true, line: 'выбор вакансии 10: нажата «Стажер системный аналитик»' });
+    expect(step).toMatchObject({ kind: 'done', started: true, line: 'выбор вакансии 10: нажата «Стажер системный аналитик»' });
   });
 
   it('пока шла выдержка, подсказку поправили в «Спасибо за выбор…» — не нажимает, новое интервью', async () => {
@@ -179,7 +272,7 @@ describe('choiceStep', () => {
   });
 
   it('подсказку удалили или переписали во что-то другое — не нажимает', async () => {
-    for (const current of [null, msg(10, 'Диалог завершён')]) {
+    for (const current of [null, msg(10, 'Диалог завершён'), prompt(10, ['1. Да', '2. Нет', 'Далее'])]) {
       const i = input({ getMessage: async () => current });
       expect(await choiceStep(i)).toMatchObject({ kind: 'done', started: false });
       expect(i.press).not.toHaveBeenCalled();
@@ -187,8 +280,16 @@ describe('choiceStep', () => {
   });
 
   it('у свежей подсказки нет выбранной кнопки — ждать, решит следующий проход по новым кнопкам', async () => {
-    const i = input({ getMessage: async () => prompt(10, ['1. Data analyst']) });
+    const i = input({ getMessage: async () => prompt(10, ['4. Data analyst', '2. Системный аналитик']) });
     expect(await choiceStep(i)).toEqual({ kind: 'wait', until: 0 });
+    expect(i.press).not.toHaveBeenCalled();
+  });
+
+  it('прямо перед нажатием в чате появилось новое — в этот проход не жмёт (M3)', async () => {
+    const history = vi.fn(async () => [msg(11, 'Вы тут?')]);
+    const i = input({ history });
+    expect(await choiceStep(i)).toEqual({ kind: 'wait', until: 0 });
+    expect(history).toHaveBeenCalledWith(10);
     expect(i.press).not.toHaveBeenCalled();
   });
 
@@ -212,7 +313,7 @@ describe('choiceStep', () => {
     expect(await choiceStep(same)).toEqual({ kind: 'wait', until: 0 });
     expect(same.press).not.toHaveBeenCalled();
 
-    const page2 = prompt(10, ['6. Бизнес-аналитик', 'Назад', 'Далее']);
+    const page2 = msg(10, PAGE2, { buttons: PAGE2_BUTTONS });
     const next = input({ prompt: page2, msgs: [page2], getMessage: async () => page2, interviewed: all, pagedAt: paged.snapshot });
     expect(await choiceStep(next)).toMatchObject({ kind: 'done', started: true });
     expect(next.press).toHaveBeenCalledWith(10, '6. Бизнес-аналитик');

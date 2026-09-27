@@ -1086,10 +1086,17 @@ const CLOSING = 'Спасибо за интервью! Я передам ваш�
   + 'Статус отклика можно отслеживать в личном кабинете HR-платформы "Пульс".';
 const RATING = 'Пожалуйста, оцените мою работу!';
 const STARS = ['★☆☆☆☆', '★★☆☆☆', '★★★☆☆', '★★★★☆', '★★★★★'];
+const FOOTER = 'Вы всегда можете сменить вакансию, по которой хотите пройти первичное интервью - для этого нажмите '
+  + 'на кнопку "сменить вакансию", расположенную в "меню" рядом с полем для ввода.';
 const PROMPT = 'Вижу, что вы откликнулись на несколько вакансий. По какой из них вы хотели бы продолжить диалог?\n'
   + '1. Стажер системный аналитик\n2. Системный аналитик\n3. Системный аналитик (ОКТУС)\n4. Data analyst\n'
   + '5. Middle Системный аналитик (Продукт массовых зачислений)\n'
-  + 'Вы всегда можете сменить вакансию, написав мне об этом.';
+  + FOOTER;
+/** Вторая страница после «Далее»: бот правит на месте и текст, и кнопки. */
+const PAGE2 = {
+  text: 'По какой из них вы хотели бы продолжить диалог?\n6. Бизнес-аналитик\n7. Аналитик данных\n' + FOOTER,
+  buttons: ['6. Бизнес-аналитик', '7. Аналитик данных', 'Назад', 'Далее'],
+};
 const OPTIONS = [
   '1. Стажер системный аналитик', '2. Системный аналитик', '3. Системный аналитик (ОКТУС)', '4. Data analyst',
   '5. Middle Системный аналитик (Продукт массовых зачислений)', 'Далее',
@@ -1110,12 +1117,12 @@ describe('runInterview: выбор вакансии (G2)', () => {
    * (кнопки сняты) и через 10 секунд начинает интервью по выбранной вакансии.
    * Возвращает моменты нажатий по часам стенда.
    */
-  function botAnswersPress(h: ReturnType<typeof harness>, pages: Record<string, string[]> = {}): number[] {
+  function botAnswersPress(h: ReturnType<typeof harness>, pages: Record<string, { text: string; buttons: string[] }> = {}): number[] {
     const at: number[] = [];
     h.dialog.onPress = (id, button) => {
       at.push(h.now());
       const page = pages[button];
-      if (page !== undefined) { h.dialog.edit(id, { buttons: page }); return; }
+      if (page !== undefined) { h.dialog.edit(id, page); return; }
       h.dialog.edit(id, { text: CHOSEN, buttons: [] });
       later(h, 10_000, () => h.dialog.push(start(button.replace(/^\d+\.\s*/, ''))));
     };
@@ -1167,7 +1174,7 @@ describe('runInterview: выбор вакансии (G2)', () => {
     const h = harness([], { interviewedTitles: ALL_SEEN });
     openWindow(h.t0, CFG.windowMinutes, h.statePath);
     h.at(1 * MIN, () => h.dialog.push(PROMPT, { buttons: OPTIONS }));
-    botAnswersPress(h, { 'Далее': ['6. Бизнес-аналитик', 'Назад', 'Далее'] });
+    botAnswersPress(h, { 'Далее': PAGE2 });
     await h.run();
     expect(h.dialog.presses.map((p) => p.button)).toEqual(['Далее', '6. Бизнес-аналитик']);
     expect(h.generate.mock.calls.map((c) => c[0].question)).toEqual([start('Бизнес-аналитик')]);
@@ -1306,6 +1313,51 @@ describe('runInterview: выбор вакансии (G2)', () => {
     expect(youngAt[0]).toBeGreaterThanOrEqual(young.t0 + 2 * MIN);
     expect(youngAt[0]).toBeLessThan(young.t0 + 2 * MIN + 2 * POLL_MS);
     expect(young.dialog.sent).toHaveLength(1);
+  });
+
+  // C1: пробы ревью. Раньше любое сообщение с подвалом «сменить вакансию» и кнопкой
+  // с буквами считалось подсказкой, и через 3 минуты жалась его первая кнопка.
+  it.each([
+    ['вопрос посреди интервью с подвалом и кнопками [Да, Нет]', `Готовы ли вы к переезду? ${FOOTER}`, ['Да', 'Нет']],
+    ['подвал и кнопка «Сменить вакансию»', FOOTER, ['Сменить вакансию']],
+    ['оценка без «оцените» в тексте, звёзды словами в кнопках', `Как вам наш диалог? ${FOOTER}`,
+      ['1 звезда', '2 звезды', '3 звезды', '4 звезды', '5 звёзд']],
+  ])('не подсказка — не жмёт ничего (C1): %s', async (_name, text, buttons) => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push(start('Data analyst')));
+    h.at(3 * MIN, () => h.dialog.push(text, { buttons }));
+    await h.run();
+    expect(h.dialog.presses).toEqual([]);
+    expect(h.dialog.sent).toHaveLength(1);
+  });
+
+  it('напоминание «выберите вакансию» без кнопок после ненажатой подсказки — не отвечается (M2, проба S9)', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push(PROMPT, { buttons: OPTIONS }));
+    h.at(2 * MIN, () => h.dialog.push('Пожалуйста, выберите вакансию из списка выше.'));
+    await h.run();
+    expect(h.generate).not.toHaveBeenCalled();
+    expect(h.dialog.sent).toEqual([]);
+    expect(h.dialog.presses).toEqual([]);
+  });
+
+  it('прямо перед нажатием в чате появилось новое — подсказка не нажата (M3)', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push(PROMPT, { buttons: OPTIONS }));
+    const getMessage = h.dialog.getMessage;
+    let pushed = false;
+    h.dialog.getMessage = async (id) => {
+      const m = await getMessage(id);
+      // Пока цикл перечитывал подсказку, владелец написал сам.
+      if (!pushed) { pushed = true; h.dialog.push('Вы тут?'); }
+      return m;
+    };
+    await h.run();
+    expect(pushed).toBe(true);
+    expect(h.dialog.presses).toEqual([]);
   });
 });
 

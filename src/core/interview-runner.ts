@@ -8,7 +8,7 @@ import type { GigarecruiterConfig } from './config.js';
 import { acquireLock, releaseLock, refreshLock, LOCK_PATH } from './interview-lock.js';
 import { readSession } from '../telegram/session.js';
 import {
-  choiceStep, interviewTitle, isChoiceItem, isChoiceMade, isChoicePrompt, withInterviewed,
+  choiceStep, interviewTitle, isChoiceItem, isChoiceMade, isChoicePrompt, isChoiceText, withInterviewed,
 } from './interview-choice.js';
 
 /**
@@ -482,12 +482,15 @@ async function converse(
         // Подсказку выбора разбирают ниже; она не конец интервью и не вопрос (G2).
         if (ended || (!stale && isChoicePrompt(m))) continue;
         buttons ||= !stale && m.hasButtons;
-        if (stale || m.hasButtons || isChoiceMade(m)) {
+        if (stale || m.hasButtons || isChoiceMade(m) || isChoiceText(m)) {
           // Кнопки не нажимаем и не отвечаем на них (R7); старое — прошлый
-          // разговор (R14); «Спасибо за выбор вакансии» — служебное, вопроса нет (G2).
+          // разговор (R14); «Спасибо за выбор вакансии» и любая строка про
+          // выбор вакансии («выберите вакансию из списка выше») — служебные,
+          // вопроса в них нет (G2, M2).
           if (!logged.has(m.id)) {
             note(stale ? `пропущено ${m.id}: старше суток`
-              : m.hasButtons ? `пропущено сообщение с кнопками ${m.id}` : `пропущено ${m.id}: вакансия выбрана`);
+              : m.hasButtons ? `пропущено сообщение с кнопками ${m.id}`
+                : isChoiceMade(m) ? `пропущено ${m.id}: вакансия выбрана` : `пропущено ${m.id}: служебная строка выбора вакансии`);
           }
           logged.add(m.id);
           continue;
@@ -578,8 +581,9 @@ async function converse(
 
       if (prompt !== undefined) {
         const step = await choiceStep({
-          prompt, msgs, now: t, interviewed: state.interviewedTitles, pagedAt: paged.get(prompt.id),
+          prompt, msgs, now: t, interviewed: state.interviewedTitles, current: state.currentTitle, pagedAt: paged.get(prompt.id),
           getMessage: (id) => dialog.getMessage(id),
+          history: (id) => dialog.history(id),
           press: (id, text) => dialog.pressButton(id, text),
           owns: () => refreshLock(lock.path, lock.pid, now()),
         });
