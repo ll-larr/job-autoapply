@@ -140,19 +140,20 @@ export function toDialogMessages(items: unknown[]): DialogMessage[] {
  */
 export function openFailureReason(
   failure: { reason: 'no_keys' | 'no_session' | 'no_proxy' | 'auth'; message: string },
-  sessionPath: string | undefined,
+  sessionPath: string,
 ): string {
-  if (sessionPath === undefined || (failure.reason !== 'auth' && failure.reason !== 'no_session')) return failure.message;
+  if (failure.reason !== 'auth' && failure.reason !== 'no_session') return failure.message;
   return `${failure.message} (это сессия личного аккаунта: npm run tg:login -- --session ${sessionPath})`;
 }
 
 /**
  * `sessionPath` — сессия личного аккаунта владельца (G1): ГигаРекрутёр пишет
- * туда, а не в рабочий аккаунт `data/telegram.session`.
+ * туда, а не в рабочий аккаунт `data/telegram.session`. Обязателен (M5): без
+ * него openTelegram молча открыл бы рабочую сессию.
  */
 export async function openDialog(
   username: string,
-  opts: { sessionPath?: string } = {},
+  opts: { sessionPath: string },
 ): Promise<{ ok: true; dialog: TgDialog } | { ok: false; reason: string }> {
   const opened = await openTelegram({ sessionPath: opts.sessionPath });
   if (!opened.ok) return { ok: false, reason: openFailureReason(opened, opts.sessionPath) };

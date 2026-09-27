@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { writeFileSync, mkdtempSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   loadConfig, resolveGigarecruiterConfig, DEFAULT_GIGARECRUITER, type Config, type GigarecruiterConfig,
@@ -259,6 +259,14 @@ describe('resolveGigarecruiterConfig', () => {
     expect(() => resolveGigarecruiterConfig(base({ ...minimal, sessionPath: ' ' }))).toThrow(/sessionPath/);
     expect(() => resolveGigarecruiterConfig(base({ ...minimal, sessionPath: 5 }))).toThrow(/sessionPath/);
     expect(() => resolveGigarecruiterConfig(base({ ...minimal, sessionPath: null }))).toThrow(/sessionPath/);
+  });
+
+  it('sessionPath, ведущий в рабочую сессию data/telegram.session, — отказ в любом написании (M5)', () => {
+    for (const p of ['data/telegram.session', './data/telegram.session', 'data\\telegram.session', 'Data/Telegram.session',
+      resolve('data/telegram.session')]) {
+      expect(() => resolveGigarecruiterConfig(base({ ...minimal, sessionPath: p }))).toThrow(/sessionPath.*рабоч/);
+    }
+    expect(resolveGigarecruiterConfig(base({ ...minimal, sessionPath: 'data/other.session' })).sessionPath).toBe('data/other.session');
   });
 
   it('потолок интервью за окно — 6 по умолчанию; из блока перекрывается; ноль, строка, NaN — отказ (C2)', () => {

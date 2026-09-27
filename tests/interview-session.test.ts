@@ -1,7 +1,7 @@
 import { Api } from 'telegram';
 import { describe, it, expect, vi } from 'vitest';
 import {
-  fakeDialog, toDialogMessages, openFailureReason, findCallbackButton, pressCallback,
+  fakeDialog, toDialogMessages, openDialog, openFailureReason, findCallbackButton, pressCallback,
 } from '../src/telegram/interview-session.js';
 
 describe('fakeDialog', () => {
@@ -106,6 +106,22 @@ describe('openFailureReason (G1)', () => {
   it('VPN и ключи — причина как есть', () => {
     expect(openFailureReason({ reason: 'no_proxy', message: 'VPN выключен' }, 'x.session')).toBe('VPN выключен');
     expect(openFailureReason({ reason: 'no_keys', message: 'нет TG_API_ID' }, 'x.session')).toBe('нет TG_API_ID');
+  });
+});
+
+describe('openDialog: сессия интервью обязательна (M5)', () => {
+  it('без sessionPath не компилируется — тихого отката на рабочую сессию нет', () => {
+    // Вызовы не выполняются: проверку делает tsc (npm run typecheck). Если путь
+    // снова станет необязательным, ожидаемых ошибок не будет — и tsc покраснеет.
+    const calls = [
+      // @ts-expect-error — без опций нельзя
+      () => openDialog('Giga_recruiter_bot'),
+      // @ts-expect-error — без sessionPath нельзя
+      () => openDialog('Giga_recruiter_bot', {}),
+      // @ts-expect-error — sessionPath строкой, не undefined
+      () => openDialog('Giga_recruiter_bot', { sessionPath: undefined }),
+    ];
+    expect(calls).toHaveLength(3);
   });
 });
 

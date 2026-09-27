@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { isWorkSession, SESSION_PATH } from '../telegram/session.js';
 
 export interface ThrottleRule {
   /**
@@ -148,6 +149,11 @@ export function resolveGigarecruiterConfig(config: Config): GigarecruiterConfig 
   for (const k of ['vpnService', 'vpnApp', 'sessionPath'] as const) {
     const v: unknown = rest[k];
     if (typeof v !== 'string' || v.trim() === '') throw bad(k, 'если задан, должен быть непустой строкой');
+  }
+  // M5: интервью идёт с личного аккаунта; путь, ведущий в рабочую сессию, —
+  // тот же файл, что у TelegramAdapter, и личный вход в него перезаписал бы работу.
+  if (isWorkSession(rest.sessionPath)) {
+    throw bad('sessionPath', `ведёт в рабочую сессию ${SESSION_PATH} — у интервью своя, личного аккаунта (data/telegram-interview.session)`);
   }
   for (const k of ['windowMinutes', 'idleMinutes', 'pollHours', 'maxReplyLength', 'maxRepliesPerSession', 'maxInterviewsPerWindow'] as const) {
     const v: unknown = rest[k];
