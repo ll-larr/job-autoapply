@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { DialogMessage } from '../src/telegram/interview-session.js';
 import {
-  CHOICE_GRACE_MS, isChoicePrompt, isChoiceMade, isChoiceText, interviewTitle, normalizeTitle, withInterviewed,
+  CHOICE_GRACE_MS, isChoicePrompt, isChoiceMade, isChoiceText, isInterviewStart, interviewTitle, normalizeTitle, withInterviewed,
   decideChoice, promptStatus, choiceStep, type ChoiceStepInput,
 } from '../src/core/interview-choice.js';
 
@@ -114,6 +114,10 @@ describe('isChoiceText (M2)', () => {
     expect(isChoiceText(msg(1, 'Какой у вас опыт с Kafka?'))).toBe(false);
     expect(isChoiceText(msg(1, 'Выберите вакансию', { out: true }))).toBe(false);
   });
+
+  it('начало интервью с подвалом «сменить вакансию» — не служебная строка: его отвечают', () => {
+    expect(isChoiceText(msg(1, `${start('Data analyst')} ${FOOTER}`))).toBe(false);
+  });
 });
 
 describe('isChoiceMade', () => {
@@ -141,6 +145,30 @@ describe('interviewTitle', () => {
     expect(interviewTitle('Какой у вас опыт с Kafka?')).toBeNull();
     expect(interviewTitle(CHOSEN)).toBeNull();
     expect(interviewTitle('Получил Ваш отклик на позицию . Ок?')).toBeNull();
+  });
+
+  // C2: пробы ревью — «на вакансию» не узнавалось, «(г. Москва)» резалось на «г.».
+  it('«на вакансию» — тоже начало интервью', () => {
+    expect(interviewTitle('Получил Ваш отклик на вакансию Data analyst. Будет удобно?')).toBe('Data analyst');
+  });
+
+  it('точка режет только перед заглавной или в конце строки; «(г. Москва)» и «г. Москва» не режутся', () => {
+    expect(interviewTitle(start('Бизнес-аналитик (г. Москва)'))).toBe('Бизнес-аналитик (г. Москва)');
+    expect(interviewTitle(start('Бизнес-аналитик, г. Москва'))).toBe('Бизнес-аналитик, г. Москва');
+    expect(interviewTitle('Получил Ваш отклик на позицию <b>Бизнес-аналитик (г. Москва)</b>. Будет удобно?'))
+      .toBe('Бизнес-аналитик (г. Москва)');
+    expect(interviewTitle('Получил Ваш отклик на позицию «Аналитик. Данные». Будет удобно?')).toBe('Аналитик. Данные');
+    expect(interviewTitle('Получил Ваш отклик на позицию Data analyst.')).toBe('Data analyst');
+    expect(interviewTitle('Получил Ваш отклик на позицию Аналитик 1С. Будет удобно?')).toBe('Аналитик 1С');
+  });
+});
+
+describe('isInterviewStart', () => {
+  it('входящее «Получил Ваш отклик на позицию|вакансию X» — начало интервью; своё или другое — нет', () => {
+    expect(isInterviewStart(msg(1, start('Data analyst')))).toBe(true);
+    expect(isInterviewStart(msg(1, 'Получил Ваш отклик на вакансию Data analyst.'))).toBe(true);
+    expect(isInterviewStart(msg(1, start('Data analyst'), { out: true }))).toBe(false);
+    expect(isInterviewStart(msg(1, CHOSEN))).toBe(false);
   });
 });
 
@@ -252,7 +280,7 @@ describe('choiceStep', () => {
     const p = prompt();
     const press = vi.fn(async () => true);
     return {
-      prompt: p, msgs: [p], now: T0 + CHOICE_GRACE_MS, interviewed: [], current: '', pagedAt: undefined,
+      prompt: p, msgs: [p], now: T0 + CHOICE_GRACE_MS, interviewed: [], current: '', pagedAt: undefined, canStart: true,
       getMessage: async () => p, history: async () => [], press, owns: () => true, ...over,
     } as ChoiceStepInput & { press: ReturnType<typeof vi.fn> };
   }
@@ -261,7 +289,22 @@ describe('choiceStep', () => {
     const i = input();
     const step = await choiceStep(i);
     expect(i.press).toHaveBeenCalledWith(10, '1. Стажер системный аналитик');
-    expect(step).toMatchObject({ kind: 'done', started: true, line: 'выбор вакансии 10: нажата «Стажер системный аналитик»' });
+    // C2: нажатая вакансия отдаётся циклу — он пишет её сразу, не дожидаясь начала интервью.
+    expect(step).toEqual({
+      kind: 'done', started: true, pressed: 'Стажер системный аналитик', line: 'выбор вакансии 10: нажата «Стажер системный аналитик»',
+    });
+  });
+
+  it('потолок интервью за окно — вариант не жмётся и подсказка не перечитывается; «Далее» жмётся (C2)', async () => {
+    const getMessage = vi.fn(async () => prompt());
+    const i = input({ canStart: false, getMessage });
+    expect(await choiceStep(i)).toEqual({ kind: 'capped' });
+    expect(i.press).not.toHaveBeenCalled();
+    expect(getMessage).not.toHaveBeenCalled();
+
+    const paging = input({ canStart: false, interviewed: OPTIONS.map(normalizeTitle) });
+    expect(await choiceStep(paging)).toMatchObject({ kind: 'paged' });
+    expect(paging.press).toHaveBeenCalledWith(10, 'Далее');
   });
 
   it('пока шла выдержка, подсказку поправили в «Спасибо за выбор…» — не нажимает, новое интервью', async () => {

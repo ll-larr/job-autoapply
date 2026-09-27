@@ -261,6 +261,15 @@ describe('resolveGigarecruiterConfig', () => {
     expect(() => resolveGigarecruiterConfig(base({ ...minimal, sessionPath: null }))).toThrow(/sessionPath/);
   });
 
+  it('потолок интервью за окно — 6 по умолчанию; из блока перекрывается; ноль, строка, NaN — отказ (C2)', () => {
+    expect(resolveGigarecruiterConfig(base(minimal)).maxInterviewsPerWindow).toBe(6);
+    expect(DEFAULT_GIGARECRUITER.maxInterviewsPerWindow).toBe(6);
+    expect(resolveGigarecruiterConfig(base({ ...minimal, maxInterviewsPerWindow: 3 })).maxInterviewsPerWindow).toBe(3);
+    for (const bad of [0, -1, '6', null, Number.NaN]) {
+      expect(() => resolveGigarecruiterConfig(base({ ...minimal, maxInterviewsPerWindow: bad }))).toThrow(/maxInterviewsPerWindow/);
+    }
+  });
+
   it('пустой models — как незаданный, кривой — отказ', () => {
     expect(resolveGigarecruiterConfig(base({ ...minimal, models: [] })).models).toBeUndefined();
     expect(resolveGigarecruiterConfig(base({ ...minimal, models: ['x/y'] })).models).toEqual(['x/y']);
@@ -278,6 +287,7 @@ describe('resolveGigarecruiterConfig', () => {
     expect(r.idleMinutes).toBe(10);
     expect(c.gigarecruiter?.maxRepliesPerSession).toBe(12);
     expect(c.gigarecruiter?.sessionPath).toBe('data/telegram-interview.session');
+    expect(c.gigarecruiter?.maxInterviewsPerWindow).toBe(6);
   });
 
   it('loadConfig принимает config.json с новым блоком', () => {

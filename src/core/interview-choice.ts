@@ -16,6 +16,11 @@ import type { DialogMessage } from '../telegram/interview-session.js';
  * кнопкой: после выбора (ботом, владельцем или нами) бот правит её на месте в
  * «Спасибо за выбор вакансии!…» и снимает кнопки.
  *
+ * Жмётся только пункт нумерованного списка из текста подсказки (C1), и перед
+ * нажатием чат перечитывается (M3). Когда вакансия осталась одна, подсказки нет
+ * вовсе: за оценкой сразу идёт начало нового интервью (isInterviewStart) — оно
+ * законное и отвечается. Каждое начатое интервью считается в потолок за окно (C2).
+ *
  * Здесь только решения; журнал, метка и нажатие — у цикла (interview-runner.ts).
  */
 
@@ -34,7 +39,8 @@ const RATING_RE = /оцените|оценить|звёзд|звезд/i;
 /** Кнопки, которые не жмутся ни при каком раскладе, даже из нумерованного списка (C1). */
 const DENY_RE = /оцен|звезд|звёзд|★|⭐|сменить|отмен|отказ/i;
 const CHOICE_MADE_RE = /спасибо за выбор вакансии/i;
-const START_RE = /получил[аи]?\s+ваш\s+отклик\s+на\s+позицию\s*:?\s*([^.\n]*)/i;
+/** Начало интервью: бот пишет то «на позицию», то «на вакансию» (C2). */
+const START_RE = /получил[аи]?\s+ваш\s+отклик\s+на\s+(?:позицию|вакансию)\s*:?\s*/i;
 /** «N. название» или «N) название» на кнопке. */
 const NUMBERED_RE = /^\s*(\d{1,2})\s*[.)]\s*(.*\S)\s*$/;
 const ELLIPSIS_RE = /\s*(?:…|\.\.\.)$/;
@@ -105,10 +111,11 @@ export function isChoicePrompt(m: DialogMessage): boolean {
 /**
  * Строка про выбор вакансии — с кнопками или без («Пожалуйста, выберите
  * вакансию из списка выше.», подвал «сменить вакансию»). Служебная: не вопрос,
- * не отвечается никогда (M2).
+ * не отвечается никогда (M2). Кроме начала интервью: оно отвечается всегда,
+ * даже с подвалом «сменить вакансию» (решение 2026-09-27 о начале без подсказки).
  */
 export function isChoiceText(m: DialogMessage): boolean {
-  return !m.out && CHOICE_TEXT_RE.test(m.text);
+  return !m.out && CHOICE_TEXT_RE.test(m.text) && interviewTitle(m.text) === null;
 }
 
 /**
@@ -119,20 +126,57 @@ export function isChoiceMade(m: DialogMessage): boolean {
   return !m.out && CHOICE_MADE_RE.test(m.text);
 }
 
-/** Подсказка или её след «Спасибо за выбор…»: граница между интервью. */
-export function isChoiceItem(m: DialogMessage): boolean {
-  return isChoicePrompt(m) || isChoiceMade(m);
+/**
+ * Название из хвоста после «на позицию» (C2): до перевода строки или до точки,
+ * за которой пробел и заглавная (следующее предложение) либо конец строки.
+ * Точка в скобках или кавычках («(г. Москва)», «"Аналитик. Данные"») и после
+ * сокращения в одну-две строчные буквы («г. Москва») название не режет.
+ */
+function cutTitle(rest: string): string {
+  const line = rest.replace(/<[^>]*>/g, '').split('\n')[0] ?? '';
+  let parens = 0;
+  let guillemets = 0;
+  let straight = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const c = line[i]!;
+    if (c === '(') parens += 1;
+    else if (c === ')') parens = Math.max(0, parens - 1);
+    else if (c === '«') guillemets += 1;
+    else if (c === '»') guillemets = Math.max(0, guillemets - 1);
+    else if (c === '"') straight = !straight;
+    else if (c === '.' && parens === 0 && guillemets === 0 && !straight) {
+      const after = line.slice(i + 1);
+      const abbreviation = /(?:^|[^\p{L}])\p{Ll}{1,2}$/u.test(line.slice(0, i));
+      if (after.trim() === '' || (/^\s+\p{Lu}/u.test(after) && !abbreviation)) return line.slice(0, i);
+    }
+  }
+  return line;
 }
 
 /**
- * Вакансия из начала интервью: «Получил Ваш отклик на позицию X. …» — X до
- * первой точки или перевода строки, без кавычек и разметки. Не начало — null.
+ * Вакансия из начала интервью: «Получил Ваш отклик на позицию X. …» или «…на
+ * вакансию X…» — X без кавычек и разметки (cutTitle). Не начало — null.
  */
 export function interviewTitle(text: string): string | null {
   const m = START_RE.exec(text);
   if (m === null) return null;
-  const title = clean(m[1] ?? '');
+  const title = clean(cutTitle(text.slice(m.index + m[0].length)));
   return title === '' ? null : title;
+}
+
+/**
+ * Начало интервью: бот сам называет вакансию («Получил Ваш отклик на позицию
+ * X»). После нашего нажатия, после выбора ботом, а когда вакансия осталась
+ * одна — и сразу за оценкой прошлого, без подсказки (живое наблюдение
+ * 2026-09-27). Всегда законное новое интервью: отвечается.
+ */
+export function isInterviewStart(m: DialogMessage): boolean {
+  return !m.out && interviewTitle(m.text) !== null;
+}
+
+/** Граница между интервью: подсказка, её след «Спасибо за выбор…» или начало нового. */
+export function isInterviewBoundary(m: DialogMessage): boolean {
+  return isChoicePrompt(m) || isChoiceMade(m) || isInterviewStart(m);
 }
 
 /** Для сравнения: без «N. », кавычек и разметки, нижний регистр, один пробел, ё как е. */
@@ -215,8 +259,13 @@ export interface ChoiceStepInput {
   interviewed: readonly string[];
   /** Вакансия идущего интервью (RunnerState.currentTitle): её вариант не жмётся; '' — нет. */
   current: string;
-  /** Кнопки подсказки, при которых этой сессией уже нажата «Далее»; не нажималась — undefined. */
+  /**
+   * Кнопки подсказки в момент, когда на ней уже нажата «Далее» (RunnerState.
+   * pagedSnapshot при pagedPromptId = её id, I2); не нажималась — undefined.
+   */
   pagedAt: string | undefined;
+  /** Можно ли начать ещё одно интервью: потолок maxInterviewsPerWindow не набран (C2). */
+  canStart: boolean;
   getMessage(id: number): Promise<DialogMessage | null>;
   /** История чата новее id (TgDialog.history): перед нажатием — нет ли нового (M3). */
   history(minId: number): Promise<DialogMessage[]>;
@@ -229,13 +278,16 @@ export interface ChoiceStepInput {
  * 'wait' — не сейчас: until > 0 — до этого момента держать сессию (выдержка),
  * 0 — просто посмотреть на следующем проходе. 'paged' — нажата «Далее», ждём
  * новую страницу. 'done' — подсказка разобрана, метка встаёт на неё; started —
- * вакансия выбрана (нами или без нас), началось новое интервью. 'lost' —
- * блокировку перехватили, ничего не нажато.
+ * вакансия выбрана (нами или без нас), началось новое интервью; pressed —
+ * название варианта, который нажали мы (C2). 'capped' — нажатие начало бы
+ * интервью сверх потолка за окно, ничего не нажато. 'lost' — блокировку
+ * перехватили, ничего не нажато.
  */
 export type ChoiceStep =
   | { kind: 'wait'; until: number }
   | { kind: 'paged'; snapshot: string; line: string }
-  | { kind: 'done'; started: boolean; line: string }
+  | { kind: 'done'; started: boolean; pressed?: string; line: string }
+  | { kind: 'capped' }
   | { kind: 'lost' };
 
 /** Один шаг разбора подсказки. В строках журнала — только id и название вакансии. */
@@ -255,6 +307,8 @@ export async function choiceStep(input: ChoiceStepInput): Promise<ChoiceStep> {
   const nextUsed = input.pagedAt !== undefined;
   const d = decideChoice(prompt, input.interviewed, input.current, nextUsed);
   if (d.kind === 'none') return { kind: 'done', started: false, line: `${head}: все варианты уже пройдены, ничего не нажато` };
+  // Вариант начинает интервью: сверх потолка за окно не жмём (C2). «Далее» — не начало.
+  if (d.kind === 'option' && !input.canStart) return { kind: 'capped' };
 
   // Перечитать прямо перед нажатием: выбрать могли и без нас.
   const current = await input.getMessage(prompt.id);
@@ -276,5 +330,5 @@ export async function choiceStep(input: ChoiceStepInput): Promise<ChoiceStep> {
     return { kind: 'done', started: false, line: `${head}: кнопка «${label}» не нажалась` };
   }
   if (d.kind === 'next') return { kind: 'paged', snapshot, line: `${head}: видимые варианты пройдены, нажата «${label}»` };
-  return { kind: 'done', started: true, line: `${head}: нажата «${label}»` };
+  return { kind: 'done', started: true, pressed: d.title, line: `${head}: нажата «${label}»` };
 }

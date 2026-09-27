@@ -8,7 +8,7 @@ import type { GigarecruiterConfig } from './config.js';
 import { acquireLock, releaseLock, refreshLock, LOCK_PATH } from './interview-lock.js';
 import { readSession } from '../telegram/session.js';
 import {
-  choiceStep, interviewTitle, isChoiceItem, isChoiceMade, isChoicePrompt, isChoiceText, withInterviewed,
+  choiceStep, interviewTitle, isChoiceMade, isChoicePrompt, isChoiceText, isInterviewBoundary, isInterviewStart, withInterviewed,
 } from './interview-choice.js';
 
 /**
@@ -25,9 +25,11 @@ import {
  * пришедший до его открытия — хвост прошлого интервью, разбор идёт дальше.
  *
  * Единственная кнопка, которую цикл нажимает, — вариант подсказки выбора
- * вакансии (G2, решения — interview-choice.ts). Подсказка — граница интервью:
- * конец FU-9 её не глотает, текст до неё остаётся без ответа, а выбор (наш,
- * бота или владельца) снимает запомненный конец — начинается новое интервью.
+ * вакансии (G2, решения — interview-choice.ts). Подсказка и начало нового
+ * интервью — граница: конец FU-9 их не глотает, текст до них остаётся без
+ * ответа, а выбор (наш, бота или владельца) и начало, присланное ботом без
+ * подсказки, снимают запомненный конец — начинается новое интервью. Каждое
+ * начатое интервью считается в потолок maxInterviewsPerWindow (C2).
  *
  * Уведомлений владельцу нет по его решению: единственный след — журнал, и в
  * нём только события (номера, длины, причины), текстов диалога там нет.
@@ -64,17 +66,41 @@ export interface RunnerState {
    * вакансии в подсказке ГигаРекрутёра (G2): это начало следующего интервью.
    */
   interviewEndedAt: number;
-  /** Вакансия идущего интервью из «Получил Ваш отклик на позицию X» (G2); '' — не знаем. */
+  /**
+   * Вакансия идущего интервью (G2): нажатый нами вариант (C2) или «Получил Ваш
+   * отклик на позицию X» из начала интервью; '' — не знаем.
+   */
   currentTitle: string;
   /**
-   * Вакансии, чьё интервью закончилось (G2), нормализованные (normalizeTitle).
-   * В подсказке выбора они пропускаются. Новое окно их не снимает.
+   * Вакансии начатых интервью (G2, C2), нормализованные (normalizeTitle):
+   * нажатая — сразу при нажатии, начатая ботом — по его началу. В подсказке
+   * выбора они пропускаются. Новое окно их не снимает.
    */
   interviewedTitles: string[];
+  /**
+   * Интервью, начатых в текущем окне (C2): нажатый вариант подсказки или начало,
+   * присланное ботом. Сверх maxInterviewsPerWindow срабатывает потолок
+   * (capTrippedAt). Обнуляет новое окно.
+   */
+  interviewsInWindow: number;
+  /** id последнего разобранного начала интервью: одно начало считается один раз. */
+  lastStartId: number;
+  /**
+   * id подсказки, где мы нажали вариант, пока его начало интервью не пришло
+   * (C2): нажатие уже посчитано, и это начало второй раз не считается. 0 — нет.
+   */
+  pressedPromptId: number;
+  /**
+   * Подсказка, где нажата «Далее» (I2), и её кнопки в тот момент: «Далее» —
+   * один раз на подсказку, в любом процессе. 0 и '' — не нажималась.
+   */
+  pagedPromptId: number;
+  pagedSnapshot: string;
 }
 
 const EMPTY: RunnerState = {
   lastMessageId: 0, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0, interviewEndedAt: 0, currentTitle: '', interviewedTitles: [],
+  interviewsInWindow: 0, lastStartId: 0, pressedPromptId: 0, pagedPromptId: 0, pagedSnapshot: '',
 };
 
 export function backoffFor(round: number): number {
@@ -97,6 +123,11 @@ export function readState(path: string = STATE_PATH): RunnerState {
       interviewedTitles: Array.isArray(raw.interviewedTitles)
         ? raw.interviewedTitles.filter((t): t is string => typeof t === 'string')
         : [],
+      interviewsInWindow: num(raw.interviewsInWindow),
+      lastStartId: num(raw.lastStartId),
+      pressedPromptId: num(raw.pressedPromptId),
+      pagedPromptId: num(raw.pagedPromptId),
+      pagedSnapshot: typeof raw.pagedSnapshot === 'string' ? raw.pagedSnapshot : '',
     };
   } catch {
     // Битый файл не должен ронять цикл: начинаем с нуля.
@@ -112,12 +143,12 @@ export function writeState(s: RunnerState, path: string = STATE_PATH): void {
 }
 
 /**
- * Новое окно — новый разговор: запомненные потолок ответов (FR-6) и конец
- * интервью (FU-9) снимаются.
+ * Новое окно — новый разговор: запомненные потолок (FR-6, C2) и конец
+ * интервью (FU-9) снимаются, счёт интервью за окно начинается с нуля.
  */
 export function openWindow(now: number, minutes: number, path: string = STATE_PATH): void {
   const s = readState(path);
-  writeState({ ...s, windowUntil: now + minutes * 60_000, capTrippedAt: 0, interviewEndedAt: 0 }, path);
+  writeState({ ...s, windowUntil: now + minutes * 60_000, capTrippedAt: 0, interviewEndedAt: 0, interviewsInWindow: 0 }, path);
 }
 
 /**
@@ -288,13 +319,13 @@ export async function runInterview(opts: RunOptions): Promise<void> {
       note(`нет сессии личного аккаунта — войди: npm run tg:login -- --session ${sessionPath}`);
       return;
     }
-    // Потолок ответов сработал, нового окна с тех пор не было (FR-6): ни
-    // VPN, ни Telegram не трогаем — отвечать всё равно не будем. Конец
-    // интервью (FU-9) так рано не выходит: в молчании после него видна
-    // подсказка выбора вакансии, с которой начнётся следующее (G2).
+    // Потолок ответов (FR-6) или интервью за окно (C2) сработал, нового окна
+    // с тех пор не было: ни VPN, ни Telegram не трогаем — отвечать всё равно
+    // не будем. Конец интервью (FU-9) так рано не выходит: в молчании после
+    // него видны подсказка выбора вакансии и начало следующего (G2).
     const capped = readState(statePath).capTrippedAt;
     if (capped > 0) {
-      note(`потолок ответов сработал ${new Date(capped).toISOString()}, до нового окна не отвечаю — выхожу`);
+      note(`потолок сработал ${new Date(capped).toISOString()}, до нового окна не отвечаю — выхожу`);
       return;
     }
     const vpn = opts.vpn ?? {
@@ -411,8 +442,6 @@ async function converse(
   };
 
   const logged = new Set<number>();
-  /** Подсказки выбора, где эта сессия нажала «Далее» (G2): id → кнопки в момент нажатия. */
-  const paged = new Map<number, string>();
   let windowMark = readState(statePath).windowUntil;
   let lastActivity = now();
   let seenId = 0;
@@ -441,6 +470,40 @@ async function converse(
   /** Интервью закончилось: его вакансия — в пройденные (G2). */
   const finished = (s: RunnerState): Pick<RunnerState, 'currentTitle' | 'interviewedTitles'> =>
     ({ currentTitle: '', interviewedTitles: withInterviewed(s.interviewedTitles, s.currentTitle) });
+  /**
+   * Начала интервью в группе (G2, C2), каждое один раз (lastStartId): вакансия —
+   * в текущую и сразу в пройденные, начало — в счёт интервью за окно. Начало
+   * вслед за нашим нажатием уже посчитано при нажатии (pressedPromptId). Начало
+   * по уже пройденной вакансии отвечается (бот решил спросить снова), но тоже
+   * считается. Сверх maxInterviewsPerWindow — потолок: группа без ответа,
+   * capTrippedAt, false — сессия выходит.
+   */
+  const countStarts = (group: readonly DialogMessage[]): boolean => {
+    let s = readState(statePath);
+    const opens = group.filter((m) => m.id > s.lastStartId && isInterviewStart(m));
+    if (opens.length === 0) return true;
+    for (const m of opens) {
+      const title = interviewTitle(m.text)!;
+      const prepaid = s.pressedPromptId > 0 && m.id > s.pressedPromptId;
+      const count = s.interviewsInWindow + (prepaid ? 0 : 1);
+      if (count > cfg.maxInterviewsPerWindow) {
+        writeState({ ...s, capTrippedAt: now() }, statePath);
+        note(`потолок ${cfg.maxInterviewsPerWindow} интервью за окно: начало интервью ${m.id} без ответа; до нового окна не отвечаю`);
+        return false;
+      }
+      s = {
+        ...s,
+        interviewsInWindow: count,
+        pressedPromptId: prepaid ? 0 : s.pressedPromptId,
+        lastStartId: m.id,
+        currentTitle: title,
+        interviewedTitles: withInterviewed(s.interviewedTitles, title),
+      };
+      note(`начало интервью ${m.id}: вакансия «${title}», интервью за окно: ${count}`);
+    }
+    writeState(s, statePath);
+    return true;
+  };
 
   for (;;) {
     try {
@@ -516,12 +579,13 @@ async function converse(
         // бота, а не за нашим ответом, это не конец.
         //
         // Живой конец (2026-09-27) — прощание, оценка и подсказка выбора
-        // вакансии одной секундой. Подсказка (или её след «Спасибо за выбор…»)
-        // — начало следующего интервью: метка встаёт перед ней, её разбирает
-        // следующий проход (G2). Вакансия закончившегося интервью уходит в
-        // пройденные — и при свежем конце, и при хвосте.
+        // вакансии одной секундой, а когда вакансия осталась одна — прощание,
+        // оценка и сразу начало нового интервью. Подсказка, её след «Спасибо за
+        // выбор…» или начало интервью — граница: метка встаёт перед ней, её
+        // разбирает следующий проход (G2). Вакансия закончившегося интервью
+        // уходит в пройденные — и при свежем конце, и при хвосте.
         const cut = msgs.find((m) => !m.out && m.id > floor && m.hasButtons && !isChoicePrompt(m))!;
-        const next = msgs.find((m) => !m.out && m.id > cut.id && isChoiceItem(m));
+        const next = msgs.find((m) => !m.out && m.id > cut.id && isInterviewBoundary(m));
         const before = (end: number): number => (next === undefined ? end
           : Math.max(cut.id, ...msgs.filter((m) => m.id < next.id && m.id <= end).map((m) => m.id)));
         const openedAt = windowOpenedAt(state, cfg.windowMinutes);
@@ -535,7 +599,8 @@ async function converse(
             ...s, lastMessageId: Math.max(s.lastMessageId, end), interviewEndedAt: cut.date.getTime(), ...finished(s),
           }, statePath);
           note(`конец интервью: после ответа пришло сообщение с кнопками, пачка до ${end} без ответа; ответов ${sentCount}; `
-            + (next === undefined ? 'до нового окна не отвечаю' : `следом выбор вакансии ${next.id}`));
+            + (next === undefined ? 'до нового окна не отвечаю'
+              : isInterviewStart(next) ? `следом начало нового интервью ${next.id}` : `следом выбор вакансии ${next.id}`));
           if (next === undefined) return;
           continue;
         }
@@ -548,14 +613,24 @@ async function converse(
         continue;
       }
 
-      // Выбор вакансии (G2): последняя свежая подсказка или её след.
-      const item = msgs.findLast((m) => !m.out && m.id > floor && t - m.date.getTime() <= STALE_MS && isChoiceItem(m));
+      // Граница интервью (G2): последняя свежая подсказка, её след или начало нового.
+      const item = msgs.findLast((m) => !m.out && m.id > floor && t - m.date.getTime() <= STALE_MS && isInterviewBoundary(m));
       if (ended && item !== undefined && !isChoicePrompt(item)) {
-        // Подсказка уже «Спасибо за выбор вакансии»: выбрали без нас (бот сам
-        // или владелец) — начинается новое интервью, молчание FU-9 снято.
         const s = readState(statePath);
-        writeState({ ...s, lastMessageId: Math.max(s.lastMessageId, item.id), interviewEndedAt: 0 }, statePath);
-        note(`выбор вакансии ${item.id}: вакансию выбрали без нас, начинается новое интервью`);
+        if (isChoiceMade(item)) {
+          // Подсказка уже «Спасибо за выбор вакансии»: выбрали без нас (бот сам
+          // или владелец) — начинается новое интервью, молчание FU-9 снято.
+          writeState({ ...s, lastMessageId: Math.max(s.lastMessageId, item.id), interviewEndedAt: 0 }, statePath);
+          note(`выбор вакансии ${item.id}: вакансию выбрали без нас, начинается новое интервью`);
+        } else {
+          // Начало интервью без подсказки: вакансия осталась одна, бот начал сам
+          // (живое наблюдение 2026-09-27). Законное новое интервью — молчание
+          // FU-9 снято, метка встаёт перед началом, следующий проход на него
+          // отвечает; всё до него («Спасибо за оценку!») — без ответа.
+          const upTo = Math.max(floor, ...msgs.filter((m) => m.id < item.id).map((m) => m.id));
+          writeState({ ...s, lastMessageId: Math.max(s.lastMessageId, upTo), interviewEndedAt: 0 }, statePath);
+          note(`начало интервью ${item.id} после конца прошлого: бот начал сам, молчание снято`);
+        }
         newInterview();
         continue;
       }
@@ -581,7 +656,10 @@ async function converse(
 
       if (prompt !== undefined) {
         const step = await choiceStep({
-          prompt, msgs, now: t, interviewed: state.interviewedTitles, current: state.currentTitle, pagedAt: paged.get(prompt.id),
+          prompt, msgs, now: t, interviewed: state.interviewedTitles, current: state.currentTitle,
+          // «Далее» — один раз на подсказку в любом процессе (I2).
+          pagedAt: state.pagedPromptId === prompt.id ? state.pagedSnapshot : undefined,
+          canStart: state.interviewsInWindow < cfg.maxInterviewsPerWindow,
           getMessage: (id) => dialog.getMessage(id),
           history: (id) => dialog.history(id),
           press: (id, text) => dialog.pressButton(id, text),
@@ -591,10 +669,27 @@ async function converse(
           note(`блокировку перехватил другой экземпляр перед нажатием, ничего не нажато: ответов ${sentCount}`);
           return;
         }
+        if (step.kind === 'capped') {
+          // Ещё одно интервью было бы сверх потолка за окно (C2): как у ответов, до нового окна.
+          writeState({ ...readState(statePath), capTrippedAt: now() }, statePath);
+          note(`потолок ${cfg.maxInterviewsPerWindow} интервью за окно: выбор вакансии ${prompt.id} не нажат; до нового окна не отвечаю`);
+          return;
+        }
         pending = false;
         if (step.kind === 'done') {
           const s = readState(statePath);
-          writeState({ ...s, lastMessageId: Math.max(s.lastMessageId, prompt.id), ...(step.started ? { interviewEndedAt: 0 } : {}) }, statePath);
+          // Нажатая вакансия записывается сразу, не по началу интервью (C2): оно
+          // может назвать её иначе или не прийти вовсе. Нажатие — начатое
+          // интервью: считается в потолок, а его начало второй раз не считается.
+          const pressed: Partial<RunnerState> = step.pressed === undefined ? {} : {
+            currentTitle: step.pressed,
+            interviewedTitles: withInterviewed(s.interviewedTitles, step.pressed),
+            interviewsInWindow: s.interviewsInWindow + 1,
+            pressedPromptId: prompt.id,
+          };
+          writeState({
+            ...s, lastMessageId: Math.max(s.lastMessageId, prompt.id), ...(step.started ? { interviewEndedAt: 0 } : {}), ...pressed,
+          }, statePath);
           note(step.line);
           hold = 0;
           if (step.started) newInterview();
@@ -604,7 +699,7 @@ async function converse(
         // перечитывается следующим проходом, пока не станет можно жать.
         bump(Math.max(floor, ...msgs.filter((m) => m.id < prompt.id).map((m) => m.id)));
         if (step.kind === 'paged') {
-          paged.set(prompt.id, step.snapshot);
+          writeState({ ...readState(statePath), pagedPromptId: prompt.id, pagedSnapshot: step.snapshot }, statePath);
           note(step.line);
           lastActivity = now();
         } else if (step.until > 0) {
@@ -616,13 +711,7 @@ async function converse(
 
       const head = group[0];
       if (head !== undefined) {
-        // Начало интервью называет вакансию (G2): она уйдёт в пройденные, когда оно закончится.
-        const opening = group.findLast((m) => interviewTitle(m.text) !== null);
-        const title = opening === undefined ? null : interviewTitle(opening.text);
-        if (opening !== undefined && title !== null && title !== state.currentTitle) {
-          writeState({ ...readState(statePath), currentTitle: title }, statePath);
-          note(`начало интервью ${opening.id}: вакансия «${title}»`);
-        }
+        if (!countStarts(group)) return;
         // Прошлые интервью (старше суток, R14) — про другую вакансию: в
         // транскрипт идёт только текущий разговор (M3).
         const transcript = toTranscript((await dialog.history(0))

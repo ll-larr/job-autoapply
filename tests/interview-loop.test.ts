@@ -54,7 +54,7 @@ describe('сквозной прогон шести вопросов', () => {
     const dialog = fakeDialog();
     const statePath = join(mkdtempSync(join(tmpdir(), 'loop2-')), 'state.json');
     const logPath = join(dirname(statePath), 'run.log');
-    writeState({ lastMessageId: 6, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0, interviewEndedAt: 0, currentTitle: '', interviewedTitles: [] }, statePath);
+    writeState({ lastMessageId: 6, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0, interviewEndedAt: 0, currentTitle: '', interviewedTitles: [], interviewsInWindow: 0, lastStartId: 0, pressedPromptId: 0, pagedPromptId: 0, pagedSnapshot: '' }, statePath);
 
     for (const [i, text] of QUESTIONS.entries()) {
       const r = await answerOnce({
@@ -95,7 +95,7 @@ function harness(seed: DialogMessage[] = [], state?: Partial<RunnerState>) {
   const statePath = join(dir, 'interview-state.json');
   const logPath = join(dir, 'interview.log');
   const lockPath = join(dir, 'interview.lock');
-  if (state !== undefined) writeState({ lastMessageId: 0, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0, interviewEndedAt: 0, currentTitle: '', interviewedTitles: [], ...state }, statePath);
+  if (state !== undefined) writeState({ lastMessageId: 0, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0, interviewEndedAt: 0, currentTitle: '', interviewedTitles: [], interviewsInWindow: 0, lastStartId: 0, pressedPromptId: 0, pagedPromptId: 0, pagedSnapshot: '', ...state }, statePath);
   const t0 = Date.now();
   let clock = t0;
   const events: { at: number; run: () => void }[] = [];
@@ -1156,6 +1156,8 @@ describe('runInterview: выбор вакансии (G2)', () => {
     expect(h.generate.mock.calls.map((c) => c[0].question)).toEqual([start('Стажер системный аналитик')]);
     expect(h.dialog.sent).toHaveLength(1);
     expect(readState(h.statePath).currentTitle).toBe('Стажер системный аналитик');
+    // C2: нажатая вакансия сразу в пройденных; нажатие и его начало интервью — одно интервью за окно.
+    expect(readState(h.statePath)).toMatchObject({ interviewedTitles: ['стажер системный аналитик'], interviewsInWindow: 1 });
     expect(h.journal()).toMatch(/выбор вакансии \d+: нажата «Стажер системный аналитик»/);
     expect(h.journal()).not.toContain('Вижу, что вы откликнулись');
   });
@@ -1233,8 +1235,10 @@ describe('runInterview: выбор вакансии (G2)', () => {
       expect(q).not.toContain('Спасибо за интервью');
       expect(q).not.toContain('Спасибо за выбор вакансии');
     }
+    // C2: нажатая вакансия уходит в пройденные сразу при нажатии, а не в конце её интервью.
     expect(readState(h.statePath)).toMatchObject({
-      interviewEndedAt: 0, currentTitle: 'Стажер системный аналитик', interviewedTitles: ['бизнес-аналитик'], capTrippedAt: 0,
+      interviewEndedAt: 0, currentTitle: 'Стажер системный аналитик',
+      interviewedTitles: ['бизнес-аналитик', 'стажер системный аналитик'], capTrippedAt: 0, interviewsInWindow: 2,
     });
     expect(h.journal().match(/конец интервью/g)).toHaveLength(1);
   });
@@ -1251,7 +1255,10 @@ describe('runInterview: выбор вакансии (G2)', () => {
     expect(h.dialog.presses).toEqual([]);
     const questions = h.generate.mock.calls.map((c) => c[0].question);
     expect(questions).toEqual([start('Бизнес-аналитик'), start('Стажер системный аналитик')]);
-    expect(readState(h.statePath)).toMatchObject({ interviewEndedAt: 0, interviewedTitles: ['бизнес-аналитик'] });
+    // Начало интервью, выбранного ботом, пишет вакансию в пройденные сразу и считается в потолок (C2).
+    expect(readState(h.statePath)).toMatchObject({
+      interviewEndedAt: 0, interviewedTitles: ['бизнес-аналитик', 'стажер системный аналитик'], interviewsInWindow: 2,
+    });
   });
 
   it('подсказку поправили в «Спасибо за выбор…» за миг до нажатия — перечитана по id, не нажата', async () => {
@@ -1358,6 +1365,118 @@ describe('runInterview: выбор вакансии (G2)', () => {
     await h.run();
     expect(pushed).toBe(true);
     expect(h.dialog.presses).toEqual([]);
+  });
+
+  // C2: проба ревью — начало «на вакансию» не узнавалось, вакансия не записывалась,
+  // и следующая подсказка снова жала тот же вариант.
+  it('нажатая вакансия записывается сразу: начало «на вакансию» не мешает, второй раз она не жмётся (C2)', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push(PROMPT, { buttons: OPTIONS }));
+    h.dialog.onPress = (id, button) => {
+      h.dialog.edit(id, { text: CHOSEN, buttons: [] });
+      const title = button.replace(/^\d+\.\s*/, '');
+      later(h, 10_000, () => h.dialog.push(`Здравствуйте! Получил Ваш отклик на вакансию ${title}. Будет удобно ответить на вопросы?`));
+    };
+    // Первое интервью кончается на 10-й минуте, и бот снова присылает подсказку.
+    h.at(10 * MIN, () => { h.dialog.push(CLOSING); h.dialog.push(RATING, { buttons: STARS }); h.dialog.push(PROMPT, { buttons: OPTIONS }); });
+    await h.run();
+    expect(h.dialog.presses.map((p) => p.button)).toEqual(['1. Стажер системный аналитик', '2. Системный аналитик']);
+    expect(readState(h.statePath).interviewedTitles).toEqual(['стажер системный аналитик', 'системный аналитик']);
+  });
+
+  it('«Далее» жмётся один раз на подсказку — и в следующем процессе тоже (I2)', async () => {
+    // Бот на «Далее» страницу не меняет: без памяти каждый поллинг жал бы её снова.
+    const h = harness([msg(1, PROMPT, { hasButtons: true, buttons: OPTIONS, date: new Date(Date.now() - 10 * MIN) })],
+      { interviewedTitles: ALL_SEEN });
+    await h.run();
+    expect(h.dialog.presses.map((p) => p.button)).toEqual(['Далее']);
+    expect(readState(h.statePath)).toMatchObject({ pagedPromptId: 1, pagedSnapshot: OPTIONS.join('\n') });
+    await h.run({ now: () => h.now() + 4 * 60 * MIN });
+    expect(h.dialog.presses.map((p) => p.button)).toEqual(['Далее']);
+  });
+
+  // Живое наблюдение 2026-09-27 4:35: когда вакансия осталась одна, бот подсказку
+  // не шлёт — за оценкой сразу идёт начало нового интервью.
+  it('прощание, оценка и сразу начало нового интервью одной пачкой — начало отвечается, прощание нет', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push(start('Бизнес-аналитик')));
+    h.at(5 * MIN, () => { h.dialog.push(CLOSING); h.dialog.push(RATING, { buttons: STARS }); h.dialog.push(start('Data analyst')); });
+    await h.run();
+    expect(h.generate.mock.calls.map((c) => c[0].question)).toEqual([start('Бизнес-аналитик'), start('Data analyst')]);
+    expect(h.dialog.presses).toEqual([]);
+    expect(readState(h.statePath)).toMatchObject({
+      interviewEndedAt: 0, currentTitle: 'Data analyst', interviewedTitles: ['бизнес-аналитик', 'data analyst'], interviewsInWindow: 2,
+    });
+    expect(h.journal().match(/конец интервью/g)).toHaveLength(1);
+  });
+
+  it('после свежего конца «Спасибо за оценку!» — без ответа, а начало нового интервью в следующем поллинге — отвечается', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push(start('Бизнес-аналитик')));
+    h.at(5 * MIN, () => { h.dialog.push(CLOSING); h.dialog.push(RATING, { buttons: STARS }); });
+    await h.run();
+    expect(readState(h.statePath).interviewEndedAt).toBeGreaterThan(0);
+
+    h.dialog.push('Спасибо за оценку!');
+    await h.run({ now: () => h.now() + 30 * MIN });
+    expect(h.dialog.sent).toHaveLength(1);
+
+    h.dialog.push(start('Data analyst'));
+    await h.run({ now: () => h.now() + 4 * 60 * MIN });
+    expect(h.generate.mock.calls.map((c) => c[0].question)).toEqual([start('Бизнес-аналитик'), start('Data analyst')]);
+    expect(readState(h.statePath)).toMatchObject({ interviewEndedAt: 0, currentTitle: 'Data analyst' });
+  });
+
+  it('начало интервью с подвалом «сменить вакансию» — не служебная строка: отвечается', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push(`${start('Data analyst')} ${FOOTER}`));
+    await h.run();
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(readState(h.statePath).currentTitle).toBe('Data analyst');
+  });
+
+  it('начало интервью по уже пройденной вакансии отвечается и считается в потолок', async () => {
+    const h = harness([], { interviewedTitles: ['data analyst'] });
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push(start('Data analyst')));
+    await h.run();
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(readState(h.statePath)).toMatchObject({ interviewsInWindow: 1, interviewedTitles: ['data analyst'] });
+  });
+
+  it('седьмое начало интервью за окно — потолок: без ответа, capTrippedAt, строка в журнал (C2)', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push(start('Аналитик 1')));
+    for (let k = 2; k <= 7; k += 1) {
+      h.at((k - 1) * 10 * MIN, () => {
+        h.dialog.push(CLOSING);
+        h.dialog.push(RATING, { buttons: STARS });
+        h.dialog.push(start(`Аналитик ${k}`));
+      });
+    }
+    await h.run();
+    expect(CFG.maxInterviewsPerWindow).toBe(6);
+    expect(h.generate.mock.calls.map((c) => c[0].question)).toEqual([1, 2, 3, 4, 5, 6].map((k) => start(`Аналитик ${k}`)));
+    expect(h.dialog.sent).toHaveLength(6);
+    expect(readState(h.statePath)).toMatchObject({ interviewsInWindow: 6 });
+    expect(readState(h.statePath).capTrippedAt).toBeGreaterThan(0);
+    expect(h.journal()).toMatch(/потолок 6 интервью за окно/);
+  });
+
+  it('потолок интервью уже набран — подсказку не жмёт, capTrippedAt, строка в журнал (C2)', async () => {
+    const h = harness([msg(1, PROMPT, { hasButtons: true, buttons: OPTIONS, date: new Date(Date.now() - 10 * MIN) })],
+      { interviewsInWindow: 6 });
+    botAnswersPress(h);
+    await h.run();
+    expect(h.dialog.presses).toEqual([]);
+    expect(h.dialog.sent).toEqual([]);
+    expect(readState(h.statePath).capTrippedAt).toBeGreaterThan(0);
+    expect(h.journal()).toMatch(/потолок 6 интервью за окно/);
   });
 });
 

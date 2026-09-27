@@ -11,6 +11,7 @@ const CONFIG: GigarecruiterConfig = {
   replyDelaySec: [40, 120],
   maxReplyLength: 1500,
   maxRepliesPerSession: 12,
+  maxInterviewsPerWindow: 6,
   vpnService: 'HappService',
   vpnApp: 'D:\\Happ\\Happ.exe',
   sessionPath: 'data/telegram-interview.session',

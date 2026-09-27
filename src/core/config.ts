@@ -91,6 +91,13 @@ export interface GigarecruiterConfig {
    * отвечает на каждый наш ответ, два бота переписывались бы бесконечно.
    */
   maxRepliesPerSession: number;
+  /**
+   * Потолок интервью за одно окно (C2): каждое начало — нажатый нами вариант
+   * подсказки или начатое ботом само — считается; сверх него потолок
+   * срабатывает, как у ответов (capTrippedAt), до нового окна. Без него бот,
+   * который раз за разом начинает интервью заново, держал бы цикл вечно.
+   */
+  maxInterviewsPerWindow: number;
   /** Не задано — те же модели, что у писем. */
   models?: string[];
   /**
@@ -116,6 +123,7 @@ export const DEFAULT_GIGARECRUITER: Omit<GigarecruiterConfig, 'username'> = {
   replyDelaySec: [40, 120],
   maxReplyLength: 1500,
   maxRepliesPerSession: 12,
+  maxInterviewsPerWindow: 6,
   // Happ на машине владельца, снято 2026-09-26: служба HappService (happd.exe), GUI Happ.exe.
   vpnService: 'HappService',
   vpnApp: 'D:\\Happ\\Happ.exe',
@@ -141,7 +149,7 @@ export function resolveGigarecruiterConfig(config: Config): GigarecruiterConfig 
     const v: unknown = rest[k];
     if (typeof v !== 'string' || v.trim() === '') throw bad(k, 'если задан, должен быть непустой строкой');
   }
-  for (const k of ['windowMinutes', 'idleMinutes', 'pollHours', 'maxReplyLength', 'maxRepliesPerSession'] as const) {
+  for (const k of ['windowMinutes', 'idleMinutes', 'pollHours', 'maxReplyLength', 'maxRepliesPerSession', 'maxInterviewsPerWindow'] as const) {
     const v: unknown = rest[k];
     if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) throw bad(k, 'должен быть положительным числом');
   }
