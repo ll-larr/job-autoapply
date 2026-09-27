@@ -1240,6 +1240,20 @@ describe('runInterview: выбор вакансии (G2)', () => {
     expect(h.journal()).toMatch(/начало интервью \d+: вакансия «Data analyst»/);
   });
 
+  // R2-3: проба ревью — pressedPromptId снимается только более поздним
+  // началом интервью; нажатие, чей start не пришёл, переживало конец совсем
+  // другого интервью и уходило дальше без начала следующего окна.
+  it('конец интервью (finished) снимает брошенную метку нажатия, чей start не пришёл (R2-3)', async () => {
+    const h = harness([], { pressedPromptId: 999_999 });
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push(start('Бизнес-аналитик')));
+    h.at(5 * MIN, () => { h.dialog.push(CLOSING); h.dialog.push(RATING, { buttons: STARS }); h.dialog.push(PROMPT, { buttons: OPTIONS }); });
+    let afterEnd = -1;
+    h.at(7 * MIN, () => { afterEnd = readState(h.statePath).pressedPromptId; });
+    await h.run();
+    expect(afterEnd).toBe(0);
+  });
+
   it('живой конец: прощание, оценка и подсказка одной секундой — прощание без ответа, через 3 минуты жмёт вариант, новое интервью отвечается', async () => {
     const h = harness();
     const { promptId } = interviewThenEnd(h);

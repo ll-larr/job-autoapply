@@ -87,7 +87,11 @@ export interface RunnerState {
   lastStartId: number;
   /**
    * id подсказки, где мы нажали вариант, пока его начало интервью не пришло
-   * (C2): нажатие уже посчитано, и это начало второй раз не считается. 0 — нет.
+   * (C2): нажатие уже посчитано, и это начало второй раз не считается. 0 —
+   * нет. Кроме более позднего начала (countStarts), снимается новым окном
+   * (openWindow) и концом интервью (finished): начало нажатого варианта
+   * может не прийти вовсе, и метка не должна переживать ни то, ни другое —
+   * иначе она «предоплатит» не связанный с этим нажатием старт (R2-3).
    */
   pressedPromptId: number;
   /**
@@ -145,10 +149,16 @@ export function writeState(s: RunnerState, path: string = STATE_PATH): void {
 /**
  * Новое окно — новый разговор: запомненные потолок (FR-6, C2) и конец
  * интервью (FU-9) снимаются, счёт интервью за окно начинается с нуля.
+ * pressedPromptId тоже снимается (R2-3): без него нажатие, чей start не
+ * пришёл, переживало бы окно и «предоплатило» бы первый старт следующего —
+ * тот не посчитался бы в потолок. «Далее» (pagedPromptId/pagedSnapshot) новое
+ * окно не трогает — это метка страницы конкретной подсказки, а не окна.
  */
 export function openWindow(now: number, minutes: number, path: string = STATE_PATH): void {
   const s = readState(path);
-  writeState({ ...s, windowUntil: now + minutes * 60_000, capTrippedAt: 0, interviewEndedAt: 0, interviewsInWindow: 0 }, path);
+  writeState({
+    ...s, windowUntil: now + minutes * 60_000, capTrippedAt: 0, interviewEndedAt: 0, interviewsInWindow: 0, pressedPromptId: 0,
+  }, path);
 }
 
 /**
@@ -474,9 +484,14 @@ async function converse(
     endHold = 0;
     lastActivity = now();
   };
-  /** Интервью закончилось: его вакансия — в пройденные (G2). */
-  const finished = (s: RunnerState): Pick<RunnerState, 'currentTitle' | 'interviewedTitles'> =>
-    ({ currentTitle: '', interviewedTitles: withInterviewed(s.interviewedTitles, s.currentTitle) });
+  /**
+   * Интервью закончилось: его вакансия — в пройденные (G2). pressedPromptId
+   * снимается и здесь (R2-3): если start нажатого варианта так и не пришёл,
+   * метка не должна переживать конец интервью и «предоплачивать» будущий
+   * старт, с этим нажатием не связанный.
+   */
+  const finished = (s: RunnerState): Pick<RunnerState, 'currentTitle' | 'interviewedTitles' | 'pressedPromptId'> =>
+    ({ currentTitle: '', interviewedTitles: withInterviewed(s.interviewedTitles, s.currentTitle), pressedPromptId: 0 });
   /**
    * Начала интервью в группе (G2, C2), каждое один раз (lastStartId): вакансия —
    * в текущую и сразу в пройденные, начало — в счёт интервью за окно. Начало

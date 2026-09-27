@@ -132,7 +132,7 @@ describe('состояние', () => {
     expect(readState(goodPath)).toMatchObject(good);
   });
 
-  it('openWindow обнуляет счётчик интервью за окно, а метки нажатий и «Далее» не трогает (C2, I2)', () => {
+  it('openWindow обнуляет счётчик интервью за окно и pressedPromptId, а «Далее» и lastStartId не трогает (C2, I2, R2-3)', () => {
     const p = join(dirname(path), 'window-choice.json');
     writeState({
       lastMessageId: 42, windowUntil: 100, lastPollAt: 50, capTrippedAt: 777, interviewEndedAt: 888, currentTitle: '', interviewedTitles: [],
@@ -140,8 +140,20 @@ describe('состояние', () => {
     }, p);
     openWindow(1_000_000, 120, p);
     expect(readState(p)).toMatchObject({
-      interviewsInWindow: 0, capTrippedAt: 0, lastStartId: 71, pressedPromptId: 70, pagedPromptId: 69, pagedSnapshot: 'Далее',
+      interviewsInWindow: 0, capTrippedAt: 0, lastStartId: 71, pressedPromptId: 0, pagedPromptId: 69, pagedSnapshot: 'Далее',
     });
+  });
+
+  // R2-3: проба ревью — нажатие, чей start не пришёл, переживало новое окно, и
+  // первый старт следующего окна ошибочно не считался (уже «предоплачен»).
+  it('openWindow снимает pressedPromptId — нажатие без начала интервью не переживает новое окно (R2-3)', () => {
+    const p = join(dirname(path), 'pressed-choice.json');
+    writeState({
+      lastMessageId: 10, windowUntil: 100, lastPollAt: 50, capTrippedAt: 0, interviewEndedAt: 0, currentTitle: 'Data analyst', interviewedTitles: [],
+      interviewsInWindow: 1, lastStartId: 0, pressedPromptId: 10, pagedPromptId: 0, pagedSnapshot: '',
+    }, p);
+    openWindow(1_000_000, 120, p);
+    expect(readState(p).pressedPromptId).toBe(0);
   });
 
   it('writeState сохраняет interviewEndedAt, openWindow его снимает и остальное не трогает (FU-9)', () => {

@@ -141,10 +141,11 @@ export function isChoiceMade(m: DialogMessage): boolean {
 }
 
 /**
- * Название из хвоста после «на позицию» (C2): до перевода строки или до точки,
- * за которой пробел и заглавная (следующее предложение) либо конец строки.
- * Точка в скобках или кавычках («(г. Москва)», «"Аналитик. Данные"») и после
- * сокращения в одну-две строчные буквы («г. Москва») название не режет.
+ * Название из хвоста после «на позицию» (C2): до перевода строки, до «!» или
+ * «?» (режут сразу, R2-2: «…Data analyst! Будет удобно?»), либо до точки, за
+ * которой пробел и заглавная (следующее предложение) либо конец строки. Знак
+ * в скобках или кавычках («(г. Москва)», «"Аналитик. Данные"») не режет; точка
+ * после сокращения в одну-две строчные буквы («г. Москва») тоже не режет.
  */
 function cutTitle(rest: string): string {
   const line = rest.replace(/<[^>]*>/g, '').split('\n')[0] ?? '';
@@ -158,7 +159,9 @@ function cutTitle(rest: string): string {
     else if (c === '«') guillemets += 1;
     else if (c === '»') guillemets = Math.max(0, guillemets - 1);
     else if (c === '"') straight = !straight;
-    else if (c === '.' && parens === 0 && guillemets === 0 && !straight) {
+    else if ((c === '!' || c === '?') && parens === 0 && guillemets === 0 && !straight) {
+      return line.slice(0, i);
+    } else if (c === '.' && parens === 0 && guillemets === 0 && !straight) {
       const after = line.slice(i + 1);
       const abbreviation = /(?:^|[^\p{L}])\p{Ll}{1,2}$/u.test(line.slice(0, i));
       if (after.trim() === '' || (/^\s+\p{Lu}/u.test(after) && !abbreviation)) return line.slice(0, i);
