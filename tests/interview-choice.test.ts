@@ -174,7 +174,7 @@ describe('isInterviewStart', () => {
 
 describe('normalizeTitle и withInterviewed', () => {
   it('нижний регистр, один пробел, без «N. », без кавычек, ё как е', () => {
-    expect(normalizeTitle('1. Стажер  системный аналитик')).toBe('стажер системный аналитик');
+    expect(normalizeTitle('1. Стажер  системный\u00A0аналитик')).toBe('стажер системный аналитик');
     expect(normalizeTitle('  12) «Стажёр» системный аналитик ')).toBe('стажер системный аналитик');
     expect(normalizeTitle('Системный аналитик (ОКТУС)')).toBe('системный аналитик (октус)');
   });
