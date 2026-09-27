@@ -4,19 +4,24 @@
  * скрипт их никуда не пишет. Сохраняется только строка сессии: по умолчанию
  * в data/telegram.session (рабочий аккаунт), с `-- --session <путь>` — в
  * указанный файл, например data/telegram-interview.session для личного
- * аккаунта, куда пишет ГигаРекрутёр (G1).
+ * аккаунта, куда пишет ГигаРекрутёр (G1). Живую рабочую сессию скрипт не
+ * перезаписывает без `-- --force`, а флаг без «--» (его забирает npm) — отказ (I1).
  */
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { TelegramClient, sessions } from 'telegram';
 import { discoverSocksProxy } from '../src/core/proxy.js';
-import { readTelegramKeys, writeSession, parseLoginArgs } from '../src/telegram/session.js';
+import { readTelegramKeys, readSession, writeSession, parseLoginArgs, loginRefusal } from '../src/telegram/session.js';
 import type { LogLevel } from 'telegram/extensions/Logger.js';
 
 try { process.loadEnvFile('.env'); } catch { /* ключи могут быть в окружении */ }
 
 const args = parseLoginArgs(process.argv.slice(2));
 if ('error' in args) { console.error(args.error); process.exit(1); }
+// I1: флаг, проглоченный npm, или живая рабочая сессия без --force — отказ до
+// любого вопроса про телефон: иначе личный аккаунт молча лёг бы в рабочую сессию.
+const refusal = loginRefusal(args, process.env, (p) => readSession(p) !== null);
+if (refusal !== null) { console.error(refusal); process.exit(1); }
 const sessionPath = args.sessionPath;
 
 const keys = readTelegramKeys();
