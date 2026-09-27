@@ -13,6 +13,7 @@ const CONFIG: GigarecruiterConfig = {
   maxRepliesPerSession: 12,
   vpnService: 'HappService',
   vpnApp: 'D:\\Happ\\Happ.exe',
+  sessionPath: 'data/telegram-interview.session',
 };
 
 describe('isSberVacancy', () => {

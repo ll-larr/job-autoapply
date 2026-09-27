@@ -6,6 +6,7 @@ import { readFacts } from './facts.js';
 import { isUp, restart, defaultVpnDeps, sleep, type VpnTarget } from './vpn.js';
 import type { GigarecruiterConfig } from './config.js';
 import { acquireLock, releaseLock, refreshLock, LOCK_PATH } from './interview-lock.js';
+import { readSession } from '../telegram/session.js';
 
 /**
  * Цикл автоответа (спека 2026-09-25, 3 и 7; поправки контроллера R6–R15).
@@ -223,6 +224,8 @@ export interface RunOptions {
   lockPath?: string;
   pid?: number;
   isAlive?: (pid: number) => boolean;
+  /** Есть ли сессия личного аккаунта (G1). Не задано — файл `config.sessionPath` непустой. */
+  hasSession?: (path: string) => boolean;
 }
 
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -255,6 +258,13 @@ export async function runInterview(opts: RunOptions): Promise<void> {
 
   let dialog: TgDialog | null = null;
   try {
+    // Интервью идёт с сессии личного аккаунта (G1), не с рабочей. Пока владелец
+    // в неё не вошёл, ни VPN, ни Telegram не трогаем: одна строка и выход.
+    const sessionPath = opts.config.sessionPath;
+    if (!(opts.hasSession ?? ((p: string) => readSession(p) !== null))(sessionPath)) {
+      note(`нет сессии личного аккаунта — войди: npm run tg:login -- --session ${sessionPath}`);
+      return;
+    }
     // Потолок ответов сработал, нового окна с тех пор не было (FR-6): ни
     // VPN, ни Telegram не трогаем — отвечать всё равно не будем.
     const initial = readState(statePath);
@@ -280,7 +290,7 @@ export async function runInterview(opts: RunOptions): Promise<void> {
       }
       note('VPN поднят');
     }
-    const opened = await (opts.openDialog ?? openDialog)(opts.config.username);
+    const opened = await (opts.openDialog ?? openDialog)(opts.config.username, { sessionPath });
     if (!opened.ok) {
       note(`диалог не открылся: ${opened.reason}`);
       return;

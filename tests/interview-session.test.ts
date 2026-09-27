@@ -1,6 +1,6 @@
 import { Api } from 'telegram';
 import { describe, it, expect } from 'vitest';
-import { fakeDialog, toDialogMessages } from '../src/telegram/interview-session.js';
+import { fakeDialog, toDialogMessages, openFailureReason } from '../src/telegram/interview-session.js';
 
 describe('fakeDialog', () => {
   it('history отдаёт только сообщения новее minId, от старых к новым', async () => {
@@ -89,5 +89,20 @@ describe('toDialogMessages', () => {
 
   it('значения, которые вообще не Api.Message (null, объект, строка), не роняют функцию', () => {
     expect(toDialogMessages([null, undefined, {}, 'строка', 42])).toEqual([]);
+  });
+});
+
+describe('openFailureReason (G1)', () => {
+  it('протухшая или пустая сессия интервью — подсказка входа именно в неё, а не в рабочую', () => {
+    const path = 'data/telegram-interview.session';
+    for (const reason of ['auth', 'no_session'] as const) {
+      const r = openFailureReason({ reason, message: 'сессия Telegram протухла — перелогинься: npm run tg:login' }, path);
+      expect(r).toContain('npm run tg:login -- --session data/telegram-interview.session');
+    }
+  });
+
+  it('VPN и ключи — причина как есть', () => {
+    expect(openFailureReason({ reason: 'no_proxy', message: 'VPN выключен' }, 'x.session')).toBe('VPN выключен');
+    expect(openFailureReason({ reason: 'no_keys', message: 'нет TG_API_ID' }, 'x.session')).toBe('нет TG_API_ID');
   });
 });

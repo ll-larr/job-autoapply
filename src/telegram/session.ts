@@ -20,6 +20,34 @@ export function readTelegramKeys(env: NodeJS.ProcessEnv = process.env)
   return { apiId, apiHash };
 }
 
+/**
+ * Аргументы `npm run tg:login` (G1). Без них — рабочая сессия, как раньше;
+ * `--session <путь>` или `--session=<путь>` — другой файл, например сессия
+ * личного аккаунта для интервью. Незнакомое — ошибка: опечатка во флаге иначе
+ * молча перезаписала бы рабочую сессию личным аккаунтом.
+ */
+export function parseLoginArgs(argv: string[]): { sessionPath: string } | { error: string } {
+  const usage = 'использование: npm run tg:login [-- --session <путь к файлу сессии>]';
+  let sessionPath = SESSION_PATH;
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i]!;
+    let value: string | undefined;
+    if (a === '--session') {
+      value = argv[i + 1];
+      i += 1;
+    } else if (a.startsWith('--session=')) {
+      value = a.slice('--session='.length);
+    } else {
+      return { error: `непонятный аргумент «${a}» — ${usage}` };
+    }
+    if (value === undefined || value.trim() === '' || value.startsWith('--')) {
+      return { error: `после --session нужен путь к файлу — ${usage}` };
+    }
+    sessionPath = value.trim();
+  }
+  return { sessionPath };
+}
+
 export function readSession(path: string = SESSION_PATH): string | null {
   if (!existsSync(path)) return null;
   const s = readFileSync(path, 'utf8').trim();

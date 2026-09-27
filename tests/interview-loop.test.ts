@@ -133,6 +133,8 @@ function harness(seed: DialogMessage[] = [], state?: Partial<RunnerState>) {
         lockPath,
         pid: 4242,
         isAlive: () => false,
+        // Сессия личного аккаунта есть (G1): настоящий data/ тесты не трогают.
+        hasSession: () => true,
         ...over,
       });
     },
@@ -1067,6 +1069,38 @@ describe('runInterview: один экземпляр и уборка', () => {
     await h.run();
     expect(h.journal()).toMatch(/диалог не открылся: сессия протухла/);
     expect(existsSync(h.lockPath)).toBe(false);
+  });
+});
+
+describe('runInterview: отдельная сессия личного аккаунта (G1)', () => {
+  it('файла сессии нет — одна строка с подсказкой, ни VPN, ни Telegram, блокировка снята', async () => {
+    const h = harness([msg(1, 'Вопрос')]);
+    const missing = join(dirname(h.statePath), 'нет.session');
+    const isUp = vi.fn(async () => true);
+    await h.run({ config: { ...CFG, sessionPath: missing }, hasSession: undefined, vpn: { isUp, restart: async () => true } });
+    expect(h.openDialog).not.toHaveBeenCalled();
+    expect(isUp).not.toHaveBeenCalled();
+    expect(h.generate).not.toHaveBeenCalled();
+    const lines = h.journal().trim().split('\n').map((l) => l.replace(/^\S+ /, ''));
+    expect(lines).toEqual([`нет сессии личного аккаунта — войди: npm run tg:login -- --session ${missing}`]);
+    expect(existsSync(h.lockPath)).toBe(false);
+  });
+
+  it('путь по умолчанию — ровно та команда входа, что в спеке', async () => {
+    const h = harness([msg(1, 'Вопрос')]);
+    await h.run({ hasSession: () => false });
+    expect(CFG.sessionPath).toBe('data/telegram-interview.session');
+    expect(h.journal()).toContain('нет сессии личного аккаунта — войди: npm run tg:login -- --session data/telegram-interview.session');
+    expect(h.openDialog).not.toHaveBeenCalled();
+  });
+
+  it('файл сессии есть — диалог открывается именно с ним, а не с рабочей сессией', async () => {
+    const h = harness([msg(1, 'Вопрос')]);
+    const personal = join(dirname(h.statePath), 'personal.session');
+    writeFileSync(personal, '1BVtsOK-fake', 'utf8');
+    await h.run({ config: { ...CFG, sessionPath: personal }, hasSession: undefined });
+    expect(h.openDialog).toHaveBeenCalledWith('Giga_recruiter_bot', { sessionPath: personal });
+    expect(h.dialog.sent).toHaveLength(1);
   });
 });
 

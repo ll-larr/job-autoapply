@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { readTelegramKeys, readSession, writeSession } from '../src/telegram/session.js';
+import { readTelegramKeys, readSession, writeSession, parseLoginArgs, SESSION_PATH } from '../src/telegram/session.js';
 
 describe('readTelegramKeys', () => {
   it('оба ключа — числовой id и hash', () => {
@@ -32,5 +32,32 @@ describe('readSession / writeSession', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'jaa-tg-')), 'sub', 'telegram.session');
     writeSession('1BVtsOK…', path);
     expect(readSession(path)).toBe('1BVtsOK…');
+  });
+});
+
+describe('parseLoginArgs (G1: tg:login пишет и отдельную сессию личного аккаунта)', () => {
+  it('без аргументов — рабочая сессия, как раньше', () => {
+    expect(parseLoginArgs([])).toEqual({ sessionPath: SESSION_PATH });
+    expect(SESSION_PATH).toBe('data/telegram.session');
+  });
+
+  it('--session путь и --session=путь — указанный файл', () => {
+    expect(parseLoginArgs(['--session', 'data/telegram-interview.session']))
+      .toEqual({ sessionPath: 'data/telegram-interview.session' });
+    expect(parseLoginArgs(['--session=data/telegram-interview.session']))
+      .toEqual({ sessionPath: 'data/telegram-interview.session' });
+  });
+
+  it('--session без пути, пустой путь или флаг вместо пути — ошибка с подсказкой', () => {
+    for (const argv of [['--session'], ['--session', ''], ['--session='], ['--session', '--other']]) {
+      const r = parseLoginArgs(argv);
+      expect('error' in r && r.error).toMatch(/--session/);
+    }
+  });
+
+  it('незнакомый аргумент — ошибка, а не молчаливая запись в рабочую сессию', () => {
+    const r = parseLoginArgs(['data/telegram-interview.session']);
+    expect('error' in r && r.error).toMatch(/data\/telegram-interview\.session/);
+    expect('error' in parseLoginArgs(['--sesion', 'x'])).toBe(true);
   });
 });

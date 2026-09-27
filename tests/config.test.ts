@@ -246,6 +246,21 @@ describe('resolveGigarecruiterConfig', () => {
     expect(resolveGigarecruiterConfig(base({ ...minimal, replyDelaySec: [0, 0] })).replyDelaySec).toEqual([0, 0]);
   });
 
+  it('сессия интервью по умолчанию — отдельный файл личного аккаунта, не рабочая сессия (G1)', () => {
+    const r = resolveGigarecruiterConfig(base(minimal));
+    expect(r.sessionPath).toBe('data/telegram-interview.session');
+    expect(DEFAULT_GIGARECRUITER.sessionPath).toBe('data/telegram-interview.session');
+    expect(r.sessionPath).not.toBe('data/telegram.session');
+  });
+
+  it('sessionPath из блока перекрывает умолчание; пустой или нестроковый — отказ (G1)', () => {
+    expect(resolveGigarecruiterConfig(base({ ...minimal, sessionPath: 'D:\\tg\\personal.session' })).sessionPath)
+      .toBe('D:\\tg\\personal.session');
+    expect(() => resolveGigarecruiterConfig(base({ ...minimal, sessionPath: ' ' }))).toThrow(/sessionPath/);
+    expect(() => resolveGigarecruiterConfig(base({ ...minimal, sessionPath: 5 }))).toThrow(/sessionPath/);
+    expect(() => resolveGigarecruiterConfig(base({ ...minimal, sessionPath: null }))).toThrow(/sessionPath/);
+  });
+
   it('пустой models — как незаданный, кривой — отказ', () => {
     expect(resolveGigarecruiterConfig(base({ ...minimal, models: [] })).models).toBeUndefined();
     expect(resolveGigarecruiterConfig(base({ ...minimal, models: ['x/y'] })).models).toEqual(['x/y']);
@@ -262,6 +277,7 @@ describe('resolveGigarecruiterConfig', () => {
     expect(r.windowMinutes).toBe(120);
     expect(r.idleMinutes).toBe(10);
     expect(c.gigarecruiter?.maxRepliesPerSession).toBe(12);
+    expect(c.gigarecruiter?.sessionPath).toBe('data/telegram-interview.session');
   });
 
   it('loadConfig принимает config.json с новым блоком', () => {

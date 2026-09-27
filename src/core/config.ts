@@ -100,6 +100,13 @@ export interface GigarecruiterConfig {
   vpnService: string;
   /** GUI клиента VPN: запускается после старта службы, если его нет среди процессов. */
   vpnApp: string;
+  /**
+   * Сессия Telegram, с которой идёт интервью (G1). ГигаРекрутёр пишет в личный
+   * аккаунт владельца, а `data/telegram.session` — рабочий аккаунт, им пользуется
+   * TelegramAdapter (поиск по каналам, первые письма рекрутёрам). Поэтому у
+   * интервью своя сессия: `npm run tg:login -- --session <путь>`.
+   */
+  sessionPath: string;
 }
 
 export const DEFAULT_GIGARECRUITER: Omit<GigarecruiterConfig, 'username'> = {
@@ -112,6 +119,8 @@ export const DEFAULT_GIGARECRUITER: Omit<GigarecruiterConfig, 'username'> = {
   // Happ на машине владельца, снято 2026-09-26: служба HappService (happd.exe), GUI Happ.exe.
   vpnService: 'HappService',
   vpnApp: 'D:\\Happ\\Happ.exe',
+  // Личный аккаунт владельца (G1); рабочий — data/telegram.session.
+  sessionPath: 'data/telegram-interview.session',
 };
 
 /**
@@ -128,7 +137,7 @@ export function resolveGigarecruiterConfig(config: Config): GigarecruiterConfig 
   const bad = (field: string, want: string): Error => new Error(`config.json: gigarecruiter.${field} ${want}`);
   if (typeof g.username !== 'string' || g.username.trim() === '') throw bad('username', 'обязателен — username бота без @');
   const { models, ...rest } = { ...DEFAULT_GIGARECRUITER, ...g } as GigarecruiterConfig;
-  for (const k of ['vpnService', 'vpnApp'] as const) {
+  for (const k of ['vpnService', 'vpnApp', 'sessionPath'] as const) {
     const v: unknown = rest[k];
     if (typeof v !== 'string' || v.trim() === '') throw bad(k, 'если задан, должен быть непустой строкой');
   }

@@ -23,7 +23,18 @@
 переписываться с другим ботом. Второй бот владельца до ГигаРекрутёра не
 достучится никогда, при любом коде. Это то же ограничение, что уже записано в
 `docs/telegram-bot.md`. Единственный работающий транспорт — user-сессия MTProto
-(`src/telegram/gramjs.ts`), она уже стоит и авторизована.
+(`src/telegram/gramjs.ts`).
+
+**Отдельная сессия личного аккаунта (G1, 2026-09-27).** ГигаРекрутёр пишет в
+личный аккаунт владельца (`@ll_larr`), а `data/telegram.session` авторизована
+рабочим аккаунтом `@HIRE_agent`: с неё `TelegramAdapter` ищет вакансии по
+каналам и пишет рекрутёрам первым, и она остаётся рабочей. Интервью идёт со
+своей сессии личного аккаунта — файл `gigarecruiter.sessionPath`, по умолчанию
+`data/telegram-interview.session`. Вход в неё — руками владельца:
+`npm run tg:login -- --session data/telegram-interview.session` (без аргумента
+`tg:login` по-прежнему пишет рабочую сессию). Пока файла нет, каждый запуск
+пишет в журнал одну строку «нет сессии личного аккаунта — войди: …» и
+выходит, не трогая ни VPN, ни Telegram.
 
 **Охват — один username.** Белый список из одного бота. Ни живым рекрутёрам, ни
 другим скрининг-ботам эта машина не отвечает.
@@ -106,7 +117,7 @@
 | `src/core/facts.ts` | читает `data/facts.md`, отдаёт текст и белый список чисел | — |
 | `src/core/interview.ts` | сборка промпта, перебор моделей, валидатор | `facts.ts`, `openrouter.ts`, `letter.ts` |
 | `src/core/vpn.ts` | статус VPN и рестарт его службы (`sc.exe stop/start`, с 2026-09-26 — Happ) | `proxy.ts` |
-| `src/telegram/interview-session.ts` | подписка на входящие от одного peer, история чата, `setTyping`, отправка | `gramjs.ts`, `types.ts` |
+| `src/telegram/interview-session.ts` | подписка на входящие от одного peer, история чата, `setTyping`, отправка; открывается с сессии личного аккаунта (`gigarecruiter.sessionPath`, G1) | `gramjs.ts`, `types.ts` |
 | `src/core/interview-runner.ts` | окно, тишина, поллинг, состояние, повторы | всё выше |
 
 Границы жёсткие: `interview.ts` ничего не знает про Telegram,
@@ -217,7 +228,9 @@
 - `FLOOD_WAIT` — уважаем, потолок `MAX_FLOOD_WAIT_S` уже есть в
   `src/adapters/telegram.ts`.
 - Сессия протухла — остановка цикла и строка в `data/interview.log`. Лечится
-  только руками: `npm run tg:login`. Владельцу никто об этом не сообщает —
+  только руками: `npm run tg:login -- --session data/telegram-interview.session`
+  (сессия личного аккаунта, G1; журнал называет именно её файл, чтобы вход не
+  перезаписал рабочую сессию). Владельцу никто об этом не сообщает —
   см. раздел 10, это принятый риск.
 - Кнопки и клавиатуры в чате игнорируются всегда. Выбор вакансии уже определён
   откликом, оценка бота звёздами — дело владельца, не машины.
@@ -237,10 +250,15 @@
     "maxReplyLength": 1500,
     "models": ["..."],
     "vpnService": "HappService",
-    "vpnApp": "D:\\Happ\\Happ.exe"
+    "vpnApp": "D:\\Happ\\Happ.exe",
+    "sessionPath": "data/telegram-interview.session"
   }
 }
 ```
+
+`sessionPath` — сессия личного аккаунта, с которой идёт интервью (G1, см. 1);
+необязательно, умолчание — `data/telegram-interview.session`. Рабочая сессия
+`data/telegram.session` интервью не касается.
 
 Рабочий клиент — Happ (с 2026-09-26, раньше — v2RayTun): служба
 `HappService` и GUI `D:\Happ\Happ.exe`. Оба поля необязательны, это и есть

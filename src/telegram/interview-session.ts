@@ -67,11 +67,30 @@ export function toDialogMessages(items: unknown[]): DialogMessage[] {
   return out;
 }
 
+/**
+ * Причина, по которой диалог не открылся, для журнала (G1). Общая подсказка
+ * openTelegram — «npm run tg:login» без аргументов, то есть вход в рабочую
+ * сессию; последовав ей, владелец перезаписал бы рабочий аккаунт личным.
+ * Для сессии интервью подсказка называет её файл.
+ */
+export function openFailureReason(
+  failure: { reason: 'no_keys' | 'no_session' | 'no_proxy' | 'auth'; message: string },
+  sessionPath: string | undefined,
+): string {
+  if (sessionPath === undefined || (failure.reason !== 'auth' && failure.reason !== 'no_session')) return failure.message;
+  return `${failure.message} (это сессия личного аккаунта: npm run tg:login -- --session ${sessionPath})`;
+}
+
+/**
+ * `sessionPath` — сессия личного аккаунта владельца (G1): ГигаРекрутёр пишет
+ * туда, а не в рабочий аккаунт `data/telegram.session`.
+ */
 export async function openDialog(
   username: string,
+  opts: { sessionPath?: string } = {},
 ): Promise<{ ok: true; dialog: TgDialog } | { ok: false; reason: string }> {
-  const opened = await openTelegram();
-  if (!opened.ok) return { ok: false, reason: opened.message };
+  const opened = await openTelegram({ sessionPath: opts.sessionPath });
+  if (!opened.ok) return { ok: false, reason: openFailureReason(opened, opts.sessionPath) };
   const client = opened.client;
   let peer: Api.TypeInputPeer;
   try {
