@@ -10,6 +10,10 @@ import { LOCK_MAX_AGE_MS } from '../src/core/interview-lock.js';
 import { DEFAULT_GIGARECRUITER, type GigarecruiterConfig } from '../src/core/config.js';
 import type { Turn } from '../src/core/interview.js';
 
+// Цикл гоняет сотни проходов на фейковых часах: под нагрузкой всего набора
+// отдельный тест временами не укладывается в 5 с по умолчанию. Только этот файл.
+vi.setConfig({ testTimeout: 20_000 });
+
 // Реальные вопросы живого интервью ГигаРекрутёра 2026-09-15.
 const QUESTIONS = [
   'Почему сейчас рассматриваете предложения о работе?',
