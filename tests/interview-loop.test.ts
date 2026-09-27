@@ -7,12 +7,16 @@ import {
   answerOnce, readState, writeState, openWindow, runInterview, backoffFor, POLL_MS, type RunnerState, type RunOptions,
 } from '../src/core/interview-runner.js';
 import { LOCK_MAX_AGE_MS } from '../src/core/interview-lock.js';
+import { CHOICE_GRACE_MS } from '../src/core/interview-choice.js';
 import { DEFAULT_GIGARECRUITER, type GigarecruiterConfig } from '../src/core/config.js';
 import type { Turn } from '../src/core/interview.js';
 
 // Цикл гоняет сотни проходов на фейковых часах: под нагрузкой всего набора
 // отдельный тест временами не укладывается в 5 с по умолчанию. Только этот файл.
 vi.setConfig({ testTimeout: 20_000 });
+
+/** M1: после свежего конца без подсказки сессия ждёт её столько, потом выходит. */
+const END_HOLD = CHOICE_GRACE_MS + 30_000;
 
 // Реальные вопросы живого интервью ГигаРекрутёра 2026-09-15.
 const QUESTIONS = [
@@ -410,9 +414,10 @@ describe('runInterview: потолок ответов и конец интерв
     expect(rating.text).toBe('Оцените собеседование');
     expect(readState(h.statePath).lastMessageId).toBe(rating.id);
     expect(h.journal().match(/конец интервью/g)).toHaveLength(1);
-    // Свежий конец (оценка пришла в текущем окне) заканчивает сессию сразу, хоть
-    // окно и открыто, и запоминается до нового окна (FU-9).
-    expect(h.now()).toBe(h.t0 + 5 * MIN);
+    // Свежий конец (оценка пришла в текущем окне) заканчивает сессию, хоть окно и
+    // открыто, и запоминается до нового окна (FU-9). M1: сначала сессия держится
+    // END_HOLD — вдруг подсказка выбора пришла отдельной пачкой.
+    expect(h.now()).toBe(h.t0 + 5 * MIN + END_HOLD);
     expect(readState(h.statePath).interviewEndedAt).toBe(h.t0 + 5 * MIN);
     // Обычный конец интервью — не потолок: следующий отклик отвечается как обычно.
     expect(readState(h.statePath).capTrippedAt).toBe(0);
@@ -459,8 +464,22 @@ describe('runInterview: конец интервью виден и новому �
     expect(h.generate).not.toHaveBeenCalled();
     expect(readState(h.statePath).lastMessageId).toBe(4);
     expect(h.journal().match(/конец интервью/g)).toHaveLength(1);
-    expect(h.now()).toBe(h.t0);
+    // Оценка только что пришла: процесс ждёт подсказку END_HOLD от её даты (M1).
+    expect(h.now()).toBe(h.t0 + END_HOLD);
     expect(readState(h.statePath).capTrippedAt).toBe(0);
+  });
+
+  it('конец найден поллингом через два часа после оценки — сессия не держится, выход сразу (M1)', async () => {
+    const h = harness([
+      msg(1, 'Почему ищете работу?', { date: ago(2 * 60 * MIN + 10 * MIN) }),
+      msg(2, 'Хочу больше масштаба.', { out: true, date: ago(2 * 60 * MIN + 5 * MIN) }),
+      msg(3, 'Спасибо за интервью!', { date: ago(2 * 60 * MIN) }),
+      msg(4, 'Оцените собеседование', { hasButtons: true, date: ago(2 * 60 * MIN) }),
+    ], { lastMessageId: 2, windowUntil: Date.now() - 60 * MIN });
+    await h.run();
+    expect(h.dialog.sent).toEqual([]);
+    expect(h.journal()).toMatch(/конец интервью/);
+    expect(h.now()).toBe(h.t0);
   });
 
   it('(a) то же, когда метка стоит на вопросе, а наш ответ ещё в пачке', async () => {
@@ -492,8 +511,8 @@ describe('runInterview: конец интервью виден и новому �
     const rating = (await h.dialog.history(0)).at(-1)!;
     expect(readState(h.statePath).lastMessageId).toBe(rating.id);
     expect(h.journal().match(/конец интервью/g)).toHaveLength(1);
-    // Оценка пришла после переоткрытия окна — свежий конец: выход сразу (FU-9).
-    expect(h.now()).toBe(h.t0 + 5 * MIN);
+    // Оценка пришла после переоткрытия окна — свежий конец: выход после END_HOLD (FU-9, M1).
+    expect(h.now()).toBe(h.t0 + 5 * MIN + END_HOLD);
     expect(readState(h.statePath).interviewEndedAt).toBe(h.t0 + 5 * MIN);
     expect(readState(h.statePath).capTrippedAt).toBe(0);
   });
@@ -706,10 +725,10 @@ describe('runInterview: запомненный конец интервью (FU-9
     return h;
   }
 
-  it('свежий конец в окне: ничего не уходит, interviewEndedAt запомнен, сессия выходит сразу', async () => {
+  it('свежий конец в окне: ничего не уходит, interviewEndedAt запомнен, сессия выходит после выдержки подсказки (M1)', async () => {
     const h = await endedInterview();
     expect(h.dialog.sent).toHaveLength(1);
-    expect(h.now()).toBe(h.t0 + 5 * MIN);
+    expect(h.now()).toBe(h.t0 + 5 * MIN + END_HOLD);
     expect(readState(h.statePath).interviewEndedAt).toBe(h.t0 + 5 * MIN);
     expect(readState(h.statePath).capTrippedAt).toBe(0);
     expect(h.journal().match(/конец интервью/g)).toHaveLength(1);
@@ -1294,7 +1313,7 @@ describe('runInterview: выбор вакансии (G2)', () => {
     h.at(1 * MIN, () => h.dialog.push(start('Бизнес-аналитик')));
     h.at(5 * MIN, () => { h.dialog.push(CLOSING); h.dialog.push(RATING, { buttons: STARS }); });
     await h.run();
-    expect(h.now()).toBe(h.t0 + 5 * MIN);
+    expect(h.now()).toBe(h.t0 + 5 * MIN + END_HOLD);
     expect(readState(h.statePath).interviewEndedAt).toBeGreaterThan(0);
 
     h.dialog.push('Спасибо за оценку!');
@@ -1477,6 +1496,46 @@ describe('runInterview: выбор вакансии (G2)', () => {
     expect(h.dialog.sent).toEqual([]);
     expect(readState(h.statePath).capTrippedAt).toBeGreaterThan(0);
     expect(h.journal()).toMatch(/потолок 6 интервью за окно/);
+  });
+
+  // M1: история прочитана между оценкой и подсказкой — раньше сессия выходила,
+  // и подсказка ждала следующего поллинга до четырёх часов.
+  it('конец разорван на две пачки: подсказка через 10 секунд после оценки — сессия её дожидается и жмёт (M1)', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push(start('Бизнес-аналитик')));
+    h.at(5 * MIN, () => { h.dialog.push(CLOSING); h.dialog.push(RATING, { buttons: STARS }); });
+    h.at(5 * MIN + 10_000, () => h.dialog.push(PROMPT, { buttons: OPTIONS }));
+    botAnswersPress(h);
+    await h.run();
+    expect(h.dialog.presses.map((p) => p.button)).toEqual(['1. Стажер системный аналитик']);
+    expect(h.generate.mock.calls.map((c) => c[0].question)).toEqual([start('Бизнес-аналитик'), start('Стажер системный аналитик')]);
+    expect(h.journal().match(/конец интервью/g)).toHaveLength(1);
+  });
+
+  it('свежий конец, подсказки нет — сессия держится выдержку подсказки плюс 30 секунд и выходит одной строкой (M1)', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push(start('Бизнес-аналитик')));
+    h.at(5 * MIN, () => { h.dialog.push(CLOSING); h.dialog.push(RATING, { buttons: STARS }); });
+    await h.run();
+    expect(END_HOLD).toBe(3 * MIN + 30_000);
+    expect(h.now()).toBe(h.t0 + 5 * MIN + END_HOLD);
+    expect(h.dialog.presses).toEqual([]);
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(h.journal().match(/интервью закончилось/g)).toHaveLength(1);
+  });
+
+  it('во время выдержки после конца пришёл обычный текст — без ответа, молчание FU-9 держится (M1)', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push(start('Бизнес-аналитик')));
+    h.at(5 * MIN, () => { h.dialog.push(CLOSING); h.dialog.push(RATING, { buttons: STARS }); });
+    h.at(6 * MIN, () => h.dialog.push('Спасибо за оценку!'));
+    await h.run();
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(h.generate).toHaveBeenCalledTimes(1);
+    expect(readState(h.statePath).interviewEndedAt).toBeGreaterThan(0);
   });
 });
 

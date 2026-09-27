@@ -8,7 +8,7 @@ import type { GigarecruiterConfig } from './config.js';
 import { acquireLock, releaseLock, refreshLock, LOCK_PATH } from './interview-lock.js';
 import { readSession } from '../telegram/session.js';
 import {
-  choiceStep, interviewTitle, isChoiceMade, isChoicePrompt, isChoiceText, isInterviewBoundary, isInterviewStart, withInterviewed,
+  CHOICE_GRACE_MS, choiceStep, interviewTitle, isChoiceMade, isChoicePrompt, isChoiceText, isInterviewBoundary, isInterviewStart, withInterviewed,
 } from './interview-choice.js';
 
 /**
@@ -169,7 +169,7 @@ function interviewEnded(s: RunnerState, windowMinutes: number): boolean {
 }
 
 const endedLine = (s: RunnerState): string =>
-  `интервью закончилось ${new Date(s.interviewEndedAt).toISOString()}, до нового окна не отвечаю — выхожу`;
+  `интервью закончилось ${new Date(s.interviewEndedAt).toISOString()}, ни подсказки выбора вакансии, ни начала нового — выхожу`;
 
 export function log(line: string, path: string = LOG_PATH): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -453,18 +453,25 @@ async function converse(
   let first = true;
   /** До какого момента сессию держит выдержка перед нажатием в подсказке выбора (G2). */
   let hold = 0;
+  /**
+   * После свежего конца без подсказки — до какого момента ждать подсказку или
+   * начало нового интервью (M1): бот шлёт их той же секундой, что и оценку, но
+   * история могла прочитаться между ними. 0 — не ждём.
+   */
+  let endHold = 0;
   // Тишина — время с последнего входящего или отправленного. До первого
   // ответа сессию держит окно, после — тишина (R8). Неотвеченный вопрос —
   // не конец разговора: пока он висит, окно держит сессию и после первого
   // ответа, лестница повторов идёт до конца окна (спека 7). Окно,
   // закрывшееся посреди разговора, его не рвёт: дальше живём до тишины.
-  const endsAt = (windowUntil: number): number => Math.max(hold,
+  const endsAt = (windowUntil: number): number => Math.max(hold, endHold,
     replies > 0 && !pending ? lastActivity + idleMs : Math.max(windowUntil, lastActivity + idleMs));
   /** Вакансия выбрана (нами, ботом или владельцем) — дальше новое интервью (G2). */
   const newInterview = (): void => {
     replies = 0;
     pending = false;
     hold = 0;
+    endHold = 0;
     lastActivity = now();
   };
   /** Интервью закончилось: его вакансия — в пройденные (G2). */
@@ -598,10 +605,14 @@ async function converse(
           writeState({
             ...s, lastMessageId: Math.max(s.lastMessageId, end), interviewEndedAt: cut.date.getTime(), ...finished(s),
           }, statePath);
+          // Подсказки ещё нет — сессия ждёт её CHOICE_GRACE_MS и ещё 30 с от даты
+          // оценки, потом выходит (M1): пачка могла разорваться между оценкой и
+          // подсказкой, которые бот шлёт одной секундой. Конец, найденный
+          // поллингом через час, не держит сессию зря.
+          if (next === undefined) endHold = cut.date.getTime() + CHOICE_GRACE_MS + 30_000;
           note(`конец интервью: после ответа пришло сообщение с кнопками, пачка до ${end} без ответа; ответов ${sentCount}; `
-            + (next === undefined ? 'до нового окна не отвечаю'
+            + (next === undefined ? `подсказку выбора вакансии жду до ${new Date(endHold).toISOString()}`
               : isInterviewStart(next) ? `следом начало нового интервью ${next.id}` : `следом выбор вакансии ${next.id}`));
-          if (next === undefined) return;
           continue;
         }
         const tailEnd = before(Math.max(cut.id, ...msgs.filter((m) => m.id > cut.id && m.date.getTime() < openedAt).map((m) => m.id)));
@@ -636,6 +647,12 @@ async function converse(
       }
       const prompt = item !== undefined && isChoicePrompt(item) ? item : undefined;
       if (ended && prompt === undefined) {
+        // Свежий конец этой сессии — ещё ждём подсказку или начало (M1); текст
+        // тем временем без ответа (FU-9). Иначе — одна строка и выход.
+        if (t < endHold) {
+          await pause(POLL_MS);
+          continue;
+        }
         note(endedLine(state));
         return;
       }
