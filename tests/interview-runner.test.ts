@@ -24,16 +24,16 @@ describe('состояние', () => {
   const path = join(mkdtempSync(join(tmpdir(), 'runner-')), 'state.json');
 
   it('файла нет — нули, не исключение', () => {
-    expect(readState(path)).toEqual({ lastMessageId: 0, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0, interviewEndedAt: 0 });
+    expect(readState(path)).toEqual({ lastMessageId: 0, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0, interviewEndedAt: 0, currentTitle: '', interviewedTitles: [] });
   });
 
   it('пишется и читается', () => {
-    writeState({ lastMessageId: 42, windowUntil: 100, lastPollAt: 50, capTrippedAt: 0, interviewEndedAt: 0 }, path);
+    writeState({ lastMessageId: 42, windowUntil: 100, lastPollAt: 50, capTrippedAt: 0, interviewEndedAt: 0, currentTitle: '', interviewedTitles: [] }, path);
     expect(readState(path).lastMessageId).toBe(42);
   });
 
   it('openWindow сдвигает окно, не трогая lastMessageId', () => {
-    writeState({ lastMessageId: 42, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0, interviewEndedAt: 0 }, path);
+    writeState({ lastMessageId: 42, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0, interviewEndedAt: 0, currentTitle: '', interviewedTitles: [] }, path);
     openWindow(1_000_000, 120, path);
     const s = readState(path);
     expect(s.windowUntil).toBe(1_000_000 + 120 * 60_000);
@@ -42,28 +42,28 @@ describe('состояние', () => {
 
   it('после writeState нет .tmp файла рядом, содержимое круглый путь', () => {
     const dir = dirname(path);
-    writeState({ lastMessageId: 42, windowUntil: 100, lastPollAt: 50, capTrippedAt: 0, interviewEndedAt: 0 }, path);
+    writeState({ lastMessageId: 42, windowUntil: 100, lastPollAt: 50, capTrippedAt: 0, interviewEndedAt: 0, currentTitle: '', interviewedTitles: [] }, path);
     const files = readdirSync(dir);
     expect(files).not.toContain('state.json.tmp');
-    expect(readState(path)).toEqual({ lastMessageId: 42, windowUntil: 100, lastPollAt: 50, capTrippedAt: 0, interviewEndedAt: 0 });
+    expect(readState(path)).toEqual({ lastMessageId: 42, windowUntil: 100, lastPollAt: 50, capTrippedAt: 0, interviewEndedAt: 0, currentTitle: '', interviewedTitles: [] });
   });
 
   it('читает значения, не числа переводит в 0: {"lastMessageId":"abc",...} → lastMessageId: 0, остальное на месте', () => {
     const corruptPath = join(dirname(path), 'corrupt.json');
     require('node:fs').writeFileSync(corruptPath, '{"lastMessageId":"abc","windowUntil":5,"lastPollAt":7}', 'utf8');
-    expect(readState(corruptPath)).toEqual({ lastMessageId: 0, windowUntil: 5, lastPollAt: 7, capTrippedAt: 0, interviewEndedAt: 0 });
+    expect(readState(corruptPath)).toEqual({ lastMessageId: 0, windowUntil: 5, lastPollAt: 7, capTrippedAt: 0, interviewEndedAt: 0, currentTitle: '', interviewedTitles: [] });
   });
 
   it('усечённый JSON парсит как ошибку: все поля → 0', () => {
     const truncatedPath = join(dirname(path), 'truncated.json');
     require('node:fs').writeFileSync(truncatedPath, '{"lastMessageId": 4', 'utf8');
-    expect(readState(truncatedPath)).toEqual({ lastMessageId: 0, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0, interviewEndedAt: 0 });
+    expect(readState(truncatedPath)).toEqual({ lastMessageId: 0, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0, interviewEndedAt: 0, currentTitle: '', interviewedTitles: [] });
   });
 
   it('capTrippedAt: поля нет (файл старого формата) — 0, не число — 0 (FR-6)', () => {
     const oldPath = join(dirname(path), 'old-format.json');
     writeFileSync(oldPath, '{"lastMessageId":3,"windowUntil":5,"lastPollAt":7}', 'utf8');
-    expect(readState(oldPath)).toEqual({ lastMessageId: 3, windowUntil: 5, lastPollAt: 7, capTrippedAt: 0, interviewEndedAt: 0 });
+    expect(readState(oldPath)).toEqual({ lastMessageId: 3, windowUntil: 5, lastPollAt: 7, capTrippedAt: 0, interviewEndedAt: 0, currentTitle: '', interviewedTitles: [] });
     const badPath = join(dirname(path), 'bad-cap.json');
     writeFileSync(badPath, '{"lastMessageId":3,"windowUntil":5,"lastPollAt":7,"capTrippedAt":"вчера"}', 'utf8');
     expect(readState(badPath).capTrippedAt).toBe(0);
@@ -71,18 +71,18 @@ describe('состояние', () => {
 
   it('writeState сохраняет capTrippedAt, openWindow его снимает и остальное не трогает (FR-6)', () => {
     const capPath = join(dirname(path), 'cap.json');
-    writeState({ lastMessageId: 42, windowUntil: 100, lastPollAt: 50, capTrippedAt: 777, interviewEndedAt: 0 }, capPath);
+    writeState({ lastMessageId: 42, windowUntil: 100, lastPollAt: 50, capTrippedAt: 777, interviewEndedAt: 0, currentTitle: '', interviewedTitles: [] }, capPath);
     expect(readState(capPath).capTrippedAt).toBe(777);
     openWindow(1_000_000, 120, capPath);
     expect(readState(capPath)).toEqual({
-      lastMessageId: 42, windowUntil: 1_000_000 + 120 * 60_000, lastPollAt: 50, capTrippedAt: 0, interviewEndedAt: 0,
+      lastMessageId: 42, windowUntil: 1_000_000 + 120 * 60_000, lastPollAt: 50, capTrippedAt: 0, interviewEndedAt: 0, currentTitle: '', interviewedTitles: [],
     });
   });
 
   it('interviewEndedAt: поля нет (файл старого формата) — 0, не число — 0 (FU-9)', () => {
     const oldPath = join(dirname(path), 'old-format-end.json');
     writeFileSync(oldPath, '{"lastMessageId":3,"windowUntil":5,"lastPollAt":7,"capTrippedAt":9}', 'utf8');
-    expect(readState(oldPath)).toEqual({ lastMessageId: 3, windowUntil: 5, lastPollAt: 7, capTrippedAt: 9, interviewEndedAt: 0 });
+    expect(readState(oldPath)).toEqual({ lastMessageId: 3, windowUntil: 5, lastPollAt: 7, capTrippedAt: 9, interviewEndedAt: 0, currentTitle: '', interviewedTitles: [] });
     const badPath = join(dirname(path), 'bad-end.json');
     writeFileSync(badPath, '{"lastMessageId":3,"windowUntil":5,"lastPollAt":7,"interviewEndedAt":"вчера"}', 'utf8');
     expect(readState(badPath).interviewEndedAt).toBe(0);
@@ -91,13 +91,37 @@ describe('состояние', () => {
     expect(readState(nullPath).interviewEndedAt).toBe(0);
   });
 
+  it('currentTitle и interviewedTitles: нет полей — пусто; не строка и не список строк — пусто (G2)', () => {
+    const oldPath = join(dirname(path), 'old-format-titles.json');
+    writeFileSync(oldPath, '{"lastMessageId":3,"interviewEndedAt":9}', 'utf8');
+    expect(readState(oldPath)).toMatchObject({ lastMessageId: 3, interviewEndedAt: 9, currentTitle: '', interviewedTitles: [] });
+    const badPath = join(dirname(path), 'bad-titles.json');
+    writeFileSync(badPath, '{"currentTitle":5,"interviewedTitles":"стажер"}', 'utf8');
+    expect(readState(badPath)).toMatchObject({ currentTitle: '', interviewedTitles: [] });
+    const mixedPath = join(dirname(path), 'mixed-titles.json');
+    writeFileSync(mixedPath, '{"currentTitle":"Data analyst","interviewedTitles":["стажер",7,null,"data analyst"]}', 'utf8');
+    expect(readState(mixedPath)).toMatchObject({ currentTitle: 'Data analyst', interviewedTitles: ['стажер', 'data analyst'] });
+  });
+
+  it('openWindow не трогает пройденные вакансии и текущую (G2)', () => {
+    const titlesPath = join(dirname(path), 'titles.json');
+    writeState({
+      lastMessageId: 42, windowUntil: 100, lastPollAt: 50, capTrippedAt: 777, interviewEndedAt: 888,
+      currentTitle: 'Data analyst', interviewedTitles: ['стажер системный аналитик'],
+    }, titlesPath);
+    openWindow(1_000_000, 120, titlesPath);
+    expect(readState(titlesPath)).toMatchObject({
+      interviewEndedAt: 0, capTrippedAt: 0, currentTitle: 'Data analyst', interviewedTitles: ['стажер системный аналитик'],
+    });
+  });
+
   it('writeState сохраняет interviewEndedAt, openWindow его снимает и остальное не трогает (FU-9)', () => {
     const endPath = join(dirname(path), 'end.json');
-    writeState({ lastMessageId: 42, windowUntil: 100, lastPollAt: 50, capTrippedAt: 777, interviewEndedAt: 888 }, endPath);
+    writeState({ lastMessageId: 42, windowUntil: 100, lastPollAt: 50, capTrippedAt: 777, interviewEndedAt: 888, currentTitle: '', interviewedTitles: [] }, endPath);
     expect(readState(endPath).interviewEndedAt).toBe(888);
     openWindow(1_000_000, 120, endPath);
     expect(readState(endPath)).toEqual({
-      lastMessageId: 42, windowUntil: 1_000_000 + 120 * 60_000, lastPollAt: 50, capTrippedAt: 0, interviewEndedAt: 0,
+      lastMessageId: 42, windowUntil: 1_000_000 + 120 * 60_000, lastPollAt: 50, capTrippedAt: 0, interviewEndedAt: 0, currentTitle: '', interviewedTitles: [],
     });
   });
 });
@@ -144,7 +168,7 @@ describe('answerOnce', () => {
 
   it('уже отвеченный вопрос пропускается', async () => {
     const d = deps();
-    writeState({ lastMessageId: 7, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0, interviewEndedAt: 0 }, d.statePath);
+    writeState({ lastMessageId: 7, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0, interviewEndedAt: 0, currentTitle: '', interviewedTitles: [] }, d.statePath);
     expect(await answerOnce(d)).toBe('idle');
     expect(d.dialog.sent).toEqual([]);
   });

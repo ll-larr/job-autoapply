@@ -50,7 +50,7 @@ describe('сквозной прогон шести вопросов', () => {
     const dialog = fakeDialog();
     const statePath = join(mkdtempSync(join(tmpdir(), 'loop2-')), 'state.json');
     const logPath = join(dirname(statePath), 'run.log');
-    writeState({ lastMessageId: 6, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0, interviewEndedAt: 0 }, statePath);
+    writeState({ lastMessageId: 6, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0, interviewEndedAt: 0, currentTitle: '', interviewedTitles: [] }, statePath);
 
     for (const [i, text] of QUESTIONS.entries()) {
       const r = await answerOnce({
@@ -91,7 +91,7 @@ function harness(seed: DialogMessage[] = [], state?: Partial<RunnerState>) {
   const statePath = join(dir, 'interview-state.json');
   const logPath = join(dir, 'interview.log');
   const lockPath = join(dir, 'interview.lock');
-  if (state !== undefined) writeState({ lastMessageId: 0, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0, interviewEndedAt: 0, ...state }, statePath);
+  if (state !== undefined) writeState({ lastMessageId: 0, windowUntil: 0, lastPollAt: 0, capTrippedAt: 0, interviewEndedAt: 0, currentTitle: '', interviewedTitles: [], ...state }, statePath);
   const t0 = Date.now();
   let clock = t0;
   const events: { at: number; run: () => void }[] = [];
@@ -711,7 +711,7 @@ describe('runInterview: запомненный конец интервью (FU-9
     expect(h.journal().match(/конец интервью/g)).toHaveLength(1);
   });
 
-  it('«Спасибо за оценку!» после конца — следующий поллинг не отвечает и не открывает Telegram, одна строка', async () => {
+  it('«Спасибо за оценку!» после конца — следующий поллинг не отвечает, одна строка', async () => {
     const h = await endedInterview();
     h.dialog.push('Спасибо за оценку!');
     const linesBefore = h.journal().trim().split('\n').length;
@@ -719,7 +719,10 @@ describe('runInterview: запомненный конец интервью (FU-9
     h.generate.mockClear();
     await h.run({ now: () => h.now() + 30 * MIN });
     expect(h.dialog.sent).toHaveLength(1);
-    expect(h.openDialog).not.toHaveBeenCalled();
+    // G2: Telegram открывается — в молчании FU-9 видна подсказка выбора
+    // вакансии, с которой начнётся следующее интервью. Текст по-прежнему без ответа.
+    expect(h.openDialog).toHaveBeenCalledTimes(1);
+    expect(h.dialog.presses).toEqual([]);
     expect(h.generate).not.toHaveBeenCalled();
     const added = h.journal().trim().split('\n').slice(linesBefore);
     expect(added).toHaveLength(1);
@@ -1069,6 +1072,236 @@ describe('runInterview: один экземпляр и уборка', () => {
     await h.run();
     expect(h.journal()).toMatch(/диалог не открылся: сессия протухла/);
     expect(existsSync(h.lockPath)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G2: подсказка выбора вакансии. Тексты — живой чат ГигаРекрутёра 2026-09-27.
+
+const CLOSING = 'Спасибо за интервью! Я передам ваше резюме и итоги нашего диалога рекрутеру. '
+  + 'Статус отклика можно отслеживать в личном кабинете HR-платформы "Пульс".';
+const RATING = 'Пожалуйста, оцените мою работу!';
+const STARS = ['★☆☆☆☆', '★★☆☆☆', '★★★☆☆', '★★★★☆', '★★★★★'];
+const PROMPT = 'Вижу, что вы откликнулись на несколько вакансий. По какой из них вы хотели бы продолжить диалог?\n'
+  + '1. Стажер системный аналитик\n2. Системный аналитик\n3. Системный аналитик (ОКТУС)\n4. Data analyst\n'
+  + '5. Middle Системный аналитик (Продукт массовых зачислений)\n'
+  + 'Вы всегда можете сменить вакансию, написав мне об этом.';
+const OPTIONS = [
+  '1. Стажер системный аналитик', '2. Системный аналитик', '3. Системный аналитик (ОКТУС)', '4. Data analyst',
+  '5. Middle Системный аналитик (Продукт массовых зачислений)', 'Далее',
+];
+const CHOSEN = 'Спасибо за выбор вакансии! Дайте мне несколько секунд — и мы начнем диалог 👍';
+const start = (title: string): string =>
+  `Здравствуйте, Артём! Меня зовут ГигаРекрутёр. Получил Ваш отклик на позицию ${title}. `
+  + 'Будет удобно прямо сейчас ответить на несколько вопросов по этой позиции?';
+const ALL_SEEN = ['стажер системный аналитик', 'системный аналитик', 'системный аналитик (октус)', 'data analyst',
+  'middle системный аналитик (продукт массовых зачислений)'];
+
+describe('runInterview: выбор вакансии (G2)', () => {
+  /** Через `ms` от нынешних часов стенда. */
+  const later = (h: ReturnType<typeof harness>, ms: number, run: () => void): void => h.at(h.now() - h.t0 + ms, run);
+
+  /**
+   * Бот на нажатие варианта: правит подсказку на месте в «Спасибо за выбор…»
+   * (кнопки сняты) и через 10 секунд начинает интервью по выбранной вакансии.
+   * Возвращает моменты нажатий по часам стенда.
+   */
+  function botAnswersPress(h: ReturnType<typeof harness>, pages: Record<string, string[]> = {}): number[] {
+    const at: number[] = [];
+    h.dialog.onPress = (id, button) => {
+      at.push(h.now());
+      const page = pages[button];
+      if (page !== undefined) { h.dialog.edit(id, { buttons: page }); return; }
+      h.dialog.edit(id, { text: CHOSEN, buttons: [] });
+      later(h, 10_000, () => h.dialog.push(start(button.replace(/^\d+\.\s*/, ''))));
+    };
+    return at;
+  }
+
+  /** Окно, первое интервью по «Бизнес-аналитик» с ответом, на 5-й минуте — три сообщения конца одной секундой. */
+  function interviewThenEnd(h: ReturnType<typeof harness>): { promptId: () => number } {
+    let promptId = 0;
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push(start('Бизнес-аналитик')));
+    h.at(5 * MIN, () => {
+      h.dialog.push(CLOSING);
+      h.dialog.push(RATING, { buttons: STARS });
+      promptId = h.dialog.push(PROMPT, { buttons: OPTIONS });
+    });
+    return { promptId: () => promptId };
+  }
+
+  it('пять вариантов, ничего не пройдено: через 3 минуты жмёт первый, интервью по нему отвечается (G2)', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    let promptId = 0;
+    h.at(1 * MIN, () => { promptId = h.dialog.push(PROMPT, { buttons: OPTIONS }); });
+    const pressedAt = botAnswersPress(h);
+    await h.run();
+    expect(h.dialog.presses).toEqual([{ messageId: promptId, button: '1. Стажер системный аналитик' }]);
+    // Окно держит сессию всю выдержку: подсказка пришла на 1:00, нажата не раньше 4:00.
+    expect(pressedAt[0]).toBeGreaterThanOrEqual(h.t0 + 4 * MIN);
+    expect(pressedAt[0]).toBeLessThan(h.t0 + 4 * MIN + 2 * POLL_MS);
+    expect(h.generate.mock.calls.map((c) => c[0].question)).toEqual([start('Стажер системный аналитик')]);
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(readState(h.statePath).currentTitle).toBe('Стажер системный аналитик');
+    expect(h.journal()).toMatch(/выбор вакансии \d+: нажата «Стажер системный аналитик»/);
+    expect(h.journal()).not.toContain('Вижу, что вы откликнулись');
+  });
+
+  it('первый вариант уже пройден — жмёт второй', async () => {
+    const h = harness([], { interviewedTitles: ['стажер системный аналитик'] });
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push(PROMPT, { buttons: OPTIONS }));
+    botAnswersPress(h);
+    await h.run();
+    expect(h.dialog.presses.map((p) => p.button)).toEqual(['2. Системный аналитик']);
+    expect(h.generate.mock.calls.map((c) => c[0].question)).toEqual([start('Системный аналитик')]);
+  });
+
+  it('все видимые пройдены — жмёт «Далее» один раз, на новой странице — непройденный вариант', async () => {
+    const h = harness([], { interviewedTitles: ALL_SEEN });
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push(PROMPT, { buttons: OPTIONS }));
+    botAnswersPress(h, { 'Далее': ['6. Бизнес-аналитик', 'Назад', 'Далее'] });
+    await h.run();
+    expect(h.dialog.presses.map((p) => p.button)).toEqual(['Далее', '6. Бизнес-аналитик']);
+    expect(h.generate.mock.calls.map((c) => c[0].question)).toEqual([start('Бизнес-аналитик')]);
+    expect(h.journal()).toMatch(/нажата «Далее»/);
+  });
+
+  it('все пройдены и «Далее» нет — не жмёт ничего, строка в журнал, метка за подсказкой', async () => {
+    const h = harness([msg(1, PROMPT, { hasButtons: true, buttons: OPTIONS.slice(0, 5), date: new Date(Date.now() - 10 * MIN) })],
+      { interviewedTitles: ALL_SEEN });
+    await h.run();
+    expect(h.dialog.presses).toEqual([]);
+    expect(h.dialog.sent).toEqual([]);
+    expect(readState(h.statePath).lastMessageId).toBe(1);
+    expect(h.journal().match(/все варианты уже пройдены, ничего не нажато/g)).toHaveLength(1);
+  });
+
+  it('оценку звёздами не жмёт никогда: ни после ответа, ни одну в поллинге', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push(start('Data analyst')));
+    h.at(5 * MIN, () => { h.dialog.push(CLOSING); h.dialog.push(RATING, { buttons: STARS }); });
+    await h.run();
+    expect(h.dialog.presses).toEqual([]);
+    expect(h.journal()).toMatch(/конец интервью/);
+
+    const lone = harness([msg(1, RATING, { hasButtons: true, buttons: STARS, date: new Date(Date.now() - 10 * MIN) })]);
+    await lone.run();
+    expect(lone.dialog.presses).toEqual([]);
+    expect(lone.dialog.sent).toEqual([]);
+  });
+
+  it('начало интервью записывает currentTitle, свежий конец переносит его в interviewedTitles', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push(start('«Data analyst»')));
+    let during = '';
+    h.at(3 * MIN, () => { during = readState(h.statePath).currentTitle; });
+    h.at(5 * MIN, () => { h.dialog.push(CLOSING); h.dialog.push(RATING, { buttons: STARS }); });
+    await h.run();
+    expect(during).toBe('Data analyst');
+    expect(readState(h.statePath)).toMatchObject({ currentTitle: '', interviewedTitles: ['data analyst'] });
+    expect(h.journal()).toMatch(/начало интервью \d+: вакансия «Data analyst»/);
+  });
+
+  it('живой конец: прощание, оценка и подсказка одной секундой — прощание без ответа, через 3 минуты жмёт вариант, новое интервью отвечается', async () => {
+    const h = harness();
+    const { promptId } = interviewThenEnd(h);
+    const pressedAt = botAnswersPress(h);
+    await h.run();
+    expect(h.dialog.presses).toEqual([{ messageId: promptId(), button: '1. Стажер системный аналитик' }]);
+    expect(pressedAt[0]).toBeGreaterThanOrEqual(h.t0 + 8 * MIN);
+    const questions = h.generate.mock.calls.map((c) => c[0].question);
+    expect(questions).toEqual([start('Бизнес-аналитик'), start('Стажер системный аналитик')]);
+    expect(h.dialog.sent).toHaveLength(2);
+    for (const q of questions) {
+      expect(q).not.toContain('Спасибо за интервью');
+      expect(q).not.toContain('Спасибо за выбор вакансии');
+    }
+    expect(readState(h.statePath)).toMatchObject({
+      interviewEndedAt: 0, currentTitle: 'Стажер системный аналитик', interviewedTitles: ['бизнес-аналитик'], capTrippedAt: 0,
+    });
+    expect(h.journal().match(/конец интервью/g)).toHaveLength(1);
+  });
+
+  it.each([
+    ['правит подсказку на месте в «Спасибо за выбор…»', (h: ReturnType<typeof harness>, id: number) => h.dialog.edit(id, { text: CHOSEN, buttons: [] })],
+    ['присылает «Спасибо за выбор…» отдельным сообщением', (h: ReturnType<typeof harness>) => h.dialog.push(CHOSEN)],
+  ])('бот выбрал сам в первую минуту (%s) — не жмёт ничего, новое интервью отвечается', async (_name, choose) => {
+    const h = harness();
+    const { promptId } = interviewThenEnd(h);
+    h.at(5 * MIN + 40_000, () => choose(h, promptId()));
+    h.at(5 * MIN + 50_000, () => h.dialog.push(start('Стажер системный аналитик')));
+    await h.run();
+    expect(h.dialog.presses).toEqual([]);
+    const questions = h.generate.mock.calls.map((c) => c[0].question);
+    expect(questions).toEqual([start('Бизнес-аналитик'), start('Стажер системный аналитик')]);
+    expect(readState(h.statePath)).toMatchObject({ interviewEndedAt: 0, interviewedTitles: ['бизнес-аналитик'] });
+  });
+
+  it('подсказку поправили в «Спасибо за выбор…» за миг до нажатия — перечитана по id, не нажата', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    let promptId = 0;
+    h.at(1 * MIN, () => { promptId = h.dialog.push(PROMPT, { buttons: OPTIONS }); });
+    const getMessage = h.dialog.getMessage;
+    h.dialog.getMessage = async (id) => {
+      h.dialog.edit(promptId, { text: CHOSEN, buttons: [] });
+      return getMessage(id);
+    };
+    await h.run();
+    expect(h.dialog.presses).toEqual([]);
+    expect(h.journal()).toMatch(/уже выбрали без нас/);
+    expect(h.dialog.sent).toEqual([]);
+  });
+
+  it('после оценки и подсказки пришёл обычный текст — не жмёт и не отвечает, молчание FU-9 держится', async () => {
+    const h = harness();
+    interviewThenEnd(h);
+    h.at(6 * MIN, () => h.dialog.push('Если появятся вопросы — пишите!'));
+    await h.run();
+    expect(h.dialog.presses).toEqual([]);
+    expect(h.dialog.sent).toHaveLength(1);
+    expect(readState(h.statePath).interviewEndedAt).toBeGreaterThan(0);
+    expect(h.journal()).toMatch(/интервью закончилось/);
+  });
+
+  it('конец без подсказки, подсказка пришла позже — следующий поллинг её жмёт и отвечает на новое интервью', async () => {
+    const h = harness();
+    openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    h.at(1 * MIN, () => h.dialog.push(start('Бизнес-аналитик')));
+    h.at(5 * MIN, () => { h.dialog.push(CLOSING); h.dialog.push(RATING, { buttons: STARS }); });
+    await h.run();
+    expect(h.now()).toBe(h.t0 + 5 * MIN);
+    expect(readState(h.statePath).interviewEndedAt).toBeGreaterThan(0);
+
+    h.dialog.push('Спасибо за оценку!');
+    h.dialog.push(PROMPT, { buttons: OPTIONS });
+    botAnswersPress(h);
+    await h.run({ now: () => h.now() + 4 * 60 * MIN });
+    expect(h.dialog.presses.map((p) => p.button)).toEqual(['1. Стажер системный аналитик']);
+    expect(h.generate.mock.calls.map((c) => c[0].question)).toEqual([start('Бизнес-аналитик'), start('Стажер системный аналитик')]);
+    expect(readState(h.statePath).interviewEndedAt).toBe(0);
+  });
+
+  it('поллинг: подсказка старше трёх минут жмётся сразу, моложе — сессия ждёт выдержку, а не выходит', async () => {
+    const old = harness([msg(1, PROMPT, { hasButtons: true, buttons: OPTIONS, date: new Date(Date.now() - 10 * MIN) })]);
+    const oldAt = botAnswersPress(old);
+    await old.run();
+    expect(oldAt).toEqual([old.t0]);
+    expect(old.dialog.sent).toHaveLength(1);
+
+    const young = harness([msg(1, PROMPT, { hasButtons: true, buttons: OPTIONS, date: new Date(Date.now() - 1 * MIN) })]);
+    const youngAt = botAnswersPress(young);
+    await young.run();
+    expect(youngAt).toHaveLength(1);
+    expect(youngAt[0]).toBeGreaterThanOrEqual(young.t0 + 2 * MIN);
+    expect(youngAt[0]).toBeLessThan(young.t0 + 2 * MIN + 2 * POLL_MS);
+    expect(young.dialog.sent).toHaveLength(1);
   });
 });
 
