@@ -1244,8 +1244,9 @@ describe('runInterview: выбор вакансии (G2)', () => {
   // началом интервью; нажатие, чей start не пришёл, переживало конец совсем
   // другого интервью и уходило дальше без начала следующего окна.
   it('конец интервью (finished) снимает брошенную метку нажатия, чей start не пришёл (R2-3)', async () => {
-    const h = harness([], { pressedPromptId: 999_999 });
+    const h = harness([]);
     openWindow(h.t0, CFG.windowMinutes, h.statePath);
+    writeState({ ...readState(h.statePath), pressedPromptId: 999_999 }, h.statePath);
     h.at(1 * MIN, () => h.dialog.push(start('Бизнес-аналитик')));
     h.at(5 * MIN, () => { h.dialog.push(CLOSING); h.dialog.push(RATING, { buttons: STARS }); h.dialog.push(PROMPT, { buttons: OPTIONS }); });
     let afterEnd = -1;
