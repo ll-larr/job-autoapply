@@ -192,3 +192,51 @@ describe('validateAnswer: другие записи сумм и HTTP-коды р
     expect(validateAnswer('Логи, метрики и др. — коды 500 и 503 в том числе.', { allowed: real })).toBeNull();
   });
 });
+
+describe('validateAnswer: вопрос о деньгах тоже снимает исключение для HTTP-кодов (G3)', () => {
+  // Настоящие вопросы живого интервью 2026-09-15.
+  const SALARY_Q = 'Какой у Вас желаемый уровень заработной платы?';
+  const POSTMAN_Q = 'Расскажите, как Вы используете Postman или Curl в работе?';
+  const real = allowedNumbers(['Зарплатная вилка: 180–260 тысяч рублей на руки.', SALARY_Q]);
+
+  it.each([
+    ['Ожидаю 500.', '500'],
+    ['Ожидаю от 200.', '200'],
+    ['Мои ожидания — 200–260.', '200'],
+  ])('на вопрос о зарплате «%s» режется', (answer, number) => {
+    expect(validateAnswer(answer, { allowed: real, question: SALARY_Q })).toBe(`выдуманное число: ${number}`);
+  });
+
+  it('без вопроса слов о деньгах в этих ответах нет — отсюда и дыра', () => {
+    expect(validateAnswer('Ожидаю 500.', { allowed: real })).toBeNull();
+  });
+
+  it('на вопрос про Postman коды ответов по-прежнему проходят', () => {
+    expect(validateAnswer('коды ответов 200, 400 и 500', { allowed: real, question: POSTMAN_Q })).toBeNull();
+    expect(validateAnswer('Проверял коды ответов 200, 400 и 500.', { allowed: allowedNumbers([POSTMAN_Q]), question: POSTMAN_Q }))
+      .toBeNull();
+  });
+
+  it.each([
+    'Какой у вас желаемый заработок?',
+    'Ваши ожидания по з/п?',
+  ])('вопрос «%s» — тоже о деньгах', (question) => {
+    expect(validateAnswer('Ожидаю 500.', { allowed: real, question })).toBe('выдуманное число: 500');
+  });
+
+  it('«з/п» и «заработок» в самом ответе снимают исключение; «из/под» — нет', () => {
+    expect(validateAnswer('з/п 500', { allowed: real })).toBe('выдуманное число: 500');
+    expect(validateAnswer('Мой заработок 500.', { allowed: real })).toBe('выдуманное число: 500');
+    expect(validateAnswer('Работал из/под VPN, разбирал коды 404 и 502.', { allowed: real })).toBeNull();
+  });
+
+  // 400 есть в резюме («400 автотестов»): «400 к/мес» режется только по величине.
+  const withResume = new Set([...real, ...allowedNumbers(['Внедрил 400 автотестов.'])]);
+
+  it.each([
+    ['Ожидаю 400 к/мес', '400000'],
+    ['Ожидаю 400 к + бонусы', '400000'],
+  ])('«к» через пробел перед «/» или «+» — тысячи: «%s» режется', (answer, number) => {
+    expect(validateAnswer(answer, { allowed: withResume, question: SALARY_Q })).toBe(`выдуманное число: ${number}`);
+  });
+});

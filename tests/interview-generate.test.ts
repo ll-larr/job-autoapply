@@ -109,3 +109,30 @@ describe('generateAnswer', () => {
     expect(r.ok).toBe(false);
   });
 });
+
+describe('generateAnswer: вопрос доходит до валидатора (G3)', () => {
+  beforeEach(() => { setApiKey('sk-test-key'); });
+  afterEach(() => { setApiKey(null); });
+
+  const reply = (content: string): typeof fetch => vi.fn(async () => new Response(
+    JSON.stringify({ choices: [{ message: { content } }] }),
+    { status: 200, headers: { 'content-type': 'application/json' } },
+  )) as unknown as typeof fetch;
+  const base = { resume: 'Сократил время с 32 до 4 часов', facts: 'Вилка 180–260 тысяч', transcript: [] as Turn[] };
+
+  it('на вопрос о зарплате «Ожидаю 500.» — брак, в ответ не уходит', async () => {
+    const r = await generateAnswer(
+      { ...base, question: 'Какой у Вас желаемый уровень заработной платы?' },
+      { models: ['m1'], fetchImpl: reply('Ожидаю 500.'), attemptsPerModel: 1 },
+    );
+    expect(r.ok).toBe(false);
+  });
+
+  it('на вопрос про Postman «коды ответов 200, 400 и 500» — годен', async () => {
+    const r = await generateAnswer(
+      { ...base, question: 'Расскажите, как Вы используете Postman или Curl в работе?' },
+      { models: ['m1'], fetchImpl: reply('Проверял коды ответов 200, 400 и 500.'), attemptsPerModel: 1 },
+    );
+    expect(r).toEqual({ ok: true, text: 'Проверял коды ответов 200, 400 и 500.' });
+  });
+});

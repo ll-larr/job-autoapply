@@ -285,6 +285,33 @@ describe('extractNumbers: разряды через точку и запятую
   });
 });
 
+describe('extractNumbers: ещё пробелы перед единицей и «к» перед «/» и «+» (G3)', () => {
+  const thin = String.fromCharCode(0x2009);
+  const figure = String.fromCharCode(0x2007);
+  const tab = String.fromCharCode(9);
+
+  it('тонкий, цифровой пробел и табуляция — тоже промежуток; всё так же до двух знаков и в той же строке', () => {
+    expect(sorted(`400${thin}тысяч`)).toEqual(['400', '400000']);
+    expect(sorted(`400${figure}тыс.`)).toEqual(['400', '400000']);
+    expect(sorted(`400${tab}тыс`)).toEqual(['400', '400000']);
+    expect(sorted(`400${thin}${tab}тысяч`)).toEqual(['400', '400000']);
+    expect(sorted(`400${thin}${tab} тысяч`)).toEqual(['400']);
+    expect(sorted(`400\n${tab}тысяч`)).toEqual(['400']);
+  });
+
+  it('«к» через пробел перед «/» или «+» — тысячи: «400 к/мес», «400 к + бонусы»', () => {
+    expect(sorted('Ожидаю 400 к/мес')).toEqual(['400', '400000']);
+    expect(sorted('400 к + бонусы')).toEqual(['400', '400000']);
+    expect(sorted('400 к+бонусы')).toEqual(['400', '400000']);
+    expect(sorted(`400${thin}к/мес`)).toEqual(['400', '400000']);
+  });
+
+  it('предлог «к» по-прежнему не множит', () => {
+    expect(sorted('Перешёл с 5 к 10 задачам')).toEqual(['10', '5']);
+    expect(sorted('В 2024 к концу года')).toEqual(['2024']);
+  });
+});
+
 describe('readFacts', () => {
   it('читает файл и собирает из него числа', () => {
     const dir = mkdtempSync(join(tmpdir(), 'facts-'));

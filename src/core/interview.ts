@@ -36,15 +36,16 @@ const ALWAYS_ALLOWED = new Set([
 ]);
 
 /**
- * Ответ про деньги (FU-6): здесь HTTP-коды не исключение. «Ожидаю 400 рублей»
- * или «вилка 200–260» — не общее знание про API, а сумма, и сверяется она
- * только с резюме и фактами.
+ * Ответ или вопрос про деньги (FU-6, G3): здесь HTTP-коды не исключение.
+ * «Ожидаю 400 рублей» или «вилка 200–260» — не общее знание про API, а сумма,
+ * и сверяется она только с резюме и фактами.
  */
 const MONEY_WORDS = new RegExp([
   'руб', '₽', 'зарплат', 'оклад', 'вилк', 'доход', 'на руки', 'тыс', 'млн',
   // FU-13. Короткие слова — с кириллической границей: \b в JS её не знает,
-  // а без неё «евро» ловилось бы в «Европе», «р.» — в «др.».
-  '(?<![а-яё])зп(?![а-яё])', 'заработн', '(?<![а-яё])р\\.', 'доллар', '\\$', '€',
+  // а без неё «евро» ловилось бы в «Европе», «р.» — в «др.». G3: «з/п» и
+  // «заработ» — и «заработная плата», и «заработок».
+  '(?<![а-яё])зп(?![а-яё])', '(?<![а-яё])з/п(?![а-яё])', 'заработ', '(?<![а-яё])р\\.', 'доллар', '\\$', '€',
   '(?<![а-яё])евро(?![а-яё])', '\\bgross\\b', '\\bnet\\b', 'в месяц', '/мес',
 ].join('|'), 'i');
 
@@ -55,7 +56,16 @@ const ROBOT_MARKERS = /как языковая модель|как ии(?![а-я
 /** null — ответ годен. Строка — причина отбраковки, она же уходит в журнал. */
 export function validateAnswer(
   answer: string,
-  input: { allowed: Set<string>; maxLength?: number },
+  input: {
+    allowed: Set<string>;
+    maxLength?: number;
+    /**
+     * Вопрос, на который это ответ (G3). Вопрос о деньгах — «Какой у Вас
+     * желаемый уровень заработной платы?» — снимает исключение для HTTP-кодов,
+     * даже если в самом ответе слов о деньгах нет: «Ожидаю 500.» — сумма.
+     */
+    question?: string;
+  },
 ): string | null {
   const t = answer.trim();
   const max = input.maxLength ?? MAX_ANSWER_LENGTH;
@@ -66,7 +76,7 @@ export function validateAnswer(
   if (leak !== null) return `в ответе ${leak}`;
   const claim = findForbiddenClaim(t);
   if (claim !== null) return `выдуман навык: ${claim}`;
-  const httpExempt = !MONEY_WORDS.test(t);
+  const httpExempt = !MONEY_WORDS.test(t) && !(input.question !== undefined && MONEY_WORDS.test(input.question));
   for (const n of extractNumbers(t)) {
     if (input.allowed.has(n) || (httpExempt && ALWAYS_ALLOWED.has(n))) continue;
     return `выдуманное число: ${n}`;
@@ -138,7 +148,7 @@ export async function generateAnswer(
 ): Promise<{ ok: true; text: string } | { ok: false; failure: string }> {
   const allowed = allowedNumbers([input.resume, input.facts, input.question]);
   const reject = (text: string): string | null =>
-    validateAnswer(text, { allowed, maxLength: options.maxLength });
+    validateAnswer(text, { allowed, maxLength: options.maxLength, question: input.question });
   const r = await complete(buildInterviewMessages(input), options, reject);
   return r.ok ? { ok: true, text: r.text.trim() } : { ok: false, failure: r.failure };
 }
