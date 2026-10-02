@@ -1,3 +1,5 @@
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import type { BrowserContext, Frame, Locator, Page } from 'playwright';
 import { normalizeVacancy, type ExperienceLevel, type Vacancy } from '../core/vacancy.js';
 import { parseExperienceFromText } from '../core/screening.js';
@@ -535,6 +537,46 @@ export interface HhAdapterOptions {
    * В бою — модель через OpenRouter (см. buildAdapters в src/cli.ts).
    */
   answerTest?: (questions: TestQuestion[], vacancy: Vacancy) => Promise<{ answers: TestAnswer[] | null; failure?: string }>;
+  /**
+   * Куда класть снимки экрана неподтверждённых откликов. По умолчанию
+   * data/hh-debug (data/ в git не попадает).
+   */
+  debugDir?: string;
+}
+
+const DEFAULT_DEBUG_DIR = 'data/hh-debug';
+
+/**
+ * Что hh.ru показывает на странице в момент, когда отклик не подтвердился.
+ *
+ * Зовётся ДО повторной загрузки вакансии: после неё сообщение hh (лимит
+ * откликов, капча, требование письма) пропадает, и в отказе остаётся одно
+ * «клик не привёл к подтверждению» — по нему нельзя понять, почему отправка раз
+ * за разом встаёт. Ничего не бросает: диагностика не должна ронять отказ.
+ *
+ * Возвращает короткую строку для причины отказа: тексты сообщений (alert,
+ * блоки с «error» в разметке) либо заголовок страницы, и имя снимка экрана.
+ */
+export async function describeUnconfirmed(page: Page, vacancyId: string, debugDir: string): Promise<string> {
+  const parts: string[] = [];
+  try {
+    const seen = await page.evaluate(() => {
+      const clip = (s: string | null | undefined): string => (s ?? '').replace(/\s+/g, ' ').trim().slice(0, 140);
+      const found = [...document.querySelectorAll('[role="alert"], [data-qa*="error" i], [class*="error" i]')]
+        .map((e) => clip(e.textContent)).filter((t) => t !== '');
+      return { title: clip(document.title), alerts: [...new Set(found)].slice(0, 3) };
+    });
+    parts.push(seen.alerts.length > 0
+      ? `на странице: «${seen.alerts.join(' | ')}»`
+      : `страница: «${seen.title || 'без заголовка'}»`);
+  } catch { /* страницу не прочитать — причину не называем */ }
+  try {
+    mkdirSync(debugDir, { recursive: true });
+    const name = `${vacancyId}-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+    await page.screenshot({ path: join(debugDir, name) });
+    parts.push(`снимок ${name} в ${debugDir}`);
+  } catch { /* снимок не получился — текст всё равно в причине */ }
+  return parts.join('; ');
 }
 
 /**
@@ -562,6 +604,7 @@ export class HhAdapter implements Adapter {
   private readonly timeouts: Timeouts;
   private readonly openContextFn: () => Promise<BrowserContext>;
   private readonly answerTest: HhAdapterOptions['answerTest'];
+  private readonly debugDir: string;
   /** См. HhSearchStats. undefined до первого успешного search(). */
   lastSearchStats: HhSearchStats | undefined;
 
@@ -569,6 +612,7 @@ export class HhAdapter implements Adapter {
     this.timeouts = { ...DEFAULT_TIMEOUTS, ...opts.timeouts };
     this.openContextFn = opts.openContext ?? sharedProfile;
     this.answerTest = opts.answerTest;
+    this.debugDir = opts.debugDir ?? DEFAULT_DEBUG_DIR;
     if (opts.context) this.setContext(opts.context);
   }
 
@@ -787,7 +831,7 @@ export class HhAdapter implements Adapter {
     page: Page,
     vacancy: Vacancy,
     letter: string,
-  ): Promise<{ status: 'sent' | 'unconfirmed'; letterInForm: boolean } | { status: 'rejected'; reason: string }> {
+  ): Promise<{ status: 'sent' | 'unconfirmed'; letterInForm: boolean; detail?: string } | { status: 'rejected'; reason: string }> {
     const questions = await readTestQuestions(page);
     let answers: TestAnswer[] | null = null;
     if (questions.length > 0) {
@@ -827,14 +871,17 @@ export class HhAdapter implements Adapter {
     await submit.click();
 
     let ok = await detectSubmitSuccess(page, this.timeouts.submitMs);
+    let detail: string | undefined;
     if (!ok) {
+      // Сначала смотрим, что сказал hh, и только потом уходим со страницы.
+      detail = await describeUnconfirmed(page, vacancy.sourceId, this.debugDir);
       // Анкета отправляется со страницы /applicant/vacancy_response, и что
       // hh.ru показывает после неё, живьём не снято. Проверяем по факту: у
       // поданного отклика страница вакансии показывает «Перейти к отклику».
       await page.goto(vacancy.url, { waitUntil: 'domcontentloaded', timeout: this.timeouts.navigationMs }).catch(() => {});
       ok = await detectAlreadyApplied(page);
     }
-    return { status: ok ? 'sent' : 'unconfirmed', letterInForm };
+    return { status: ok ? 'sent' : 'unconfirmed', letterInForm, detail: ok ? undefined : detail };
   }
 
   async apply(vacancy: Vacancy, letter: string): Promise<ApplyResult> {
@@ -884,6 +931,7 @@ export class HhAdapter implements Adapter {
         .catch(() => {});
 
       let letterInForm = false;
+      let detail: string | undefined;
       let submitted: boolean;
       if (await page.locator(MODAL_SUBMIT).first().isVisible().catch(() => false)) {
         const form = await this.submitResponseForm(page, vacancy, letter);
@@ -894,8 +942,10 @@ export class HhAdapter implements Adapter {
         }
         letterInForm = form.letterInForm;
         submitted = form.status === 'sent';
+        detail = form.detail;
       } else {
         submitted = await detectSubmitSuccess(page, this.timeouts.submitMs);
+        if (!submitted) detail = await describeUnconfirmed(page, vacancy.sourceId, this.debugDir);
       }
 
       if (!submitted) {
@@ -908,7 +958,8 @@ export class HhAdapter implements Adapter {
         }
         return classifyApplyOutcome({
           captcha: false, sessionLost: false, alreadyApplied: false, submitted: false,
-          reason: `клик по кнопке отклика не привёл к подтверждению подачи для вакансии ${vacancy.sourceId}`,
+          reason: `клик по кнопке отклика не привёл к подтверждению подачи для вакансии ${vacancy.sourceId}`
+            + (detail ? ` — ${detail}` : ''),
         });
       }
 

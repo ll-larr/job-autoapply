@@ -918,3 +918,60 @@ describe('Sender — стоп во время паузы между подача
     expect(q.listByStatus('approved')).toHaveLength(2);
   }, 15_000);
 });
+
+describe('Sender — причины отказов в отчёте', () => {
+  const CFG = { ...CONFIG, throttle: { hh: { minDelayMs: 0, maxDelayMs: 0 } } };
+
+  function failingAdapter(reasons: string[]): Adapter {
+    let i = 0;
+    return {
+      name: 'hh',
+      async search() { return []; },
+      async apply() { return { status: 'failed', reason: reasons[Math.min(i++, reasons.length - 1)]! }; },
+    };
+  }
+
+  it('каждый отказ попадает в report.failures с заголовком и причиной', async () => {
+    seed(q, 2);
+    const rep = await new Sender(q, new Map([['hh', failingAdapter(['первая причина', 'вторая причина'])]]), CFG, {
+      sleep: async () => {},
+    }).run();
+
+    expect(rep.failed).toBe(2);
+    expect(rep.failures).toEqual([
+      { title: 'Бизнес-аналитик', reason: 'первая причина' },
+      { title: 'Бизнес-аналитик', reason: 'вторая причина' },
+    ]);
+  });
+
+  it('отказ без исключения и с исключением адаптера — оба видны', async () => {
+    seed(q, 2);
+    let n = 0;
+    const adapter: Adapter = {
+      name: 'hh', async search() { return []; },
+      async apply() {
+        if (n++ === 0) throw new Error('страница упала\nхвост');
+        return { status: 'closed' as const };
+      },
+    };
+    const rep = await new Sender(q, new Map([['hh', adapter]]), CFG, { sleep: async () => {} }).run();
+    expect(rep.failures.map((f) => f.reason)).toEqual([
+      expect.stringContaining('страница упала'),
+      expect.stringContaining('закрыта'),
+    ]);
+  });
+
+  it('отчёт не раздувается: хранится не больше 20 причин, а failed считает всё', async () => {
+    seed(q, 30);
+    const cfg = { ...CFG, maxConsecutiveFailures: 1000, throttle: { hh: { minDelayMs: 0, maxDelayMs: 0 } } };
+    const rep = await new Sender(q, new Map([['hh', failingAdapter(['x'])]]), cfg, { sleep: async () => {} }).run();
+    expect(rep.failed).toBe(30);
+    expect(rep.failures).toHaveLength(20);
+  });
+
+  it('успехи в failures не попадают', async () => {
+    seed(q, 1);
+    const rep = await new Sender(q, new Map([['hh', mkAdapter([{ status: 'sent' }])]]), CFG, { sleep: async () => {} }).run();
+    expect(rep.failures).toEqual([]);
+  });
+});

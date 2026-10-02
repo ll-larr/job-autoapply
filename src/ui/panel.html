@@ -757,6 +757,31 @@ function confirmSendWithoutLetters(rows) {
 // заявок, а панель писала "Отправлено 0, не удалось 0" — неотличимо от
 // пустой очереди.
 function buildSendResultText(r) {
+  // Причины остановки площадки по-человечески: «hh: too_many_failures» человеку
+  // ничего не говорит, а это самая частая причина, по которой отправка «встаёт».
+  const HALT_REASON_TEXT = {
+    too_many_failures: 'предохранитель: несколько отказов подряд',
+    captcha: 'captcha — пройди капчу руками в браузере',
+    auth_required: 'нужно войти заново',
+    account_limited: 'аккаунт ограничен площадкой',
+    killed: 'остановлено вручную',
+  };
+  // Причины отказов одной строкой: одинаковые по сути (отличаются номером
+  // вакансии и именем снимка) схлопываются в «×N». Отказавшая заявка уходит в
+  // «не удалось» и в панели больше нигде не видна, поэтому причину надо назвать.
+  const summarizeFailures = (failures) => {
+    const counts = new Map();
+    for (const f of failures || []) {
+      const key = String(f.reason)
+        .replace(/;?\s*снимок .*$/, '')
+        .replace(/(вакансии|вакансию) \d+/g, '$1 №')
+        .replace(/\b\d{5,}\b/g, '№');
+      const seen = counts.get(key);
+      counts.set(key, { n: (seen ? seen.n : 0) + 1, sample: seen ? seen.sample : f.reason });
+    }
+    return [...counts.values()].slice(0, 3)
+      .map((c) => (c.n > 1 ? `${c.sample} ×${c.n}` : c.sample)).join(' · ');
+  };
   // Остановка поштучная по площадкам: careerist.ru ждёт аккаунта и отваливается
   // сразу, но hh.ru при этом отправляет дальше. Строка обязана называть каждую
   // отвалившуюся, иначе «ОСТАНОВЛЕНО (auth_required)» читается как «ничего не
@@ -764,10 +789,12 @@ function buildSendResultText(r) {
   // «killed» — это кнопка «Остановить отправку» (или npm run stop), а не
   // площадка: писать «-: killed» человеку, который сам нажал стоп, незачем.
   const sources = (r.haltedSources && r.haltedSources.length)
-    ? r.haltedSources.map((h) => (h.reason === 'killed' ? 'остановлено вручную' : `${h.source}: ${h.reason}`)).join('; ')
+    ? r.haltedSources.map((h) => (h.reason === 'killed'
+      ? HALT_REASON_TEXT.killed
+      : `${h.source}: ${HALT_REASON_TEXT[h.reason] ?? h.reason}`)).join('; ')
     : null;
   const halted = sources ? `, ОСТАНОВЛЕНО (${sources})`
-    : r.halted ? `, ОСТАНОВЛЕНО (${r.halted.reason})` : '';
+    : r.halted ? `, ОСТАНОВЛЕНО (${HALT_REASON_TEXT[r.halted.reason] ?? r.halted.reason})` : '';
   // Сколько откликов ушло без письма: «Отправлено 5» иначе скрывает, что у
   // двух из них письма не было.
   const bare = r.sentWithoutLetter ? `, из них БЕЗ ПИСЬМА ${r.sentWithoutLetter}` : '';
@@ -782,7 +809,9 @@ function buildSendResultText(r) {
     ? `, отложено ${r.deferredContacts.length} (этим контактам писали меньше 7 дней назад)`
     : '';
   const warnings = (r.warnings && r.warnings.length) ? `. ВНИМАНИЕ: ${r.warnings.join('; ')}` : '';
-  return `Отправлено ${r.sent}${bare}, не удалось ${r.failed}${empty}${halted}${unthrottled}${deferred}${warnings}.`;
+  const why = summarizeFailures(r.failures);
+  const reasons = why ? `. Причины отказов: ${why}` : '';
+  return `Отправлено ${r.sent}${bare}, не удалось ${r.failed}${empty}${halted}${unthrottled}${deferred}${warnings}${reasons}.`;
 }
 
 function resetSendButton(approved) {

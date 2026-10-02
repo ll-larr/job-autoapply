@@ -127,3 +127,42 @@ describe('panel.html — выбор модели для писем (2026-09-20)'
     expect(chosenModel('__other__', ' mistral/x ')).toBe('mistral/x');
   });
 });
+
+describe('panel.html — buildSendResultText, причины остановки и отказов', () => {
+  const buildSendResultText = extractFunction(html, 'buildSendResultText');
+  const base = { sent: 17, failed: 3, unthrottledSources: [], skippedEmptyLetter: [], deferredContacts: [], warnings: [] };
+
+  it('предохранитель называется по-человечески, а не too_many_failures', () => {
+    const text = buildSendResultText({
+      ...base,
+      halted: { source: 'hh', reason: 'too_many_failures' },
+      haltedSources: [{ source: 'hh', reason: 'too_many_failures' }],
+      failures: [],
+    });
+    expect(text).toMatch(/hh/);
+    expect(text).toMatch(/отказов подряд/);
+    expect(text).not.toMatch(/too_many_failures/);
+  });
+
+  it('причины отказов в итоге: текст, сколько раз встретился, без дублей', () => {
+    const reason = 'клик по кнопке отклика не привёл к подтверждению подачи для вакансии 1 — на странице: «Слишком много откликов»';
+    const text = buildSendResultText({
+      ...base, halted: null, haltedSources: [],
+      failures: [
+        { title: 'А', reason }, { title: 'Б', reason: reason.replace('вакансии 1', 'вакансии 2') },
+        { title: 'В', reason: 'на странице вакансии 3 кнопки отклика нет' },
+      ],
+    });
+    expect(text).toContain('Слишком много откликов');
+    expect(text).toContain('кнопки отклика нет');
+    // Две одинаковые по сути причины (отличаются номером вакансии) — одна строка с «×2».
+    expect(text.match(/Слишком много откликов/g)).toHaveLength(1);
+    expect(text).toMatch(/×2/);
+  });
+
+  it('без failures (старый отчёт) текст прежний и не падает', () => {
+    const text = buildSendResultText({ ...base, halted: null, haltedSources: [] });
+    expect(text).toContain('Отправлено 17');
+    expect(text).not.toMatch(/Причины/);
+  });
+});

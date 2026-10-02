@@ -195,7 +195,7 @@ describe('formatSendPreflight', () => {
 });
 
 describe('formatSendResult', () => {
-  const OK: SendReport = { sent: 3, failed: 0, halted: null, unthrottledSources: [], haltedSources: [], skippedEmptyLetter: [], deferredContacts: [], warnings: [], sentWithoutLetter: 0 };
+  const OK: SendReport = { sent: 3, failed: 0, halted: null, unthrottledSources: [], haltedSources: [], skippedEmptyLetter: [], deferredContacts: [], warnings: [], sentWithoutLetter: 0, failures: [] };
 
   it('Telegram: отложенные контакты, предупреждения и ограничение аккаунта названы', () => {
     const { lines, exitCode } = formatSendResult({
@@ -227,12 +227,22 @@ describe('formatSendResult', () => {
   ] as const)('halted reason=%s — exitCode 1 и понятное объяснение', (reason, pattern) => {
     const report: SendReport = {
       sent: 0, failed: 0, unthrottledSources: [],
-      halted: { source: 'hh', reason }, haltedSources: [{ source: 'hh', reason }], skippedEmptyLetter: [], deferredContacts: [], warnings: [], sentWithoutLetter: 0,
+      halted: { source: 'hh', reason }, haltedSources: [{ source: 'hh', reason }], skippedEmptyLetter: [], deferredContacts: [], warnings: [], sentWithoutLetter: 0, failures: [],
     };
     const { lines, exitCode } = formatSendResult(report);
     expect(exitCode).toBe(1);
     expect(lines.join('\n')).toContain('ОСТАНОВЛЕНО');
     expect(lines.join('\n')).toMatch(pattern);
+  });
+
+  it('причины отказов выводятся строками «Отказ: заголовок — причина»', () => {
+    const report: SendReport = { ...OK, failed: 2, failures: [
+      { title: 'Бизнес-аналитик', reason: 'клик не привёл к подтверждению — на странице: «лимит»' },
+      { title: 'Аналитик', reason: 'кнопки отклика нет' },
+    ] };
+    const { lines } = formatSendResult(report);
+    expect(lines).toContain('Отказ: Бизнес-аналитик — клик не привёл к подтверждению — на странице: «лимит»');
+    expect(lines).toContain('Отказ: Аналитик — кнопки отклика нет');
   });
 
   it('пустые письма названы громко: «Отправлено 0» иначе выглядит поломкой', () => {
@@ -256,7 +266,7 @@ describe('formatSendResult', () => {
     const report: SendReport = {
       sent: 1, failed: 0, unthrottledSources: ['hrge'],
       halted: { source: 'hh', reason: 'captcha' },
-      haltedSources: [{ source: 'hh', reason: 'captcha' }], skippedEmptyLetter: [], deferredContacts: [], warnings: [], sentWithoutLetter: 0,
+      haltedSources: [{ source: 'hh', reason: 'captcha' }], skippedEmptyLetter: [], deferredContacts: [], warnings: [], sentWithoutLetter: 0, failures: [],
     };
     const { lines } = formatSendResult(report);
     expect(lines.join('\n')).toContain('ОСТАНОВЛЕНО');

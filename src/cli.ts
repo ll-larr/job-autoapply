@@ -348,6 +348,9 @@ export function formatSendResult(report: SendReport): { lines: string[]; exitCod
     lines.push(`Отложено до ${until}: @${d.contact} — ${d.title} (этому контакту писали меньше 7 дней назад)`);
   }
   for (const w of report.warnings) lines.push(`ВНИМАНИЕ: ${w}`);
+  // Отказавшая заявка уходит в failed и больше нигде не видна: без причины
+  // «Отказов: 3» не объясняет, почему отправка остановилась.
+  for (const f of report.failures) lines.push(`Отказ: ${f.title} — ${f.reason}`);
 
   if (report.skippedEmptyLetter.length > 0) {
     lines.push(

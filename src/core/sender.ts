@@ -72,7 +72,17 @@ export interface SendReport {
    * «Отправлено 5» не скрывало, что у двух из них письма не было.
    */
   sentWithoutLetter: number;
+  /**
+   * Почему отказали заявкам этого прогона: заголовок и причина, как она записана
+   * в строку. Нужны панели: отказавшая строка уходит в `failed` и больше нигде
+   * не видна, а «не удалось 3» без причины не объясняет, почему отправка
+   * остановилась. Хранится не больше MAX_FAILURES_KEPT: `failed` считает все.
+   */
+  failures: Array<{ title: string; reason: string }>;
 }
+
+/** Сколько причин отказов отчёт хранит: остальное — только в счётчике failed. */
+export const MAX_FAILURES_KEPT = 20;
 
 /** Одному контакту — не чаще раза в 7 дней (спека 2026-09-18, 5.5). */
 export const CONTACT_COOLDOWN_MS = 7 * 86_400_000;
@@ -157,6 +167,15 @@ export class Sender {
     const report: SendReport = {
       sent: 0, failed: 0, halted: null, unthrottledSources: [], haltedSources: [],
       skippedEmptyLetter: [], deferredContacts: [], warnings: [], sentWithoutLetter: 0,
+      failures: [],
+    };
+
+    // Единственная точка отказа заявки: счётчик, причина в отчёте и строка в БД
+    // не должны расходиться.
+    const fail = (row: { id: number; vacancy: { title: string } }, reason: string): void => {
+      this.queue.markFailed(row.id, reason);
+      report.failed++;
+      if (report.failures.length < MAX_FAILURES_KEPT) report.failures.push({ title: row.vacancy.title, reason });
     };
     const rows = this.queue.listByStatus('approved');
     const consecutiveFailures = new Map<string, number>();
@@ -200,8 +219,7 @@ export class Sender {
 
       const adapter = this.adapters.get(row.source);
       if (adapter === undefined) {
-        this.queue.markFailed(row.id, `нет адаптера для площадки ${row.source}`);
-        report.failed++;
+        fail(row, `нет адаптера для площадки ${row.source}`);
         continue;
       }
 
@@ -289,8 +307,7 @@ export class Sender {
       }
 
       if (result.status === 'closed') {
-        this.queue.markFailed(row.id, 'вакансия закрыта или в архиве — откликаться некуда');
-        report.failed++;
+        fail(row, 'вакансия закрыта или в архиве — откликаться некуда');
         continue;
       }
 
@@ -341,8 +358,7 @@ export class Sender {
         // comparison rather than assumed — so `result.reason` is safe
         // without a cast, and stays sound if ApplyResult ever grows a
         // new tag.
-        this.queue.markFailed(row.id, result.reason);
-        report.failed++;
+        fail(row, result.reason);
 
         // Предохранитель. Подряд идущие отказы по одной площадке означают, что
         // сломалось что-то общее, а не конкретная вакансия: слетела вёрстка,

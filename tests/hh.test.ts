@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { chromium, type Browser, type BrowserContext, type Page, type Route } from 'playwright';
 import { normalizeVacancy } from '../src/core/vacancy.js';
 import {
@@ -802,7 +804,11 @@ describe('окно отклика — разбор снятой разметки
  * на /applicant/vacancy_response, там отдаём снятое окно. «Send application»
  * — type=submit, форма уходит нативным POST на тот же адрес; его и считаем.
  */
-async function modalContext(formHtml: string): Promise<{ context: BrowserContext; posts: string[]; negotiations: () => number }> {
+async function modalContext(
+  formHtml: string,
+  /** Что hh отвечает на отправку формы. По умолчанию — страница «отклик отправлен». */
+  postHtml: string = responseSentHtml,
+): Promise<{ context: BrowserContext; posts: string[]; negotiations: () => number }> {
   const context = await browser.newContext();
   const posts: string[] = [];
   let negotiationsHits = 0;
@@ -813,7 +819,7 @@ async function modalContext(formHtml: string): Promise<{ context: BrowserContext
     if (url.includes('/applicant/vacancy_response')) {
       if (req.method() === 'POST') {
         posts.push(req.postData() ?? '');
-        return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: responseSentHtml });
+        return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: postHtml });
       }
       return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: formHtml });
     }
@@ -948,6 +954,62 @@ describe('HhAdapter.apply — окно отклика (без сети, без �
       const body = new URLSearchParams(posts[0]);
       expect(body.get('task_392839377')).toBe('392839378');
       expect(body.get('task_392839395_text')).toBe('Готов обсудить');
+    } finally {
+      await context.close();
+    }
+  }, 30000);
+});
+
+describe('HhAdapter.apply — отклик не подтвердился: причина фиксируется, а не теряется', () => {
+  // Раньше после неподтверждённой отправки страница сразу уходила на повторную
+  // загрузку вакансии, и то, что hh написал человеку (лимит, капча, требование
+  // письма), пропадало. В отказе оставалось «клик не привёл к подтверждению» —
+  // по нему нельзя было понять, почему отправка раз за разом встаёт.
+  const alertPage = '<html><head><title>Отклик</title></head><body>'
+    + '<div role="alert">Слишком много откликов за короткое время. Попробуйте позже.</div></body></html>';
+  const quietPage = '<html><head><title>Тишина</title></head><body><p>ничего</p></body></html>';
+
+  async function applyUnconfirmed(postHtml: string) {
+    const debugDir = mkdtempSync(join(tmpdir(), 'jaa-hhdbg-'));
+    const { context, posts } = await modalContext(letterOpenHtml, postHtml);
+    try {
+      const adapter = new HhAdapter({ context, debugDir, timeouts: { chatFrameMs: 500, submitMs: 3000 } });
+      const result = await adapter.apply(hhVacancy(), 'письмо');
+      return { result, posts, debugDir };
+    } finally {
+      await context.close();
+    }
+  }
+
+  it('текст ошибки со страницы попадает в причину отказа', async () => {
+    const { result, posts } = await applyUnconfirmed(alertPage);
+    expect(posts).toHaveLength(1);
+    expect(result.status).toBe('failed');
+    const reason = result.status === 'failed' ? result.reason : '';
+    expect(reason).toContain('не привёл к подтверждению');
+    expect(reason).toContain('Слишком много откликов');
+  }, 30000);
+
+  it('снимок экрана ложится в каталог отладки, и причина называет файл', async () => {
+    const { result, debugDir } = await applyUnconfirmed(alertPage);
+    const files = readdirSync(debugDir);
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatch(/^136701903-.*\.png$/);
+    expect(result.status === 'failed' && result.reason).toContain(files[0]!);
+  }, 30000);
+
+  it('на странице нет ни одного сообщения — причина хотя бы называет заголовок страницы', async () => {
+    const { result } = await applyUnconfirmed(quietPage);
+    expect(result.status === 'failed' && result.reason).toContain('Тишина');
+  }, 30000);
+
+  it('успешная подача каталог отладки не трогает', async () => {
+    const debugDir = mkdtempSync(join(tmpdir(), 'jaa-hhdbg-'));
+    const { context } = await modalContext(letterOpenHtml);
+    try {
+      const adapter = new HhAdapter({ context, debugDir, timeouts: { chatFrameMs: 500, submitMs: 5000 } });
+      expect(await adapter.apply(hhVacancy(), 'письмо')).toEqual({ status: 'sent' });
+      expect(readdirSync(debugDir)).toEqual([]);
     } finally {
       await context.close();
     }
