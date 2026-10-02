@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BrowserContext, Frame, Locator, Page } from 'playwright';
 import { normalizeVacancy, type ExperienceLevel, type Vacancy } from '../core/vacancy.js';
@@ -396,18 +396,47 @@ export async function detectSubmitSuccess(page: Page, timeoutMs: number): Promis
 }
 
 /**
- * НЕ ПОДТВЕРЖДЕНО ЖИВЬЁМ. Признак капчи на hh.ru ни разу не встретился ни в
- * одной снятой фикстуре (docs/hh-selectors.md, раздел «что действительно
- * осталось неизвестным») — снять его означало бы вручную пройти капчу ради
- * разведки, отдельный риск, на который никто не пошёл. Функция всегда
- * возвращает false: капча этим кодом не детектируется. Практическое
- * следствие — клик по кнопке отклика на капче просто не приведёт к
- * появлению маркера успеха, и apply() вернёт 'failed' по таймауту вместо
- * 'captcha'. Когда селектор снимут живьём, здесь достаточно заменить
- * реализацию, сигнатура не изменится.
+ * Капча hh.ru. Снята живьём 2026-10-02 (вакансия 137237197, анкета заполнена,
+ * жмётся «Send application»): поверх формы встаёт окно «Complete the CAPTCHA —
+ * enter the text from the picture» с картинкой, полем и кнопкой. Точной разметки
+ * (data-qa) у окна не сняли, поэтому признаков три, и любого достаточно:
+ * видимая картинка/блок с «captcha» в разметке либо видимая фраза окна.
+ * Спрятанная разметка не считается: на обычных страницах она лежит скрытой.
+ *
+ * Капчу система НЕ решает и не обходит никогда. Узнав её, адаптер возвращает
+ * `captcha`: площадка останавливается, заявка остаётся approved, вкладка с
+ * окном остаётся открытой, чтобы человек решил её руками.
  */
-export async function detectCaptcha(_page: Page): Promise<boolean> {
+const CAPTCHA_MARKUP = 'img[src*="captcha" i], [data-qa*="captcha" i], [class*="captcha" i]';
+const CAPTCHA_PHRASE = /complete the captcha|enter the text from the picture|введите текст с картинки|подтвердите,? что вы не робот/i;
+
+async function anyVisible(loc: Locator, limit = 5): Promise<boolean> {
+  const n = Math.min(await loc.count(), limit);
+  for (let i = 0; i < n; i++) if (await loc.nth(i).isVisible()) return true;
   return false;
+}
+
+export async function detectCaptcha(page: Page): Promise<boolean> {
+  try {
+    return (await anyVisible(page.locator(CAPTCHA_MARKUP))) || (await anyVisible(page.getByText(CAPTCHA_PHRASE)));
+  } catch {
+    return false; // страница в переходе или закрылась — это не капча
+  }
+}
+
+/**
+ * Чем кончилась отправка формы: маркер успеха, капча или тишина до таймаута.
+ * Капчу видно сразу, и ждать из-за неё полный таймаут подтверждения (15 с на
+ * каждую заявку) незачем.
+ */
+export async function waitSubmitOutcome(page: Page, timeoutMs: number): Promise<'success' | 'captcha' | 'timeout'> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await page.locator(SUCCESS_MARKER).first().isVisible().catch(() => false)) return 'success';
+    if (await detectCaptcha(page)) return 'captcha';
+    if (Date.now() >= deadline) return 'timeout';
+    await page.waitForTimeout(300).catch(() => {});
+  }
 }
 
 /**
@@ -560,12 +589,15 @@ const DEFAULT_DEBUG_DIR = 'data/hh-debug';
 export async function describeUnconfirmed(page: Page, vacancyId: string, debugDir: string): Promise<string> {
   const parts: string[] = [];
   try {
-    const seen = await page.evaluate(() => {
-      const clip = (s: string | null | undefined): string => (s ?? '').replace(/\s+/g, ' ').trim().slice(0, 140);
+    // Строкой, а не функцией: под tsx (npm run panel) esbuild оборачивает
+    // вложенные функции в __name(), которого в браузере нет, и вызов молча
+    // падал — в причине оставался один снимок. Под vitest этого не видно.
+    const seen = await page.evaluate(`(() => {
+      const clip = (s) => (s || '').replace(/\\s+/g, ' ').trim().slice(0, 140);
       const found = [...document.querySelectorAll('[role="alert"], [data-qa*="error" i], [class*="error" i]')]
         .map((e) => clip(e.textContent)).filter((t) => t !== '');
       return { title: clip(document.title), alerts: [...new Set(found)].slice(0, 3) };
-    });
+    })()`) as { title: string; alerts: string[] };
     parts.push(seen.alerts.length > 0
       ? `на странице: «${seen.alerts.join(' | ')}»`
       : `страница: «${seen.title || 'без заголовка'}»`);
@@ -831,7 +863,11 @@ export class HhAdapter implements Adapter {
     page: Page,
     vacancy: Vacancy,
     letter: string,
-  ): Promise<{ status: 'sent' | 'unconfirmed'; letterInForm: boolean; detail?: string } | { status: 'rejected'; reason: string }> {
+  ): Promise<
+    | { status: 'sent' | 'unconfirmed'; letterInForm: boolean; detail?: string }
+    | { status: 'captcha' }
+    | { status: 'rejected'; reason: string }
+  > {
     const questions = await readTestQuestions(page);
     let answers: TestAnswer[] | null = null;
     if (questions.length > 0) {
@@ -870,7 +906,10 @@ export class HhAdapter implements Adapter {
     }
     await submit.click();
 
-    let ok = await detectSubmitSuccess(page, this.timeouts.submitMs);
+    const outcome = await waitSubmitOutcome(page, this.timeouts.submitMs);
+    // Капча — не отказ: страницу не трогаем, пока человек её не решит.
+    if (outcome === 'captcha') return { status: 'captcha' };
+    let ok = outcome === 'success';
     let detail: string | undefined;
     if (!ok) {
       // Сначала смотрим, что сказал hh, и только потом уходим со страницы.
@@ -884,9 +923,38 @@ export class HhAdapter implements Adapter {
     return { status: ok ? 'sent' : 'unconfirmed', letterInForm, detail: ok ? undefined : detail };
   }
 
+  /** Что появилось после клика по «Откликнуться»: форма/успех, капча или ничего за таймаут. */
+  private async waitAfterApplyClick(page: Page): Promise<'ready' | 'captcha' | 'timeout'> {
+    const deadline = Date.now() + this.timeouts.submitMs;
+    const ready = page.locator(SUCCESS_MARKER).or(page.locator(MODAL_SUBMIT)).first();
+    for (;;) {
+      if (await ready.isVisible().catch(() => false)) return 'ready';
+      if (await detectCaptcha(page)) return 'captcha';
+      if (Date.now() >= deadline) return 'timeout';
+      await page.waitForTimeout(300).catch(() => {});
+    }
+  }
+
   async apply(vacancy: Vacancy, letter: string): Promise<ApplyResult> {
     const context = await this.getContext();
     const page = await context.newPage();
+    // Вкладку с капчей закрывать нельзя: её решает человек, а закрытая вкладка
+    // уносит и окно капчи, и заполненную анкету.
+    let keepOpen = false;
+    const stopOnCaptcha = async (where: string): Promise<ApplyResult> => {
+      keepOpen = true;
+      // HTML окна — для точного селектора вместо угадывания по фразам
+      // (docs/hh-selectors.md). Не критично: не получилось — идём дальше.
+      try {
+        mkdirSync(this.debugDir, { recursive: true });
+        writeFileSync(join(this.debugDir, `${vacancy.sourceId}-captcha.html`), await page.content(), 'utf8');
+      } catch { /* диагностика не должна мешать остановке */ }
+      console.error(
+        `[hh] КАПЧА на вакансии ${vacancy.sourceId} (${where}). Вкладка оставлена открытой: реши капчу `
+        + 'руками в окне браузера и запусти отправку снова. Обход капчи не реализуется.',
+      );
+      return { status: 'captcha' };
+    };
     try {
       await page.goto(vacancy.url, { waitUntil: 'domcontentloaded', timeout: this.timeouts.navigationMs });
 
@@ -897,11 +965,7 @@ export class HhAdapter implements Adapter {
           captcha: false, sessionLost: true, alreadyApplied: false, submitted: false,
         });
       }
-      if (await detectCaptcha(page)) {
-        return classifyApplyOutcome({
-          captcha: true, sessionLost: false, alreadyApplied: false, submitted: false,
-        });
-      }
+      if (await detectCaptcha(page)) return await stopOnCaptcha('при открытии страницы');
       if (await detectAlreadyApplied(page)) {
         return classifyApplyOutcome({
           captcha: false, sessionLost: false, alreadyApplied: true, submitted: false,
@@ -926,15 +990,18 @@ export class HhAdapter implements Adapter {
       // её заполняем и отправляем одним кликом по MODAL_SUBMIT.
       await page.locator(APPLY_BUTTON).first().click();
 
-      await page.locator(SUCCESS_MARKER).or(page.locator(MODAL_SUBMIT)).first()
-        .waitFor({ state: 'visible', timeout: this.timeouts.submitMs })
-        .catch(() => {});
+      // Ждём форму, маркер успеха или капчу — что появится первым. Капча без
+      // формы не редкость (живьём 2026-10-02), и сидеть из-за неё весь таймаут
+      // на каждой заявке незачем.
+      const afterClick = await this.waitAfterApplyClick(page);
+      if (afterClick === 'captcha') return await stopOnCaptcha('после клика «Откликнуться»');
 
       let letterInForm = false;
       let detail: string | undefined;
       let submitted: boolean;
       if (await page.locator(MODAL_SUBMIT).first().isVisible().catch(() => false)) {
         const form = await this.submitResponseForm(page, vacancy, letter);
+        if (form.status === 'captcha') return await stopOnCaptcha('после отправки формы');
         if (form.status === 'rejected') {
           return classifyApplyOutcome({
             captcha: false, sessionLost: false, alreadyApplied: false, submitted: false, reason: form.reason,
@@ -944,7 +1011,9 @@ export class HhAdapter implements Adapter {
         submitted = form.status === 'sent';
         detail = form.detail;
       } else {
-        submitted = await detectSubmitSuccess(page, this.timeouts.submitMs);
+        const outcome = await waitSubmitOutcome(page, this.timeouts.submitMs);
+        if (outcome === 'captcha') return await stopOnCaptcha('после клика «Откликнуться»');
+        submitted = outcome === 'success';
         if (!submitted) detail = await describeUnconfirmed(page, vacancy.sourceId, this.debugDir);
       }
 
@@ -983,7 +1052,7 @@ export class HhAdapter implements Adapter {
         captcha: false, sessionLost: false, alreadyApplied: false, submitted: true,
       });
     } finally {
-      await page.close();
+      if (!keepOpen) await page.close();
     }
   }
 }

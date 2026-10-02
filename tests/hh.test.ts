@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync, mkdtempSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { chromium, type Browser, type BrowserContext, type Page, type Route } from 'playwright';
 import { normalizeVacancy } from '../src/core/vacancy.js';
@@ -169,7 +170,7 @@ describe('classifyApplyOutcome', () => {
 });
 
 describe('detectCaptcha / detectAlreadyApplied — маркеры не сняты живьём', () => {
-  it('detectCaptcha всегда false, пока не появится проверенный селектор (docs/hh-selectors.md)', async () => {
+  it('detectCaptcha: на обычной странице вакансии капчи нет', async () => {
     const { context, page } = await pageWithContent(vacancyHtml);
     expect(await detectCaptcha(page)).toBe(false);
     await context.close();
@@ -1014,4 +1015,122 @@ describe('HhAdapter.apply — отклик не подтвердился: при
       await context.close();
     }
   }, 30000);
+});
+
+/**
+ * Капча hh.ru. Снята живьём 2026-10-02 на вакансии 137237197: после «Send
+ * application» поверх формы встаёт окно «Complete the CAPTCHA … enter the text
+ * from the picture». Раньше детектор был заглушкой, и такой отказ выглядел как
+ * «клик не привёл к подтверждению»: отправка на hh раз за разом вставала по
+ * предохранителю, а заявки сгорали в failed.
+ */
+const CAPTCHA_EN = '<div role="dialog"><h2>Complete the CAPTCHA</h2>'
+  + '<p>To confirm you are not a robot, enter the text from the picture:</p>'
+  + '<img src="/account/captcha/image?x=1"><input placeholder="Text from the picture"><button>Отправить</button></div>';
+const CAPTCHA_RU = '<div><h2>Подтвердите, что вы не робот</h2><p>Введите текст с картинки</p><input></div>';
+const CAPTCHA_IMG_ONLY = '<div><img src="https://hh.ru/account/captcha?id=42" width="100" height="40"></div>';
+const CAPTCHA_HIDDEN = '<div style="display:none"><img src="/account/captcha/x"><p>Complete the CAPTCHA</p></div><h1>Вакансия</h1>';
+
+describe('detectCaptcha — окно капчи hh.ru', () => {
+  for (const [name, html] of [['английское окно', CAPTCHA_EN], ['русское окно', CAPTCHA_RU], ['только картинка капчи', CAPTCHA_IMG_ONLY]] as const) {
+    it(`${name} — капча`, async () => {
+      const { context, page } = await pageWithContent(`<html><body>${html}</body></html>`);
+      expect(await detectCaptcha(page)).toBe(true);
+      await context.close();
+    });
+  }
+
+  it('спрятанная разметка капчи на странице — не капча (на обычных страницах она лежит скрытой)', async () => {
+    const { context, page } = await pageWithContent(`<html><body>${CAPTCHA_HIDDEN}</body></html>`);
+    expect(await detectCaptcha(page)).toBe(false);
+    await context.close();
+  });
+});
+
+describe('HhAdapter.apply — капча после отправки', () => {
+  async function applyWithCaptcha(captchaHtml: string) {
+    const debugDir = mkdtempSync(join(tmpdir(), 'jaa-hhcap-'));
+    const { context, posts } = await modalContext(letterOpenHtml, `<html><body>${captchaHtml}</body></html>`);
+    const adapter = new HhAdapter({ context, debugDir, timeouts: { chatFrameMs: 500, submitMs: 8000 } });
+    const started = Date.now();
+    const result = await adapter.apply(hhVacancy(), 'письмо');
+    return { result, posts, context, debugDir, ms: Date.now() - started };
+  }
+
+  it('возвращает captcha, а не failed: заявка не сгорит, площадка остановится с понятной причиной', async () => {
+    const { result, posts, context } = await applyWithCaptcha(CAPTCHA_EN);
+    try {
+      expect(posts).toHaveLength(1);
+      expect(result).toEqual({ status: 'captcha' });
+    } finally { await context.close(); }
+  }, 30000);
+
+  it('не ждёт полный таймаут подтверждения — капча видна сразу', async () => {
+    const { ms, context } = await applyWithCaptcha(CAPTCHA_EN);
+    try {
+      expect(ms).toBeLessThan(6000);
+    } finally { await context.close(); }
+  }, 30000);
+
+  it('вкладка с капчей остаётся открытой — человек решает её руками, не теряя заполненную форму', async () => {
+    const { context } = await applyWithCaptcha(CAPTCHA_EN);
+    try {
+      const open = context.pages().filter((p) => !p.isClosed());
+      expect(open).toHaveLength(1);
+      expect(await detectCaptcha(open[0]!)).toBe(true);
+    } finally { await context.close(); }
+  }, 30000);
+
+  it('HTML окна капчи сохраняется для точного селектора; снимок экрана не нужен', async () => {
+    const { debugDir, context } = await applyWithCaptcha(CAPTCHA_RU);
+    try {
+      expect(readdirSync(debugDir)).toEqual(['136701903-captcha.html']);
+      expect(readFileSync(join(debugDir, '136701903-captcha.html'), 'utf8')).toContain('Введите текст с картинки');
+    } finally { await context.close(); }
+  }, 30000);
+
+  it('обычный неподтверждённый отклик (не капча) по-прежнему failed, и страница закрывается', async () => {
+    const debugDir = mkdtempSync(join(tmpdir(), 'jaa-hhcap-'));
+    const { context } = await modalContext(letterOpenHtml, '<html><body><div role="alert">Что-то пошло не так</div></body></html>');
+    try {
+      const adapter = new HhAdapter({ context, debugDir, timeouts: { chatFrameMs: 500, submitMs: 2000 } });
+      const result = await adapter.apply(hhVacancy(), 'письмо');
+      expect(result.status).toBe('failed');
+      expect(context.pages().filter((p) => !p.isClosed())).toHaveLength(0);
+    } finally { await context.close(); }
+  }, 30000);
+});
+
+describe('HhAdapter.apply — капча сразу после клика «Откликнуться»', () => {
+  // Живьём 2026-10-02: на двух вакансиях без анкеты окно капчи встало поверх
+  // страницы вакансии сразу после клика, формы с «Send application» не было.
+  it('капча вместо формы — captcha без ожидания таймаута, вкладка открыта', async () => {
+    const { context, posts } = await modalContext(`<html><body>${CAPTCHA_EN}</body></html>`);
+    try {
+      const adapter = new HhAdapter({ context, timeouts: { chatFrameMs: 500, submitMs: 8000 } });
+      const started = Date.now();
+      const result = await adapter.apply(hhVacancy(), '');
+      expect(result).toEqual({ status: 'captcha' });
+      expect(Date.now() - started).toBeLessThan(5000);
+      expect(posts).toHaveLength(0);
+      expect(context.pages().filter((p) => !p.isClosed())).toHaveLength(1);
+    } finally {
+      await context.close();
+    }
+  }, 30000);
+});
+
+describe('hh-адаптер под боевым загрузчиком tsx', () => {
+  // Под vitest этот код работал, а под `npm run panel` (tsx) текст страницы не
+  // читался: esbuild оборачивает функции внутри page.evaluate в __name(), а в
+  // браузере такой функции нет. Поэтому проверка идёт отдельным процессом tsx.
+  it('текст сообщения hh и капча читаются и под tsx', () => {
+    const out = execFileSync(process.execPath, ['--import', 'tsx', 'tests/support/hh-tsx-probe.mts'], {
+      encoding: 'utf8', timeout: 60_000,
+    });
+    const r = JSON.parse(out.trim().split('\n').at(-1)!) as { described: string; captcha: boolean; plain: boolean };
+    expect(r.described).toContain('Слишком много откликов');
+    expect(r.captcha).toBe(true);
+    expect(r.plain).toBe(false);
+  }, 90000);
 });
