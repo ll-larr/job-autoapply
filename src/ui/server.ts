@@ -46,6 +46,8 @@ interface SendState {
    * Выключение тумблера останавливает только автоматическую отправку (7.3).
    */
   origin: 'human' | 'auto' | null;
+  /** Человек нажал «Остановить отправку»: текущая подача доезжает, дальше — стоп. */
+  stopping: boolean;
 }
 
 /**
@@ -59,14 +61,18 @@ interface SearchState {
   startedAt: number | null;
   result: { report: unknown; emptyLetters: number; autoApproved?: number } | null;
   error: string | null;
+  /** Человек нажал «Остановить поиск»: идёт дочитывание текущего шага. */
+  stopping: boolean;
 }
 
 /** Состояние дозаполнения писем. Та же схема, что у поиска и отправки, и по той же причине: это минуты. */
 interface LettersState {
   running: boolean;
   startedAt: number | null;
-  result: { found: number; filled: number; failure?: string } | null;
+  result: { found: number; filled: number; failure?: string; stopped?: true } | null;
   error: string | null;
+  /** Человек нажал «Остановить написание писем»: дописывается текущее письмо. */
+  stopping: boolean;
 }
 
 export interface PanelDeps {
@@ -87,8 +93,12 @@ export interface PanelDeps {
    * её означало бы получить две расходящиеся версии одного и того же.
    *
    * Без неё кнопка поиска в панели недоступна.
+   *
+   * signal — кнопка «Остановить поиск»: поиск обязан его слушать и вернуть то,
+   * что успел (report.stoppedBecause = 'stopped').
    */
-  startSearch?: (limit: number) => Promise<{ report: unknown; emptyLetters: number; autoApproved?: number }>;
+  startSearch?: (limit: number, signal: AbortSignal)
+    => Promise<{ report: unknown; emptyLetters: number; autoApproved?: number }>;
   /**
    * Дозаполнение пустых писем. Без неё кнопка «Дописать письма» недоступна.
    *
@@ -96,7 +106,7 @@ export interface PanelDeps {
    * сгенерироваться (429, кончились деньги на OpenRouter), и человек видит
    * это в панели — там же должна быть и кнопка, а не отсылка в терминал.
    */
-  fillLetters?: () => Promise<{ found: number; filled: number; failure?: string }>;
+  fillLetters?: (signal: AbortSignal) => Promise<{ found: number; filled: number; failure?: string; stopped?: true }>;
   /**
    * Где сейчас прокси для писем. Если его нет, поиск и генерация писем внешне
    * работают, но все письма выходят пустыми — 2026-09-01 это стоило прогона
@@ -155,22 +165,31 @@ function withContactWarnings(queue: Queue, rows: QueueRow[]): Array<QueueRow & {
 export async function startPanel(
   queue: Queue, port: number, deps: PanelDeps = {},
 ): Promise<{ port: number; close(): Promise<void> }> {
-  const send: SendState = { running: false, startedAt: null, report: null, error: null, origin: null };
+  const send: SendState = { running: false, startedAt: null, report: null, error: null, origin: null, stopping: false };
   const canSend = deps.adapters !== undefined && deps.config !== undefined;
-  const search: SearchState = { running: false, startedAt: null, result: null, error: null };
+  const search: SearchState = { running: false, startedAt: null, result: null, error: null, stopping: false };
+  // Кнопка «Остановить поиск» / «Остановить написание писем» подаёт сигнал
+  // тому, что сейчас работает. Отправка останавливается флагом data/STOP —
+  // тем же, что `npm run stop`, — потому что её надо уметь остановить и снаружи.
+  let searchAbort: AbortController | null = null;
+  let lettersAbort: AbortController | null = null;
   const canSearch = deps.startSearch !== undefined;
-  const letters: LettersState = { running: false, startedAt: null, result: null, error: null };
+  const letters: LettersState = { running: false, startedAt: null, result: null, error: null, stopping: false };
   const canFillLetters = deps.fillLetters !== undefined;
 
   // Отправка идёт минутами; запуск не ждёт её конца, панель опрашивает статус.
   // Одна точка и для кнопки «Отправить всё», и для автоотклика после поиска:
   // лимиты, паузы и остановки — те же самые.
-  const startSend = (origin: 'human' | 'auto'): void => {
+  //
+  // withoutLetters — человек подтвердил в панели, что заявки без письма уходят
+  // без него. Автоотклик его не ставит никогда.
+  const startSend = (origin: 'human' | 'auto', withoutLetters = false): void => {
     send.running = true;
     send.startedAt = Date.now();
     send.report = null;
     send.error = null;
     send.origin = origin;
+    send.stopping = false;
     void (async () => {
       try {
         clearStop();
@@ -178,13 +197,18 @@ export async function startPanel(
           queue,
           new Map((deps.adapters ?? []).map((a) => [a.name, a])),
           deps.config!,
-          { onSent: deps.onSent },
+          { onSent: deps.onSent, allowEmptyLetter: withoutLetters },
         );
         send.report = await sender.run();
       } catch (e) {
         send.error = e instanceof Error ? e.message : String(e);
       } finally {
+        // Флаг, поднятый кнопкой «Остановить отправку», своё отработал: не
+        // оставляем его висеть до следующего запуска (`npm run status` иначе
+        // предупреждал бы о нём, а send снимает его сам лишь при старте).
+        if (send.stopping) clearStop();
         send.running = false;
+        send.stopping = false;
       }
     })();
   };
@@ -241,7 +265,15 @@ export async function startPanel(
           result: search.result,
           error: search.error,
           startedAt: search.startedAt,
+          stopping: search.stopping,
         });
+      }
+
+      if (req.method === 'POST' && req.url === '/api/search/stop') {
+        if (!search.running || searchAbort === null) return json(res, { error: 'Поиск не идёт — останавливать нечего.' }, 409);
+        search.stopping = true;
+        searchAbort.abort();
+        return json(res, { stopping: true });
       }
 
       if (req.method === 'POST' && req.url === '/api/search/start') {
@@ -272,19 +304,28 @@ export async function startPanel(
         search.startedAt = Date.now();
         search.result = null;
         search.error = null;
+        search.stopping = false;
+        const abort = new AbortController();
+        searchAbort = abort;
 
         // Не ждём: ответ уходит сразу, панель опрашивает статус.
         void (async () => {
           try {
-            search.result = await deps.startSearch!(limit);
+            search.result = await deps.startSearch!(limit, abort.signal);
           } catch (e) {
             search.error = e instanceof Error ? e.message : String(e);
           } finally {
             search.running = false;
+            search.stopping = false;
+            searchAbort = null;
           }
           // Автоотклик (спека 7.2): поиск уже одобрил годное — отправка
-          // стартует сама, тем же путём, что кнопка.
-          if (canSend && (search.result?.autoApproved ?? 0) > 0 && !send.running) startSend('auto');
+          // стартует сама, тем же путём, что кнопка. Остановленный человеком
+          // поиск её не запускает: он передумал, и отправлять за него то, что
+          // успело набраться, значило бы сделать обратное.
+          if (canSend && !abort.signal.aborted && (search.result?.autoApproved ?? 0) > 0 && !send.running) {
+            startSend('auto');
+          }
         })();
 
         return json(res, { started: true }, 202);
@@ -310,7 +351,17 @@ export async function startPanel(
           result: letters.result,
           error: letters.error,
           startedAt: letters.startedAt,
+          stopping: letters.stopping,
         });
+      }
+
+      if (req.method === 'POST' && req.url === '/api/letters/stop') {
+        if (!letters.running || lettersAbort === null) {
+          return json(res, { error: 'Письма сейчас не пишутся — останавливать нечего.' }, 409);
+        }
+        letters.stopping = true;
+        lettersAbort.abort();
+        return json(res, { stopping: true });
       }
 
       if (req.method === 'POST' && req.url === '/api/letters/start') {
@@ -328,14 +379,19 @@ export async function startPanel(
         letters.startedAt = Date.now();
         letters.result = null;
         letters.error = null;
+        letters.stopping = false;
+        const abort = new AbortController();
+        lettersAbort = abort;
 
         void (async () => {
           try {
-            letters.result = await deps.fillLetters!();
+            letters.result = await deps.fillLetters!(abort.signal);
           } catch (e) {
             letters.error = e instanceof Error ? e.message : String(e);
           } finally {
             letters.running = false;
+            letters.stopping = false;
+            lettersAbort = null;
           }
         })();
 
@@ -369,7 +425,18 @@ export async function startPanel(
           approved: queue.listByStatus('approved').length,
           startedAt: send.startedAt,
           origin: send.origin,
+          stopping: send.stopping,
         });
+      }
+
+      if (req.method === 'POST' && req.url === '/api/send/stop') {
+        // Флаг поднимается только при идущей отправке. Клик впустую не должен
+        // оставлять после себя флаг, а молча проглотить его значило бы обмануть
+        // человека — поэтому явный 409.
+        if (!send.running) return json(res, { error: 'Отправка не идёт — останавливать нечего.' }, 409);
+        send.stopping = true;
+        requestStop();
+        return json(res, { stopping: true });
       }
 
       if (req.method === 'POST' && req.url === '/api/send/start') {
@@ -388,7 +455,10 @@ export async function startPanel(
           return json(res, { error: 'Отправка уже идёт.' }, 409);
         }
 
-        startSend('human');
+        // «Отправить без письма» — только по явному true от панели, которая
+        // предупредила человека. Тело может быть пустым (старые вызовы).
+        const body = await readJson(req).catch(() => ({} as Record<string, unknown>));
+        startSend('human', body['withoutLetters'] === true);
         return json(res, { started: true }, 202);
       }
 

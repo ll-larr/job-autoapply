@@ -41,3 +41,47 @@ describe('complete', () => {
     expect(!r.ok && r.failure).toMatch(/^a: лимит запросов/);
   });
 });
+
+describe('complete — остановка (signal)', () => {
+  it('сигнал уже подан — в сеть не ходит, отказ называет остановку', async () => {
+    process.env['OPENROUTER_API_KEY'] = 'k';
+    const ctl = new AbortController();
+    ctl.abort();
+    let calls = 0;
+    const r = await complete([{ role: 'user', content: 'x' }], {
+      models: ['a', 'b'], signal: ctl.signal, fetchImpl: async () => { calls++; return reply('ok'); },
+    });
+    expect(calls).toBe(0);
+    expect(!r.ok && r.failure).toMatch(/остановлен/i);
+  });
+
+  it('сигнал подан посреди запроса — запрос обрывается сразу, остальные модели и попытки не пробуются', async () => {
+    // Иначе «Остановить» ждала бы по девяносто секунд на каждую попытку каждой
+    // модели из цепочки — то есть минуты, и кнопка выглядела бы неработающей.
+    process.env['OPENROUTER_API_KEY'] = 'k';
+    const ctl = new AbortController();
+    let calls = 0;
+    const started = Date.now();
+    const pending = complete([{ role: 'user', content: 'x' }], {
+      models: ['a', 'b'], attemptsPerModel: 3, signal: ctl.signal, timeoutMs: 60_000,
+      fetchImpl: (_url, init) => new Promise<Response>((_res, rej) => {
+        calls++;
+        init!.signal!.addEventListener('abort', () => rej(new DOMException('This operation was aborted', 'AbortError')));
+      }),
+    });
+    setTimeout(() => ctl.abort(), 50);
+    const r = await pending;
+
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(calls).toBe(1);
+    expect(!r.ok && r.failure).toMatch(/остановлен/i);
+  }, 15_000);
+
+  it('без signal поведение прежнее', async () => {
+    process.env['OPENROUTER_API_KEY'] = 'k';
+    const r = await complete([{ role: 'user', content: 'x' }], {
+      models: ['a'], attemptsPerModel: 1, fetchImpl: async () => reply('ответ'),
+    });
+    expect(r).toEqual({ ok: true, text: 'ответ', model: 'a' });
+  });
+});

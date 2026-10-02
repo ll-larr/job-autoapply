@@ -66,6 +66,12 @@ export interface SendReport {
   deferredContacts: Array<{ contact: string; until: number; title: string }>;
   /** «Отправлено, но…»: текст в Telegram ушёл, а резюме не приложилось. */
   warnings: string[];
+  /**
+   * Сколько из отправленных откликов ушло БЕЗ сопроводительного письма. Не
+   * ноль только при `allowEmptyLetter`: панель говорит об этом числом, чтобы
+   * «Отправлено 5» не скрывало, что у двух из них письма не было.
+   */
+  sentWithoutLetter: number;
 }
 
 /** Одному контакту — не чаще раза в 7 дней (спека 2026-09-18, 5.5). */
@@ -92,7 +98,21 @@ interface Deps {
    * ронять отправку — ловится и отбрасывается.
    */
   onSent?: (v: Vacancy) => void;
+  /**
+   * Подавать и заявки с пустым письмом. По умолчанию нет: отклик без письма —
+   * решение человека, а не молчаливое поведение отправки. Включает его только
+   * панель, после предупреждения «отклики уйдут без сопроводительного письма»
+   * (`/api/send/start`, `withoutLetters`). Автоотклик и `npm run send` флаг не
+   * ставят никогда.
+   *
+   * Telegram флаг не касается: там письмо — это и есть сообщение рекрутёру,
+   * пустое отправить нечем.
+   */
+  allowEmptyLetter?: boolean;
 }
+
+/** Через сколько миллисекунд пауза между подачами заглядывает в флаг остановки. */
+const STOP_POLL_MS = 250;
 
 const HOUR = 3600_000;
 const DAY = 86_400_000;
@@ -103,6 +123,7 @@ export class Sender {
   private random: () => number;
   private stopRequested: () => boolean;
   private onSent?: (v: Vacancy) => void;
+  private allowEmptyLetter: boolean;
 
   constructor(
     private queue: Queue,
@@ -110,17 +131,32 @@ export class Sender {
     private config: Config,
     deps: Deps = {},
   ) {
-    this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.now = deps.now ?? (() => Date.now());
     this.random = deps.random ?? Math.random;
     this.stopRequested = deps.stopRequested ?? isStopRequested;
+    // Пауза между подачами — до нескольких минут. Спать её одним куском значило
+    // бы, что кнопка «Остановить отправку», нажатая посреди паузы, срабатывает
+    // только после неё. Поэтому штатный сон просыпается и смотрит на флаг.
+    this.sleep = deps.sleep ?? ((ms) => this.sleepUnlessStopped(ms));
     this.onSent = deps.onSent;
+    this.allowEmptyLetter = deps.allowEmptyLetter ?? false;
+  }
+
+  private async sleepUnlessStopped(ms: number): Promise<void> {
+    // Реальные часы, а не this.now: сон — это настоящее ожидание, а подменная
+    // now (тесты лимитов) стоит на месте и держала бы цикл вечно.
+    const until = Date.now() + ms;
+    for (;;) {
+      const left = until - Date.now();
+      if (left <= 0 || this.stopRequested()) return;
+      await new Promise((r) => setTimeout(r, Math.min(left, STOP_POLL_MS)));
+    }
   }
 
   async run(): Promise<SendReport> {
     const report: SendReport = {
       sent: 0, failed: 0, halted: null, unthrottledSources: [], haltedSources: [],
-      skippedEmptyLetter: [], deferredContacts: [], warnings: [],
+      skippedEmptyLetter: [], deferredContacts: [], warnings: [], sentWithoutLetter: 0,
     };
     const rows = this.queue.listByStatus('approved');
     const consecutiveFailures = new Map<string, number>();
@@ -203,19 +239,23 @@ export class Sender {
         if (inDay >= rule.maxPerDay) continue;
       }
 
-      // Пустое письмо не отправляется никогда.
+      // Пустое письмо по умолчанию не отправляется.
       //
       // Вся очередь построена вокруг того, что человек письмо прочитал и
       // одобрил. Строка может дойти до approved и БЕЗ письма: генерация
       // падает от 429 бесплатной модели или пропавшего ключа, а человек
-      // одобряет вакансию, а не текст. Отправить её значило бы подать голый
-      // отклик от его имени — ровно то, что уже случилось однажды на hh.ru и
-      // чего он не выбирал.
+      // одобряет вакансию, а не текст. Подать голый отклик от его имени молча
+      // нельзя — поэтому без явного разрешения (allowEmptyLetter, его ставит
+      // панель после предупреждения) такая заявка пропускается.
       //
       // Строка остаётся approved, а не уходит в failed: письмо дозаполняется
       // командой `npm run letters`, после чего заявка уйдёт следующим
       // прогоном сама.
-      if (row.letter.trim() === '') {
+      //
+      // Telegram — исключение из исключения: письмо там и есть сообщение
+      // рекрутёру, отправлять пустое нечем, и разрешение его не отменяет.
+      const letterEmpty = row.letter.trim() === '';
+      if (letterEmpty && (!this.allowEmptyLetter || row.source === 'tg')) {
         emptyLetters.push(row.vacancy.title);
         continue;
       }
@@ -240,7 +280,9 @@ export class Sender {
       // ровно то, от чего он защищает.
       let result: ApplyResult;
       try {
-        result = await adapter.apply(row.vacancy, row.letter, { specialty: row.specialty });
+        // Письмо из одних пробелов — это «письма нет»: адаптеры проверяют пустую
+        // строку, и кусок пробелов уехал бы работодателю настоящим «письмом».
+        result = await adapter.apply(row.vacancy, letterEmpty ? '' : row.letter, { specialty: row.specialty });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         result = { status: 'failed', reason: `адаптер ${row.source} упал: ${message.split('\n')[0]!.slice(0, 200)}` };
@@ -272,6 +314,7 @@ export class Sender {
         this.queue.markSent(row.id);
         report.sent++;
         if (result.status === 'sent') {
+          if (letterEmpty) report.sentWithoutLetter++;
           if (result.warning !== undefined) {
             report.warnings.push(`${row.vacancy.title}: ${result.warning}`);
           }

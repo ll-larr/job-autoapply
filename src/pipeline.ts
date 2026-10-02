@@ -123,8 +123,10 @@ export interface SearchReport {
    * - `target`     — набрали столько, сколько просили. Норма.
    * - `exhausted`  — выдача кончилась по всем формулировкам, больше нечего читать.
    * - `scan_cap`   — упёрлись в потолок просмотра (см. RunSearchOptions.maxResults).
+   * - `stopped`    — человек нажал «Остановить поиск» (RunSearchOptions.signal):
+   *                  в очереди то, что успело лечь до этого.
    */
-  stoppedBecause: 'target' | 'exhausted' | 'scan_cap';
+  stoppedBecause: 'target' | 'exhausted' | 'scan_cap' | 'stopped';
 }
 
 export interface RunSearchOptions {
@@ -193,6 +195,13 @@ export interface RunSearchOptions {
    * значения по умолчанию.
    */
   batchSize?: number;
+  /**
+   * Кнопка «Остановить поиск». Смотрится перед каждой порцией, перед каждой
+   * вакансией и после генерации письма; в адаптеры уходит в SearchFilters.signal.
+   * Вакансия, чьё письмо писалось в момент стопа, в очередь не ставится: письмо
+   * могло оборваться на полуслове, а следующий поиск найдёт её заново.
+   */
+  signal?: AbortSignal;
   adapters: Adapter[];
   generate: (v: Vacancy, matched: string[], mode: LetterMode, specialty: Specialty)
     => Promise<{ letter: string; mode: LetterMode }>;
@@ -297,7 +306,13 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
 
   report.stoppedBecause = 'exhausted';
 
+  const stopped = (): boolean => opts.signal?.aborted === true;
+
   for (;;) {
+    if (stopped()) {
+      report.stoppedBecause = 'stopped';
+      break;
+    }
     if (target !== undefined && report.queued >= target) {
       report.stoppedBecause = 'target';
       break;
@@ -330,6 +345,7 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
         maxResults: budget,
         skip: task.skip,
         seenThisRun,
+        signal: opts.signal,
       });
     } catch (e) {
       // Частичный результат — валидный результат. Остальные площадки/запросы
@@ -372,6 +388,9 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
 
     for (const v of vacancies) {
       if (target !== undefined && report.queued >= target) break;
+      // Дальше — дорогое: письмо. Остановили — не начинаем. Причину «stopped»
+      // выставит верх цикла: он смотрит на сигнал первым.
+      if (stopped()) break;
 
       const key = vacancyKey(v);
       if (seenThisRun.has(key)) { report.duplicates++; continue; }
@@ -438,6 +457,9 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
       // (спека 3.7).
       const mode = specialty.legacyLetters ? pickMode(score, opts.config.letterFullThreshold) : 'full';
       const { letter, mode: usedMode } = await opts.generate(v, matched, mode, specialty);
+      // Стоп пришёл, пока писалось письмо: оно могло оборваться, и ставить в
+      // очередь вакансию с оборванным письмом нельзя.
+      if (stopped()) break;
 
       if (opts.queue.insertPending(v, score, matched, letter, usedMode, specialty.id)) {
         report.queued++;

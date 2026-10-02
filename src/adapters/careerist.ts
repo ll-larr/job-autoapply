@@ -484,10 +484,12 @@ export class CareeristAdapter implements Adapter {
     if (form === null) {
       return { status: 'failed', reason: 'в ответе нет формы отклика — разметка площадки изменилась' };
     }
-    if (form.letterField === null) {
-      // Отправлять отклик без письма нельзя: вся очередь построена вокруг
-      // того, что человек письмо прочитал и одобрил. Молча выбросить его
-      // значило бы подать не то, что он утверждал.
+    const noLetter = letter.trim() === '';
+    if (form.letterField === null && !noLetter) {
+      // Отправлять отклик без письма нельзя, если человек одобрял письмо: ушло
+      // бы не то, что он утверждал. Молча выбросить текст значило бы подать
+      // одно резюме. (Без письма — отдельный случай: его человек выбрал сам,
+      // «Отправить без письма» в панели, и отсутствие поля подаче не мешает.)
       return { status: 'failed', reason: 'в форме отклика пропало поле письма — подача без письма не делается' };
     }
 
@@ -496,7 +498,7 @@ export class CareeristAdapter implements Adapter {
         afdata: form.afdata,
         Total: form.total,
         extention_install: form.extentionInstall,
-        [form.letterField]: letter,
+        ...(form.letterField === null ? {} : { [form.letterField]: letter }),
       },
     });
     if (!sendRes.ok()) {

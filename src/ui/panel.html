@@ -38,6 +38,10 @@
       border: 1px solid #ccc; border-radius: 4px;
     }
     #searchNote { font-size: 12px; color: #666; padding: 0 20px 0; min-height: 16px; }
+    /* Кнопки «Остановить…» видны только пока идёт соответствующий процесс. */
+    .stop-btn { background: #fbe9e9; border: 1px solid #c97b7b; color: #7a1414; border-radius: 4px; }
+    .stop-btn:hover:not(:disabled) { background: #f6d3d3; }
+    .stop-btn:disabled { opacity: .7; cursor: default; }
     .hint { font-size: 13px; color: #666; }
 
     .card { display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
@@ -92,6 +96,7 @@
         <label for="searchLimit">Найти вакансий</label>
         <input type="number" id="searchLimit" value="20" min="1" max="500" step="10">
         <button id="searchStart">Найти</button>
+        <button id="searchStop" class="stop-btn" hidden>Остановить поиск</button>
       </div>
     </div>
     <div id="proxyWarn" style="display:none; margin:8px 20px; padding:10px 12px;
@@ -111,6 +116,7 @@
     <div class="actions">
       <button id="approveAll">Одобрить всё</button>
       <button id="fillLettersPending">Дописать письма</button>
+      <button id="stopLettersPending" class="stop-btn" hidden>Остановить написание писем</button>
       <span class="hint" id="lettersHint"></span>
     </div>
     <div id="list"></div>
@@ -119,7 +125,9 @@
   <section id="pane-approved" role="tabpanel" aria-labelledby="tab-approved" hidden>
     <div class="actions">
       <button id="sendAll">Отправить всё</button>
+      <button id="sendStop" class="stop-btn" hidden>Остановить отправку</button>
       <button id="fillLetters">Дописать письма</button>
+      <button id="stopLetters" class="stop-btn" hidden>Остановить написание писем</button>
       <span class="hint" id="sendHint">Отправка необратима: отклик на hh.ru нельзя отозвать.</span>
     </div>
     <div id="approvedList"></div>
@@ -387,7 +395,7 @@ function renderApproved(rows) {
       <div>
         <div class="desc letter-preview" style="max-height:none;"></div>
         <textarea class="letter-edit" style="display:none;"
-                  placeholder="Впиши сопроводительное письмо — без него заявка не отправится."></textarea>
+                  placeholder="Впиши сопроводительное письмо. Пусто — отклик уйдёт без письма (панель предупредит перед отправкой)."></textarea>
         <div style="margin-top:8px; display:flex; gap:8px;">
           <button data-act="save" style="display:none;">Сохранить письмо</button>
           <button data-act="cancel">Отменить</button>
@@ -403,7 +411,8 @@ function renderApproved(rows) {
       // целиком, и без этой пометки «Отправлено 0» выглядело бы поломкой.
       // Раньше здесь была только надпись, отсылавшая к кнопке, которой не
       // существовало, и вписать текст было некуда. Теперь и поле, и кнопка.
-      preview.textContent = 'ПИСЬМА НЕТ — заявка не отправится. Впиши текст ниже или нажми «Дописать письма».';
+      preview.textContent = 'ПИСЬМА НЕТ — «Отправить всё» предупредит и отправит без письма, если согласишься '
+        + '(в Telegram без текста не уйдёт). Впиши текст ниже или нажми «Дописать письма».';
       preview.style.color = '#b00';
       preview.style.fontWeight = '600';
       edit.style.display = '';
@@ -465,6 +474,29 @@ function renderSkipped(rows) {
 // startedAt (см. /api/search/status и /api/send/status) иначе писался бы и
 // никогда не читался: и поиск, и отправка идут минутами, и "сколько уже
 // прошло" — не декоративная мелочь для операции такой длины.
+/**
+ * Кнопка «Остановить …»: видна, пока процесс идёт; после нажатия гаснет и
+ * говорит «Останавливаю…» — остановка не мгновенна (поиск дочитывает страницу,
+ * отправка доводит текущую подачу), и без этого клик выглядел бы не сработавшим.
+ */
+function showStop(btn, running, stopping, label) {
+  btn.hidden = !running;
+  btn.disabled = stopping;
+  btn.textContent = stopping ? 'Останавливаю…' : label;
+}
+
+/** Нажатие на «Остановить …»: POST на ручку, ошибка — в подсказку процесса. */
+async function requestStop(url, btn, label, say) {
+  btn.disabled = true;
+  btn.textContent = 'Останавливаю…';
+  const res = await post(url, {});
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    say(err.error ?? 'Не удалось остановить.');
+    showStop(btn, false, false, label);
+  }
+}
+
 function formatElapsed(startedAt, now) {
   if (typeof startedAt !== 'number') return '';
   const seconds = Math.max(0, Math.round((now - startedAt) / 1000));
@@ -480,6 +512,11 @@ let searchPolling = null;
 const searchBtn = document.getElementById('searchStart');
 const searchLimit = document.getElementById('searchLimit');
 const searchNote = document.getElementById('searchNote');
+const searchStopBtn = document.getElementById('searchStop');
+const SEARCH_STOP_LABEL = 'Остановить поиск';
+
+searchStopBtn.onclick = () => requestStop('/api/search/stop', searchStopBtn, SEARCH_STOP_LABEL,
+  (text) => { searchNote.textContent = text; });
 
 searchBtn.onclick = async () => {
   const limit = Number(searchLimit.value);
@@ -500,14 +537,18 @@ async function pollSearch() {
   if (searchPolling) return;
   searchBtn.disabled = true;
   searchLimit.disabled = true;
+  showStop(searchStopBtn, true, false, SEARCH_STOP_LABEL);
   searchNote.textContent = 'Поиск идёт. Откроется браузер — это нормально, страницы только читаются. '
     + 'Выдача листается, пока не наберётся заказанное число подходящих, так что это надолго.';
 
   searchPolling = setInterval(async () => {
     const st = await fetchJson('/api/search/status');
     if (st.running) {
-      searchNote.textContent = 'Поиск идёт' + formatElapsed(st.startedAt, Date.now())
-        + '. Откроется браузер — это нормально, страницы только читаются.';
+      showStop(searchStopBtn, true, st.stopping, SEARCH_STOP_LABEL);
+      searchNote.textContent = st.stopping
+        ? 'Останавливаю поиск: дочитывается текущий шаг, то, что уже в очереди, останется.'
+        : 'Поиск идёт' + formatElapsed(st.startedAt, Date.now())
+          + '. Откроется браузер — это нормально, страницы только читаются.';
       return;
     }
 
@@ -515,6 +556,7 @@ async function pollSearch() {
     searchPolling = null;
     searchBtn.disabled = false;
     searchLimit.disabled = false;
+    showStop(searchStopBtn, false, false, SEARCH_STOP_LABEL);
 
     if (st.error) {
       searchNote.textContent = 'Поиск упал: ' + st.error;
@@ -523,6 +565,9 @@ async function pollSearch() {
       // "Просмотрено", а не "найдено": found считает сырые карточки выдачи,
       // прочитанные ради того, чтобы набрать заказанное число подходящих.
       const parts = [`просмотрено ${r.found}`, `в очередь ${r.queued}`];
+      // Остановка — первой строкой: «в очередь 3» при заказанных 20 иначе
+      // читалось бы как «подходящего больше нет».
+      if (r.stoppedBecause === 'stopped') parts.unshift('ПОИСК ОСТАНОВЛЕН');
       // Недобор надо назвать причиной. "В очередь 12" при заказанных 20
       // одинаково выглядит и когда подходящего больше нет, и когда прогон
       // упёрся в предохранитель — а делать с этим нужно разное.
@@ -562,6 +607,20 @@ const lettersBtns = [
   document.getElementById('fillLettersPending'),
 ];
 const lettersHint = document.getElementById('lettersHint');
+const lettersStopBtns = [
+  document.getElementById('stopLetters'),
+  document.getElementById('stopLettersPending'),
+];
+const LETTERS_STOP_LABEL = 'Остановить написание писем';
+
+function showLettersStop(running, stopping) {
+  for (const b of lettersStopBtns) showStop(b, running, stopping, LETTERS_STOP_LABEL);
+}
+
+for (const b of lettersStopBtns) {
+  b.onclick = () => requestStop('/api/letters/stop', b, LETTERS_STOP_LABEL,
+    (text) => { lettersHint.textContent = text; showLettersStop(true, false); });
+}
 
 function setLettersBtns(disabled, text) {
   for (const b of lettersBtns) {
@@ -605,14 +664,20 @@ for (const b of lettersBtns) if (b) b.onclick = startLetters;
 async function pollLetters() {
   if (lettersPolling) return;
   setLettersBtns(true, 'Пишу письма...');
+  showLettersStop(true, false);
   lettersHint.textContent = 'Модель пишет письмо на каждую вакансию — это небыстро.';
 
   lettersPolling = setInterval(async () => {
     const st = await fetchJson('/api/letters/status');
-    if (st.running) return;
+    if (st.running) {
+      showLettersStop(true, st.stopping);
+      if (st.stopping) lettersHint.textContent = 'Останавливаю: оборванное письмо не сохраняется, готовые остаются.';
+      return;
+    }
 
     clearInterval(lettersPolling);
     lettersPolling = null;
+    showLettersStop(false, false);
     // Не «Дописать письма» безусловно: часть могла не удаться, часть удалась,
     // и верное состояние знает только load() ниже. До него — нейтральное.
     setLettersBtns(true, 'Дописать письма');
@@ -621,7 +686,9 @@ async function pollLetters() {
       lettersHint.textContent = 'Дозаполнение упало: ' + st.error;
     } else if (st.result) {
       const r = st.result;
-      if (r.found === 0) {
+      if (r.stopped) {
+        lettersHint.textContent = `Остановлено: заполнено ${r.filled} из ${r.found}. Остальные письма пустые.`;
+      } else if (r.found === 0) {
         lettersHint.textContent = 'Пустых писем нет.';
       } else {
         // Причину надо назвать. Двадцать пустых писем без объяснения уже
@@ -655,6 +722,33 @@ let sendResultText = null;
 
 const sendBtn = document.getElementById('sendAll');
 const sendHint = document.getElementById('sendHint');
+const sendStopBtn = document.getElementById('sendStop');
+const SEND_STOP_LABEL = 'Остановить отправку';
+
+sendStopBtn.onclick = () => requestStop('/api/send/stop', sendStopBtn, SEND_STOP_LABEL,
+  (text) => { sendHint.textContent = text; });
+
+/**
+ * Предупреждение перед отправкой без письма. Заявка попадает на «Одобрено» и без
+ * письма (модель не ответила, VPN выключен, человек стёр текст), а отклик
+ * необратим — поэтому отправка «всё» не уйдёт молча голыми резюме: человек
+ * либо прямо соглашается, либо отменяет и дописывает письма.
+ *
+ * Telegram считаем отдельно: там письмо — это и есть сообщение рекрутёру,
+ * пустое отправить нечем, такие строки не уйдут и после согласия.
+ */
+function confirmSendWithoutLetters(rows) {
+  const empty = rows.filter((r) => r.letter.trim() === '');
+  const tg = empty.filter((r) => r.source === 'tg').length;
+  const bare = empty.length - tg;
+  if (bare === 0) return { ok: true, withoutLetters: false };
+  const text = `У ${bare} из ${rows.length} одобренных вакансий нет сопроводительного письма.\n\n`
+    + `Отклики на них уйдут БЕЗ сопроводительного письма — одно резюме. Отозвать отклик потом нельзя.\n\n`
+    + (tg > 0 ? `Ещё ${tg} в Telegram без текста не уйдут вовсе: там письмо — это и есть сообщение рекрутёру.\n\n` : '')
+    + 'Отправить без письма?\n\n'
+    + 'Отмена — ничего не уйдёт: можно вписать письма руками или нажать «Дописать письма».';
+  return confirm(text) ? { ok: true, withoutLetters: true } : { ok: false, withoutLetters: false };
+}
 
 // unthrottledSources документирован в src/core/sender.ts как "The caller is
 // responsible for surfacing this — a skip that nobody looks at is as bad as
@@ -667,11 +761,16 @@ function buildSendResultText(r) {
   // сразу, но hh.ru при этом отправляет дальше. Строка обязана называть каждую
   // отвалившуюся, иначе «ОСТАНОВЛЕНО (auth_required)» читается как «ничего не
   // ушло», хотя ушло.
+  // «killed» — это кнопка «Остановить отправку» (или npm run stop), а не
+  // площадка: писать «-: killed» человеку, который сам нажал стоп, незачем.
   const sources = (r.haltedSources && r.haltedSources.length)
-    ? r.haltedSources.map((h) => `${h.source}: ${h.reason}`).join('; ')
+    ? r.haltedSources.map((h) => (h.reason === 'killed' ? 'остановлено вручную' : `${h.source}: ${h.reason}`)).join('; ')
     : null;
   const halted = sources ? `, ОСТАНОВЛЕНО (${sources})`
     : r.halted ? `, ОСТАНОВЛЕНО (${r.halted.reason})` : '';
+  // Сколько откликов ушло без письма: «Отправлено 5» иначе скрывает, что у
+  // двух из них письма не было.
+  const bare = r.sentWithoutLetter ? `, из них БЕЗ ПИСЬМА ${r.sentWithoutLetter}` : '';
   const empty = (r.skippedEmptyLetter && r.skippedEmptyLetter.length)
     ? `, БЕЗ ПИСЬМА пропущено ${r.skippedEmptyLetter.length} (нажми «Дописать письма»)`
     : '';
@@ -683,7 +782,7 @@ function buildSendResultText(r) {
     ? `, отложено ${r.deferredContacts.length} (этим контактам писали меньше 7 дней назад)`
     : '';
   const warnings = (r.warnings && r.warnings.length) ? `. ВНИМАНИЕ: ${r.warnings.join('; ')}` : '';
-  return `Отправлено ${r.sent}, не удалось ${r.failed}${empty}${halted}${unthrottled}${deferred}${warnings}.`;
+  return `Отправлено ${r.sent}${bare}, не удалось ${r.failed}${empty}${halted}${unthrottled}${deferred}${warnings}.`;
 }
 
 function resetSendButton(approved) {
@@ -700,6 +799,11 @@ sendBtn.onclick = async () => {
   const st = await fetchJson('/api/send/status');
   if (st.running) return;
 
+  // Свежие строки с сервера, а не со страницы: письмо могли дописать или стереть
+  // с последней перерисовки, а предупреждение должно говорить про то, что уйдёт.
+  const decision = confirmSendWithoutLetters(await fetchJson('/api/approved'));
+  if (!decision.ok) return;
+
   // Кнопка гасится сразу, до ответа сервера: подача идёт минутами, и второй
   // клик по ещё живой кнопке успел бы уйти раньше, чем придёт статус
   // "running". Сервер такой второй запуск отобьёт (409), но человеку не
@@ -709,13 +813,14 @@ sendBtn.onclick = async () => {
   sendResultText = null;
   sendHint.textContent = `Запускаю подачу: ${st.approved}.`;
 
-  const res = await post('/api/send/start', {});
+  const res = await post('/api/send/start', decision.withoutLetters ? { withoutLetters: true } : {});
   if (!res.ok) {
     const err = await res.json();
     sendResultText = err.error ?? 'Не удалось запустить отправку.';
     resetSendButton(st.approved);
     return;
   }
+  showStop(sendStopBtn, true, false, SEND_STOP_LABEL);
   pollSend();
 };
 
@@ -726,13 +831,17 @@ async function pollSend() {
     if (st.running) {
       sendBtn.disabled = true;
       sendBtn.textContent = 'Отправка идёт...';
-      sendHint.textContent = 'Идёт' + formatElapsed(st.startedAt, Date.now())
-        + '. Между подачами стоят паузы, это надолго. Окно можно не держать.';
+      showStop(sendStopBtn, true, st.stopping, SEND_STOP_LABEL);
+      sendHint.textContent = st.stopping
+        ? 'Останавливаю: текущая подача доедет до конца, остальные останутся в «Одобрено».'
+        : 'Идёт' + formatElapsed(st.startedAt, Date.now())
+          + '. Между подачами стоят паузы, это надолго. Окно можно не держать.';
       return;
     }
 
     clearInterval(sendPolling);
     sendPolling = null;
+    showStop(sendStopBtn, false, false, SEND_STOP_LABEL);
 
     if (st.error) {
       sendResultText = 'Отправка упала: ' + st.error;
@@ -825,7 +934,7 @@ fetchJson('/api/letters/status').then((st) => {
 });
 
 fetchJson('/api/send/status').then((st) => {
-  if (st.running) pollSend();
+  if (st.running) { showStop(sendStopBtn, true, st.stopping, SEND_STOP_LABEL); pollSend(); }
   else if (!st.canSend) {
     sendBtn.disabled = true;
     sendHint.textContent = 'Панель запущена без адаптеров — отправляй через npm run send.';

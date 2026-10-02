@@ -15,6 +15,7 @@ import { formatProxyReport,
   buildAdapters,
   buildAdapterMap,
   runSearchCommand,
+  fillEmptyLetters,
   lazyTelegram,
   specialtyOf,
   gigarecruiterOnSent,
@@ -194,7 +195,7 @@ describe('formatSendPreflight', () => {
 });
 
 describe('formatSendResult', () => {
-  const OK: SendReport = { sent: 3, failed: 0, halted: null, unthrottledSources: [], haltedSources: [], skippedEmptyLetter: [], deferredContacts: [], warnings: [] };
+  const OK: SendReport = { sent: 3, failed: 0, halted: null, unthrottledSources: [], haltedSources: [], skippedEmptyLetter: [], deferredContacts: [], warnings: [], sentWithoutLetter: 0 };
 
   it('Telegram: отложенные контакты, предупреждения и ограничение аккаунта названы', () => {
     const { lines, exitCode } = formatSendResult({
@@ -226,7 +227,7 @@ describe('formatSendResult', () => {
   ] as const)('halted reason=%s — exitCode 1 и понятное объяснение', (reason, pattern) => {
     const report: SendReport = {
       sent: 0, failed: 0, unthrottledSources: [],
-      halted: { source: 'hh', reason }, haltedSources: [{ source: 'hh', reason }], skippedEmptyLetter: [], deferredContacts: [], warnings: [],
+      halted: { source: 'hh', reason }, haltedSources: [{ source: 'hh', reason }], skippedEmptyLetter: [], deferredContacts: [], warnings: [], sentWithoutLetter: 0,
     };
     const { lines, exitCode } = formatSendResult(report);
     expect(exitCode).toBe(1);
@@ -255,7 +256,7 @@ describe('formatSendResult', () => {
     const report: SendReport = {
       sent: 1, failed: 0, unthrottledSources: ['hrge'],
       halted: { source: 'hh', reason: 'captcha' },
-      haltedSources: [{ source: 'hh', reason: 'captcha' }], skippedEmptyLetter: [], deferredContacts: [], warnings: [],
+      haltedSources: [{ source: 'hh', reason: 'captcha' }], skippedEmptyLetter: [], deferredContacts: [], warnings: [], sentWithoutLetter: 0,
     };
     const { lines } = formatSendResult(report);
     expect(lines.join('\n')).toContain('ОСТАНОВЛЕНО');
@@ -522,6 +523,155 @@ describe('runSearchCommand — связка pipeline + генерация пис
     });
     expect(report.queued).toBe(0);
     expect(calls).toBe(0);
+  });
+});
+
+describe('runSearchCommand — остановка (signal)', () => {
+  let q: Queue;
+  beforeEach(() => {
+    q = new Queue(join(mkdtempSync(join(tmpdir(), 'jaa-cli-stop-')), 'test.db'));
+  });
+  afterEach(() => q.close());
+
+  const PROCESS_LANGUAGE =
+    'Проводим gap-анализ AS-IS/TO-BE, пишем регламенты бизнес-процессов, ' +
+    'готовим BRD и FSD, отвечаем за постановку задач.';
+
+  function mkAdapter(count: number): Adapter {
+    return {
+      name: 'hh',
+      async search() {
+        return Array.from({ length: count }, (_, i) => normalizeVacancy({
+          source: 'hh', sourceId: String(i), title: 'Бизнес-аналитик', company: 'C',
+          url: `https://hh/vacancy/${i}`, description: `${PROCESS_LANGUAGE} #${i}`, geo: 'Москва',
+          postedAt: '2026-08-20T00:00:00Z',
+        }));
+      },
+      async apply() { return { status: 'sent' }; },
+    };
+  }
+
+  const base = (adapters: Adapter[]) => ({
+    queue: q, config: CONFIG, adapters, queries: [{ query: 'бизнес-аналитик' }], limit: 10,
+    resumeFor: () => 'Р', generateDmFn: NO_DM, pickTemplateFn: () => 'fullstack-analyst' as const, readTemplate: () => 'СКЕЛЕТ',
+  });
+
+  it('модель получает signal — чтобы оборвать письмо в полёте', async () => {
+    const ctl = new AbortController();
+    const seen: Array<AbortSignal | undefined> = [];
+    await runSearchCommand({
+      ...base([mkAdapter(1)]), signal: ctl.signal,
+      generateLetterFn: async (i, options) => { seen.push(options.signal); return { letter: 'п', mode: i.mode }; },
+    });
+    expect(seen).toEqual([ctl.signal]);
+  });
+
+  it('остановленный поиск НЕ запускает автоотклик: годное остаётся ждать человека', async () => {
+    // Человек нажал «Остановить», потому что передумал. Одобрить за него и
+    // отправить то, что успело набраться, значило бы сделать обратное.
+    const settings = seedSettings(undefined, null);
+    settings.autoApply = { enabled: true, minScore: null };
+    const ctl = new AbortController();
+    let letters = 0;
+    const r = await runSearchCommand({
+      ...base([mkAdapter(3)]), settings, signal: ctl.signal,
+      generateLetterFn: async (i) => {
+        if (++letters === 2) ctl.abort();
+        return { letter: 'письмо', mode: i.mode };
+      },
+    });
+
+    expect(r.report.stoppedBecause).toBe('stopped');
+    expect(r.report.queued).toBe(1);
+    expect(r.autoApproved).toBe(0);
+    expect(q.listByStatus('approved')).toHaveLength(0);
+    expect(q.listByStatus('pending')).toHaveLength(1);
+  });
+
+  it('оборванное письмо не считается «пустым письмом» из-за сбоя модели', async () => {
+    const ctl = new AbortController();
+    const r = await runSearchCommand({
+      ...base([mkAdapter(2)]), signal: ctl.signal,
+      generateLetterFn: async () => {
+        ctl.abort();
+        return { letter: '', mode: 'none', failure: 'остановлено человеком' };
+      },
+    });
+    expect(r.report.stoppedBecause).toBe('stopped');
+    expect(r.report.queued).toBe(0);
+    expect(r.letterFailure).toBeUndefined();
+  });
+});
+
+describe('fillEmptyLetters', () => {
+  let q: Queue;
+  beforeEach(() => {
+    q = new Queue(join(mkdtempSync(join(tmpdir(), 'jaa-cli-fill-')), 'test.db'));
+    for (let i = 0; i < 3; i++) {
+      q.insertPending(normalizeVacancy({
+        source: 'hh', sourceId: `v${i}`, title: `Бизнес-аналитик ${i}`, company: 'C', url: `https://hh/vacancy/${i}`,
+        description: 'd', geo: 'Москва', postedAt: '2026-08-20T00:00:00Z',
+      }), 60 - i, [], '', 'none');
+    }
+  });
+  afterEach(() => q.close());
+
+  const deps = (over: Partial<Parameters<typeof fillEmptyLetters>[0]> = {}) => ({
+    queue: q, config: CONFIG, resumeFor: () => 'Р', specialtyById: () => DEFAULT_SPECIALTY,
+    generateLetterFn: async () => ({ letter: 'письмо', mode: 'full' as const }),
+    generateDmFn: NO_DM, pickTemplateFn: () => 'fullstack-analyst' as const, readTemplate: () => 'СКЕЛЕТ',
+    ...over,
+  });
+
+  it('без остановки заполняет все пустые письма', async () => {
+    const r = await fillEmptyLetters(deps());
+    expect(r).toMatchObject({ found: 3, filled: 3 });
+    expect(r.stopped).toBeUndefined();
+  });
+
+  it('стоп между письмами: готовое сохранено, остальные остаются пустыми, результат называет остановку', async () => {
+    const ctl = new AbortController();
+    let calls = 0;
+    const r = await fillEmptyLetters(deps({
+      signal: ctl.signal,
+      generateLetterFn: async () => {
+        if (++calls === 2) ctl.abort();
+        return { letter: 'письмо', mode: 'full' as const };
+      },
+    }));
+
+    // Второе письмо «в полёте» в момент стопа — его выбрасываем, как оборванное.
+    expect(r).toMatchObject({ found: 3, filled: 1, stopped: true });
+    expect(calls).toBe(2);
+    expect(q.listByStatus('pending').filter((row) => row.letter === '')).toHaveLength(2);
+  });
+
+  it('сигнал подан до старта — модель не зовётся вовсе', async () => {
+    const ctl = new AbortController();
+    ctl.abort();
+    let calls = 0;
+    const r = await fillEmptyLetters(deps({
+      signal: ctl.signal,
+      generateLetterFn: async () => { calls++; return { letter: 'x', mode: 'full' as const }; },
+    }));
+    expect(calls).toBe(0);
+    expect(r).toMatchObject({ found: 3, filled: 0, stopped: true });
+  });
+
+  it('модель получает signal в options, оборванное письмо не попадает в failure', async () => {
+    const ctl = new AbortController();
+    const seen: Array<AbortSignal | undefined> = [];
+    const r = await fillEmptyLetters(deps({
+      signal: ctl.signal,
+      generateLetterFn: async (_i, options) => {
+        seen.push(options.signal);
+        ctl.abort();
+        return { letter: '', mode: 'none' as const, failure: 'остановлено человеком' };
+      },
+    }));
+    expect(seen).toEqual([ctl.signal]);
+    expect(r.stopped).toBe(true);
+    expect(r.failure).toBeUndefined();
   });
 });
 

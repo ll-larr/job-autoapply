@@ -546,6 +546,31 @@ describe('CareeristAdapter.apply — на подставном контекст�
     expect(calls.some((c) => c.url.includes('/mson/ajaxform/post'))).toBe(false);
   });
 
+  it('пустое письмо (отправка без письма) и поле письма в форме есть — уходит с пустым полем', async () => {
+    const { ctx, calls } = mkCtx({ responds: ['<html>пусто</html>', '<html>… 89044870 …</html>'] });
+    const a = new CareeristAdapter({ context: ctx as never });
+
+    expect(await a.apply(VAC, '')).toEqual({ status: 'sent' });
+    const send = calls.find((c) => c.url.includes('/mson/ajaxform/post'));
+    expect(send).toBeDefined();
+    expect((send!.opts as { multipart: Record<string, string> }).multipart['TextRes']).toBe('');
+  });
+
+  it('пустое письмо и поля письма в форме нет — подаём без поля, а не отказываем', async () => {
+    // С письмом такая форма — отказ (см. выше): человек одобрял текст, а ушло бы
+    // одно резюме. Без письма одобрять нечего, и отсутствие поля подаче не мешает.
+    const { ctx, calls } = mkCtx({
+      responds: ['<html>пусто</html>', '<html>… 89044870 …</html>'],
+      formOutput: '<form><input name="afdata" value="AAAA-длинное-значение-более-ста-символов-чтобы-пройти-проверку-длины-в-тесте-и-остаться-читаемым"></form>',
+    });
+    const a = new CareeristAdapter({ context: ctx as never });
+
+    expect(await a.apply(VAC, '')).toEqual({ status: 'sent' });
+    const send = calls.find((c) => c.url.includes('/mson/ajaxform/post'));
+    expect(send).toBeDefined();
+    expect(Object.keys((send!.opts as { multipart: Record<string, string> }).multipart)).not.toContain('TextRes');
+  });
+
   it('форма не пришла — failed с причиной, подача не делается', async () => {
     const { ctx, calls } = mkCtx({ formOutput: null });
     const a = new CareeristAdapter({ context: ctx as never });

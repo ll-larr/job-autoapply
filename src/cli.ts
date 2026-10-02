@@ -496,6 +496,11 @@ export interface FillLettersDeps {
   readTemplate: (name: string) => string;
   /** Куда сообщать о ходе. Команда пишет в консоль, панель — никуда. */
   log?: (line: string) => void;
+  /**
+   * Кнопка «Остановить написание писем». Смотрится перед каждым письмом и после
+   * него; в модель уходит в options.signal — чтобы оборвать письмо в полёте.
+   */
+  signal?: AbortSignal;
 }
 
 export interface FillLettersResult {
@@ -505,6 +510,8 @@ export interface FillLettersResult {
   filled: number;
   /** Почему не получилось у остальных. */
   failure?: string;
+  /** Человек нажал «Остановить»: заполнено только то, что успело, остальное осталось пустым. */
+  stopped?: true;
 }
 
 /**
@@ -528,7 +535,9 @@ export async function fillEmptyLetters(deps: FillLettersDeps): Promise<FillLette
   let filled = 0;
   let failure: string | undefined;
 
+  const options = { models: deps.config.letterModels, signal: deps.signal };
   for (const row of empty) {
+    if (deps.signal?.aborted) return { found: empty.length, filled, failure, stopped: true };
     // Та же развилка, что при поиске (pipeline.ts): скелеты и hybrid/full —
     // только у засеянных специальностей, остальные пишут письмо целиком.
     const specialty = deps.specialtyById(row.specialty);
@@ -536,7 +545,7 @@ export async function fillEmptyLetters(deps: FillLettersDeps): Promise<FillLette
       // Пост Telegram: не письмо, а личное сообщение рекрутёру (core/dm.ts).
       ? await deps.generateDmFn(
         { vacancy: row.vacancy, resume: deps.resumeFor(specialty), role: specialty.name },
-        { models: deps.config.letterModels },
+        options,
       )
       : await deps.generateLetterFn(
         {
@@ -549,8 +558,11 @@ export async function fillEmptyLetters(deps: FillLettersDeps): Promise<FillLette
           resume: deps.resumeFor(specialty),
           role: specialty.legacyLetters ? undefined : specialty.name,
         },
-        { models: deps.config.letterModels },
+        options,
       );
+    // Стоп пришёл, пока писалось это письмо: оно могло оборваться — не пишем его
+    // в строку и не выдаём обрыв за сбой модели.
+    if (deps.signal?.aborted) return { found: empty.length, filled, failure, stopped: true };
     if (result.letter.trim() === '') {
       failure = result.failure ?? failure;
       log(`  #${row.id} не удалось: ${row.vacancy.title.slice(0, 45)}`);
@@ -592,6 +604,12 @@ export interface SearchCommandDeps {
   generateDmFn: typeof generateDm;
   pickTemplateFn: typeof pickTemplate;
   readTemplate: (name: string) => string;
+  /**
+   * Кнопка «Остановить поиск» (см. RunSearchOptions.signal). Остановленный
+   * поиск автоотклик не запускает: человек передумал, и одобрять за него то,
+   * что успело набраться, значило бы сделать обратное.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -626,6 +644,7 @@ export async function runSearchCommand(
     specialties: deps.specialties,
     target: deps.limit,
     adapters: deps.adapters,
+    signal: deps.signal,
     generate: async (v, matched, mode, specialty) => {
       // Пост Telegram: не письмо, а короткое личное сообщение рекрутёру со
       // ссылкой на пост (core/dm.ts, спека 5.1).
@@ -635,7 +654,7 @@ export async function runSearchCommand(
       const result = v.source === 'tg'
         ? await deps.generateDmFn(
           { vacancy: v, resume: deps.resumeFor(specialty), role: specialty.name },
-          { models: deps.config.letterModels },
+          { models: deps.config.letterModels, signal: deps.signal },
         )
         : await deps.generateLetterFn(
           {
@@ -646,16 +665,18 @@ export async function runSearchCommand(
             resume: deps.resumeFor(specialty),
             role: specialty.legacyLetters ? undefined : specialty.name,
           },
-          { models: deps.config.letterModels },
+          { models: deps.config.letterModels, signal: deps.signal },
         );
-      if (result.mode === 'none') {
+      // Письмо оборвал человек, а не модель: пустым по сбою его считать нельзя
+      // (конвейер такую вакансию в очередь не поставит).
+      if (result.mode === 'none' && deps.signal?.aborted !== true) {
         emptyLetters++;
         letterFailure = result.failure ?? letterFailure;
       }
       return result;
     },
   });
-  const auto = deps.settings === undefined
+  const auto = deps.settings === undefined || report.stoppedBecause === 'stopped'
     ? { approved: 0, skipped: [] }
     : autoApproveAfterSearch(deps.queue, startedAt, deps.settings, deps.config);
   return { report, emptyLetters, letterFailure, autoApproved: auto.approved, autoSkipped: auto.skipped };
@@ -865,7 +886,8 @@ async function main(): Promise<void> {
         },
         // Та же проводка, что у команды search: панель не собирает конвейер
         // заново, а зовёт ровно то, что вызывает npm run search.
-        fillLetters: () => fillEmptyLetters({
+        fillLetters: (signal) => fillEmptyLetters({
+          signal,
           queue,
           config,
           resumeFor: (s) => resumeTextFor(s),
@@ -877,10 +899,11 @@ async function main(): Promise<void> {
         }),
         // Настройки читаются на каждый запуск: правка во вкладке «Настройки»
         // действует со следующего поиска без перезапуска панели.
-        startSearch: async (limit) => {
+        startSearch: async (limit, signal) => {
           const settings = currentSettings(config);
           await refreshResumes(settings, (line) => console.error(line));
           return runSearchCommand({
+            signal,
             queue,
             config,
             adapters,

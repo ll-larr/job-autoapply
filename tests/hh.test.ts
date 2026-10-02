@@ -881,6 +881,21 @@ describe('HhAdapter.apply — окно отклика (без сети, без �
     }
   }, 30000);
 
+  it('пустое письмо (отправка без письма): отклик уходит, в чат пустое сообщение НЕ пишется', async () => {
+    // Без этой проверки apply() после подачи шёл бы дописывать «письмо» в чат
+    // отклика — то есть открывал /applicant/negotiations ради пустой строки.
+    const { context, posts, negotiations } = await modalContext(letterOpenHtml);
+    try {
+      const adapter = new HhAdapter({ context, timeouts: { chatFrameMs: 500, submitMs: 5000 } });
+      expect(await adapter.apply(hhVacancy(), '')).toEqual({ status: 'sent' });
+      expect(posts).toHaveLength(1);
+      expect(negotiations()).toBe(0);
+      expect(new URLSearchParams(posts[0]).get('letter') ?? '').toBe('');
+    } finally {
+      await context.close();
+    }
+  }, 30000);
+
   it('анкета без ответчика — отказ с причиной, форма НЕ отправлена', async () => {
     const { context, posts } = await modalContext(questionsHtml);
     try {

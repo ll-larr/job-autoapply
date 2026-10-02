@@ -34,17 +34,24 @@ const CONFIG: Config = {
   throttle: { hh: { minDelayMs: 0, maxDelayMs: 0 } },
 };
 
-function mkSpyAdapter(): Adapter & { applied: string[] } {
+function mkSpyAdapter(): Adapter & { applied: string[]; letters: string[]; hold: Promise<void> | null } {
   const applied: string[] = [];
-  return {
+  const letters: string[] = [];
+  const spy = {
     name: 'hh',
     applied,
+    letters,
+    /** Если задан — первая подача ждёт его: так стоп нажимается посреди отправки. */
+    hold: null as Promise<void> | null,
     async search() { return []; },
-    async apply(vacancy): Promise<ApplyResult> {
+    async apply(vacancy: { sourceId: string }, letter: string): Promise<ApplyResult> {
       applied.push(vacancy.sourceId);
+      letters.push(letter);
+      if (applied.length === 1 && spy.hold !== null) await spy.hold;
       return { status: 'sent' };
     },
   };
+  return spy;
 }
 
 let browser: Browser;
@@ -453,4 +460,252 @@ describe('Telegram во вкладке «Настройки»', () => {
     await expect.poll(() => stored.specialties[0]!.skills[0]!.weight).toBe(29);
     expect(stored.autoApply).toEqual({ enabled: true, minScore: 60 });
   });
+});
+
+
+describe('панель в браузере — отправка без письма', () => {
+  const sendDone = (): Promise<unknown> => page.waitForFunction(
+    () => (document.getElementById('sendHint')?.textContent ?? '').includes('Отправлено'),
+    undefined, { timeout: 15000 },
+  );
+
+  /** Подтверждение ловится слушателем: без него Playwright молча отвечает «Отмена». */
+  function onDialog(answer: 'accept' | 'dismiss'): { messages: string[] } {
+    const seen = { messages: [] as string[] };
+    page.once('dialog', (d) => {
+      seen.messages.push(d.message());
+      void (answer === 'accept' ? d.accept() : d.dismiss());
+    });
+    return seen;
+  }
+
+  it('есть заявка без письма — перед отправкой предупреждение, и «Отмена» не отправляет ничего', async () => {
+    q.approve(seed('1', 80), '');
+
+    await open('approved');
+    const dlg = onDialog('dismiss');
+    await page.click('#sendAll');
+    await expect.poll(() => dlg.messages.length).toBe(1);
+
+    expect(dlg.messages[0]).toMatch(/БЕЗ сопроводительного письма/);
+    expect(dlg.messages[0]).toMatch(/У 1 из 1/);
+    // Ждём, чтобы убедиться: после отмены отправка не стартует задним числом.
+    await page.waitForTimeout(800);
+    expect(adapter.applied).toEqual([]);
+    expect(q.listByStatus('approved')).toHaveLength(1);
+    expect(await page.isDisabled('#sendAll')).toBe(false);
+    expect(await page.isVisible('#sendStop')).toBe(false);
+  }, 30000);
+
+  it('«ОК» отправляет без письма: apply получил пустое письмо, в итоге названо «БЕЗ ПИСЬМА»', async () => {
+    q.approve(seed('1', 80), '');
+
+    await open('approved');
+    onDialog('accept');
+    await page.click('#sendAll');
+    await sendDone();
+
+    expect(adapter.applied).toEqual(['1']);
+    expect(adapter.letters).toEqual(['']);
+    expect(q.listByStatus('sent')).toHaveLength(1);
+    expect(await page.textContent('#sendHint')).toMatch(/Отправлено 1, из них БЕЗ ПИСЬМА 1/);
+  }, 30000);
+
+  it('часть заявок с письмом, часть без: в предупреждении считаются только пустые, уходят все', async () => {
+    q.approve(seed('1', 80), 'настоящее письмо');
+    q.approve(seed('2', 70), '');
+    q.approve(seed('3', 60), '   ');
+
+    await open('approved');
+    const dlg = onDialog('accept');
+    await page.click('#sendAll');
+    await sendDone();
+
+    expect(dlg.messages[0]).toMatch(/У 2 из 3/);
+    expect(adapter.applied.sort()).toEqual(['1', '2', '3']);
+    expect([...adapter.letters].sort()).toEqual(['', '', 'настоящее письмо'].sort());
+    expect(await page.textContent('#sendHint')).toMatch(/Отправлено 3, из них БЕЗ ПИСЬМА 2/);
+  }, 30000);
+
+  it('у всех заявок есть письма — никакого предупреждения, отправка как раньше', async () => {
+    q.approve(seed('1', 80), 'письмо');
+
+    await open('approved');
+    let asked = 0;
+    page.on('dialog', (d) => { asked++; void d.dismiss(); });
+    await page.click('#sendAll');
+    await sendDone();
+
+    expect(asked).toBe(0);
+    expect(adapter.letters).toEqual(['письмо']);
+    expect(await page.textContent('#sendHint')).not.toMatch(/БЕЗ ПИСЬМА/);
+  }, 30000);
+
+  it('Telegram без текста: предупреждение говорит, что такие не уйдут вовсе', async () => {
+    q.approve(seed('1', 80), '');
+    q.insertPending(normalizeVacancy({
+      source: 'tg', sourceId: '-1001:5', title: 'Аналитик', company: '', url: 'https://t.me/x/5',
+      description: 'd', geo: '', postedAt: '2026-09-19T00:00:00Z', contact: 'hr_x',
+    }), 70, [], '', 'none');
+    const tgRow = q.listByStatus('pending').find((r) => r.sourceId === '-1001:5')!;
+    q.approve(tgRow.id, '');
+
+    await open('approved');
+    const dlg = onDialog('dismiss');
+    await page.click('#sendAll');
+    await expect.poll(() => dlg.messages.length).toBe(1);
+
+    expect(dlg.messages[0]).toMatch(/У 1 из 2/);
+    expect(dlg.messages[0]).toMatch(/Telegram/);
+    expect(adapter.applied).toEqual([]);
+  }, 30000);
+
+  it('карточка без письма больше не обещает «не отправится» — говорит, как оно уйдёт', async () => {
+    q.approve(seed('1', 80), '');
+    await open('approved');
+    const txt = await page.textContent('#approvedList .letter-preview');
+    expect(txt).toMatch(/ПИСЬМА НЕТ/);
+    expect(txt).not.toMatch(/не отправится/);
+    expect(txt).toMatch(/без письма/i);
+    // Тот же обман жил в подсказке поля ввода.
+    expect(await page.getAttribute('#approvedList .letter-edit', 'placeholder')).not.toMatch(/не отправится/);
+  }, 30000);
+});
+
+describe('панель в браузере — кнопки «Остановить»', () => {
+  const STOP_BUTTONS = ['#searchStop', '#sendStop', '#stopLetters', '#stopLettersPending'];
+
+  async function withPanel(deps: PanelDeps, fn: (port: number, queue: Queue) => Promise<void>): Promise<void> {
+    const q2 = new Queue(join(mkdtempSync(join(tmpdir(), 'jaa-stop-')), 'test.db'));
+    const p2 = await startPanel(q2, 0, deps);
+    try { await fn(p2.port, q2); } finally { await p2.close(); q2.close(); }
+  }
+  const waitAbort = (signal: AbortSignal): Promise<void> => new Promise((r) => {
+    if (signal.aborted) r();
+    else signal.addEventListener('abort', () => r());
+  });
+
+  it('пока ничего не идёт, ни одной кнопки «Остановить» не видно', async () => {
+    await open('pending');
+    for (const sel of STOP_BUTTONS) expect(await page.locator(sel).isVisible(), sel).toBe(false);
+    await open('approved');
+    for (const sel of STOP_BUTTONS) expect(await page.locator(sel).isVisible(), sel).toBe(false);
+  }, 30000);
+
+  it('поиск: «Остановить поиск» появляется, нажатие останавливает, итог называет остановку, поиск можно запустить снова', async () => {
+    let seen: AbortSignal | undefined;
+    await withPanel({
+      startSearch: async (_limit, signal) => {
+        seen = signal;
+        await waitAbort(signal);
+        return { report: { found: 12, queued: 3, stoppedBecause: 'stopped' }, emptyLetters: 0 };
+      },
+    }, async (port) => {
+      await page.goto(`http://127.0.0.1:${port}/#pending`);
+      await page.click('#searchStart');
+      await page.locator('#searchStop').waitFor({ state: 'visible', timeout: 10000 });
+      expect(await page.isDisabled('#searchStart')).toBe(true);
+
+      await page.click('#searchStop');
+      expect(await page.textContent('#searchStop')).toMatch(/Останавливаю/);
+      expect(await page.isDisabled('#searchStop')).toBe(true);
+      await expect.poll(() => seen?.aborted).toBe(true);
+
+      await page.waitForFunction(
+        () => (document.getElementById('searchNote')?.textContent ?? '').includes('ПОИСК ОСТАНОВЛЕН'),
+        undefined, { timeout: 15000 },
+      );
+      const note = await page.textContent('#searchNote');
+      expect(note).toMatch(/просмотрено 12/);
+      expect(note).toMatch(/в очередь 3/);
+      expect(await page.isVisible('#searchStop')).toBe(false);
+      expect(await page.isDisabled('#searchStart')).toBe(false);
+    });
+  }, 40000);
+
+  it('письма: стоп есть на обеих вкладках, нажатие останавливает, итог называет остановку', async () => {
+    let seen: AbortSignal | undefined;
+    await withPanel({
+      fillLetters: async (signal) => {
+        seen = signal;
+        await waitAbort(signal);
+        return { found: 4, filled: 1, stopped: true as const };
+      },
+    }, async (port, queue) => {
+      // «Дописать письма» живая только когда есть что дописывать — кладём заявку без письма.
+      queue.insertPending(normalizeVacancy({
+        source: 'hh', sourceId: 'L1', title: 'Бизнес-аналитик', company: 'C', url: 'https://hh.ru/vacancy/L1',
+        description: 'd', geo: 'Москва', postedAt: '2026-08-20T00:00:00Z',
+      }), 70, [], '', 'none');
+      queue.approve(queue.listByStatus('pending')[0]!.id, '');
+
+      await page.goto(`http://127.0.0.1:${port}/#approved`);
+      await page.waitForFunction(() => document.querySelector<HTMLButtonElement>('#fillLetters')?.disabled === false);
+      await page.click('#fillLetters');
+
+      await page.locator('#stopLetters').waitFor({ state: 'visible', timeout: 10000 });
+      // На соседней вкладке та же кнопка тоже появилась.
+      await page.click('#tab-pending');
+      expect(await page.locator('#stopLettersPending').isVisible()).toBe(true);
+
+      await page.click('#stopLettersPending');
+      await expect.poll(() => seen?.aborted).toBe(true);
+      await page.waitForFunction(
+        () => (document.getElementById('lettersHint')?.textContent ?? '').includes('Остановлено'),
+        undefined, { timeout: 15000 },
+      );
+      expect(await page.textContent('#lettersHint')).toMatch(/заполнено 1 из 4/);
+      expect(await page.isVisible('#stopLettersPending')).toBe(false);
+      await page.click('#tab-approved');
+      expect(await page.isVisible('#stopLetters')).toBe(false);
+    });
+  }, 40000);
+
+  it('отправка: «Остановить отправку» появляется со стартом; стоп — текущая подача доезжает, остальные остаются одобренными', async () => {
+    for (const [sid, score] of [['1', 90], ['2', 80], ['3', 70]] as const) q.approve(seed(sid, score), 'письмо');
+    let release!: () => void;
+    adapter.hold = new Promise<void>((r) => { release = r; });
+
+    await open('approved');
+    await page.click('#sendAll');
+    await page.locator('#sendStop').waitFor({ state: 'visible', timeout: 10000 });
+    await expect.poll(() => adapter.applied.length).toBe(1);
+
+    await page.click('#sendStop');
+    expect(await page.textContent('#sendStop')).toMatch(/Останавливаю/);
+    expect(await page.isDisabled('#sendStop')).toBe(true);
+
+    release();
+    await page.waitForFunction(
+      () => (document.getElementById('sendHint')?.textContent ?? '').includes('Отправлено'),
+      undefined, { timeout: 15000 },
+    );
+    const hint = await page.textContent('#sendHint');
+    expect(hint).toMatch(/Отправлено 1/);
+    expect(hint).toMatch(/остановлено вручную/);
+
+    expect(adapter.applied).toEqual(['1']);
+    expect(q.listByStatus('sent')).toHaveLength(1);
+    expect(q.listByStatus('approved')).toHaveLength(2);
+    expect(await page.isVisible('#sendStop')).toBe(false);
+    expect(await page.isDisabled('#sendAll')).toBe(false);
+  }, 40000);
+
+  it('страница, открытая посреди отправки, сразу показывает «Остановить отправку»', async () => {
+    for (const sid of ['1', '2']) q.approve(seed(sid, 80), 'письмо');
+    let release!: () => void;
+    adapter.hold = new Promise<void>((r) => { release = r; });
+
+    await open('approved');
+    await page.click('#sendAll');
+    await expect.poll(() => adapter.applied.length).toBe(1);
+
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('#sendStop').waitFor({ state: 'visible', timeout: 10000 });
+    release();
+    await page.waitForFunction(
+      () => (document.getElementById('sendHint')?.textContent ?? '').includes('Отправлено'),
+      undefined, { timeout: 15000 },
+    );
+  }, 40000);
 });

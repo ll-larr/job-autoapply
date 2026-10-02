@@ -735,3 +735,281 @@ describe('панель — автоотклик (спека 7.2–7.4)', () => {
     expect(rows.map((r) => [r.sourceId, r.approvedBy])).toEqual([['sent-1', 'auto']]);
   });
 });
+
+// ============================================================================
+// Кнопки «Остановить» и «Отправить без письма».
+// ============================================================================
+describe('панель — остановка процессов и отправка без письма', () => {
+  const CFG = {
+    minScore: 40, letterFullThreshold: 75, letterModels: ['m:free'],
+    searchQueries: [{ query: 'бизнес-аналитик' }],
+    throttle: { hh: { minDelayMs: 0, maxDelayMs: 0 } },
+  };
+  const jpost = (port: number, url: string, body: unknown = {}) => post(`http://127.0.0.1:${port}${url}`, body);
+  const jget = async <T>(port: number, url: string): Promise<T> => (await fetch(`http://127.0.0.1:${port}${url}`)).json() as Promise<T>;
+  async function until(cond: () => Promise<boolean> | boolean, ms = 3000): Promise<void> {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      if (await cond()) return;
+      await new Promise((r) => setTimeout(r, 15));
+    }
+    throw new Error('условие не наступило за отведённое время');
+  }
+  const waitAbort = (signal: AbortSignal): Promise<void> => new Promise((r) => {
+    if (signal.aborted) r();
+    else signal.addEventListener('abort', () => r());
+  });
+  const running = (port: number, kind: 'search' | 'letters' | 'send') =>
+    async (): Promise<boolean> => (await jget<{ running: boolean }>(port, `/api/${kind}/status`)).running;
+
+  function approveRow(sourceId: string, letter: string): number {
+    q.insertPending(normalizeVacancy({
+      source: 'hh', sourceId, title: `Аналитик ${sourceId}`, company: 'C', url: `https://hh.ru/vacancy/${sourceId}`,
+      description: 'd', geo: 'Москва', postedAt: '2026-08-20T00:00:00Z',
+    }), 70, [], letter, 'full');
+    const row = q.listByStatus('pending').find((r) => r.sourceId === sourceId)!;
+    q.approve(row.id, letter);
+    return row.id;
+  }
+
+  beforeEach(() => { clearStop(); });
+  afterEach(() => { clearStop(); });
+
+  describe('поиск', () => {
+    it('стоп подаёт signal в startSearch; после конца running=false и stopping сброшен', async () => {
+      let seen: AbortSignal | undefined;
+      const p = await startPanel(q, 0, {
+        startSearch: async (_limit, signal) => {
+          seen = signal;
+          await waitAbort(signal);
+          return { report: { found: 1, queued: 0, stoppedBecause: 'stopped' }, emptyLetters: 0 };
+        },
+      });
+      try {
+        expect((await jpost(p.port, '/api/search/start', { limit: 5 })).status).toBe(202);
+        await until(running(p.port, 'search'));
+
+        const res = await jpost(p.port, '/api/search/stop');
+        expect(res.status).toBe(200);
+        expect(seen?.aborted).toBe(true);
+
+        await until(async () => !(await running(p.port, 'search')()));
+        const st = await jget<{ stopping: boolean; result: { report: { stoppedBecause: string } } }>(p.port, '/api/search/status');
+        expect(st.result.report.stoppedBecause).toBe('stopped');
+        // Следующий поиск не должен унаследовать «останавливаю».
+        expect(st.stopping).toBe(false);
+      } finally { await p.close(); }
+    });
+
+    it('пока поиск дочитывает после стопа, статус отдаёт stopping=true', async () => {
+      let release: (() => void) | undefined;
+      const p = await startPanel(q, 0, {
+        startSearch: async (_l, signal) => {
+          await waitAbort(signal);
+          await new Promise<void>((r) => { release = r; }); // «дочитывает текущую страницу»
+          return { report: { found: 0, queued: 0 }, emptyLetters: 0 };
+        },
+      });
+      try {
+        await jpost(p.port, '/api/search/start', { limit: 5 });
+        await until(running(p.port, 'search'));
+        await jpost(p.port, '/api/search/stop');
+        await until(() => release !== undefined);
+        const st = await jget<{ running: boolean; stopping: boolean }>(p.port, '/api/search/status');
+        expect(st).toMatchObject({ running: true, stopping: true });
+        release!();
+      } finally { await p.close(); }
+    });
+
+    it('стоп, когда поиска нет, — 409 с понятной причиной, а не молчаливое «ок»', async () => {
+      const p = await startPanel(q, 0, { startSearch: async () => ({ report: {}, emptyLetters: 0 }) });
+      try {
+        const res = await jpost(p.port, '/api/search/stop');
+        expect(res.status).toBe(409);
+        expect((await res.json() as { error: string }).error).toMatch(/не идёт/i);
+      } finally { await p.close(); }
+    });
+
+    it('остановленный поиск НЕ запускает автоотправку, даже если успел одобрить', async () => {
+      const id = approveRow('auto1', 'письмо');
+      let applied = 0;
+      const p = await startPanel(q, 0, {
+        adapters: [{ name: 'hh', async search() { return []; }, async apply() { applied++; return { status: 'sent' as const }; } }],
+        config: CFG,
+        startSearch: async (_l, signal) => {
+          await waitAbort(signal);
+          return { report: { stoppedBecause: 'stopped' }, emptyLetters: 0, autoApproved: 1 };
+        },
+      });
+      try {
+        await jpost(p.port, '/api/search/start', { limit: 5 });
+        await until(running(p.port, 'search'));
+        await jpost(p.port, '/api/search/stop');
+        await until(async () => !(await running(p.port, 'search')()));
+        await new Promise((r) => setTimeout(r, 150));
+
+        expect(applied).toBe(0);
+        expect(await running(p.port, 'send')()).toBe(false);
+        expect(q.listByStatus('approved').map((r) => r.id)).toEqual([id]);
+      } finally { await p.close(); }
+    });
+  });
+
+  describe('письма', () => {
+    it('стоп подаёт signal в fillLetters; результат «stopped» доходит до статуса', async () => {
+      let seen: AbortSignal | undefined;
+      const p = await startPanel(q, 0, {
+        fillLetters: async (signal) => {
+          seen = signal;
+          await waitAbort(signal);
+          return { found: 3, filled: 1, stopped: true as const };
+        },
+      });
+      try {
+        expect((await jpost(p.port, '/api/letters/start')).status).toBe(202);
+        await until(running(p.port, 'letters'));
+
+        expect((await jpost(p.port, '/api/letters/stop')).status).toBe(200);
+        expect(seen?.aborted).toBe(true);
+
+        await until(async () => !(await running(p.port, 'letters')()));
+        const st = await jget<{ result: { stopped: boolean; filled: number }; stopping: boolean }>(p.port, '/api/letters/status');
+        expect(st.result).toMatchObject({ stopped: true, filled: 1 });
+        expect(st.stopping).toBe(false);
+      } finally { await p.close(); }
+    });
+
+    it('стоп без идущей генерации — 409', async () => {
+      const p = await startPanel(q, 0, { fillLetters: async () => ({ found: 0, filled: 0 }) });
+      try {
+        expect((await jpost(p.port, '/api/letters/stop')).status).toBe(409);
+      } finally { await p.close(); }
+    });
+  });
+
+  describe('отправка', () => {
+    it('стоп поднимает флаг data/STOP, текущая подача доезжает, остальные остаются approved', async () => {
+      approveRow('s1', 'письмо');
+      approveRow('s2', 'письмо');
+      approveRow('s3', 'письмо');
+      let applied = 0;
+      let release: (() => void) | undefined;
+      const p = await startPanel(q, 0, {
+        adapters: [{
+          name: 'hh', async search() { return []; },
+          async apply() {
+            applied++;
+            await new Promise<void>((r) => { release = r; }); // подача «идёт»
+            return { status: 'sent' as const };
+          },
+        }],
+        config: CFG,
+      });
+      try {
+        expect((await jpost(p.port, '/api/send/start')).status).toBe(202);
+        await until(() => applied === 1 && release !== undefined);
+
+        expect((await jpost(p.port, '/api/send/stop')).status).toBe(200);
+        expect(isStopRequested()).toBe(true);
+        expect(await jget<{ stopping: boolean }>(p.port, '/api/send/status')).toMatchObject({ stopping: true });
+
+        release!(); // текущую подачу прерывать нельзя: она уже уходит работодателю
+        await until(async () => !(await running(p.port, 'send')()));
+
+        const st = await jget<{ report: { sent: number; halted: { reason: string } }; stopping: boolean }>(p.port, '/api/send/status');
+        expect(applied).toBe(1);
+        expect(st.report.sent).toBe(1);
+        expect(st.report.halted.reason).toBe('killed');
+        expect(st.stopping).toBe(false);
+        // Флаг своё отработал и не висит до следующего запуска.
+        expect(isStopRequested()).toBe(false);
+        expect(q.listByStatus('approved')).toHaveLength(2);
+      } finally { await p.close(); }
+    });
+
+    it('стоп, когда отправки нет, — 409 и флаг НЕ поднимается (иначе он убил бы следующую отправку)', async () => {
+      const p = await startPanel(q, 0, { adapters: [], config: CFG });
+      try {
+        const res = await jpost(p.port, '/api/send/stop');
+        expect(res.status).toBe(409);
+        expect(isStopRequested()).toBe(false);
+      } finally { await p.close(); }
+    });
+
+    type SendStatus = { report: { sent: number; sentWithoutLetter: number; skippedEmptyLetter: string[] } };
+    async function sendAndWait(port: number, body: unknown): Promise<SendStatus> {
+      expect((await jpost(port, '/api/send/start', body)).status).toBe(202);
+      await new Promise((r) => setTimeout(r, 30));
+      await until(async () => !(await running(port, 'send')()));
+      return jget<SendStatus>(port, '/api/send/status');
+    }
+    const spyAdapter = (letters: string[]) => ({
+      name: 'hh', async search() { return []; },
+      async apply(_v: unknown, l: string) { letters.push(l); return { status: 'sent' as const }; },
+    });
+
+    it('по умолчанию заявка без письма не уходит', async () => {
+      approveRow('e1', '');
+      const letters: string[] = [];
+      const p = await startPanel(q, 0, { adapters: [spyAdapter(letters)], config: CFG });
+      try {
+        const st = await sendAndWait(p.port, {});
+        expect(letters).toEqual([]);
+        expect(st.report.skippedEmptyLetter).toHaveLength(1);
+        expect(q.listByStatus('approved')).toHaveLength(1);
+      } finally { await p.close(); }
+    });
+
+    it('withoutLetters: true — заявка без письма уходит с пустым письмом, отчёт это считает', async () => {
+      approveRow('e1', '');
+      approveRow('ok1', 'письмо');
+      const letters: string[] = [];
+      const p = await startPanel(q, 0, { adapters: [spyAdapter(letters)], config: CFG });
+      try {
+        const st = await sendAndWait(p.port, { withoutLetters: true });
+        expect(letters.sort()).toEqual(['', 'письмо']);
+        expect(st.report).toMatchObject({ sent: 2, sentWithoutLetter: 1, skippedEmptyLetter: [] });
+        expect(q.listByStatus('sent')).toHaveLength(2);
+      } finally { await p.close(); }
+    });
+
+    it('разрешает только настоящее true: строка «true» и 1 — нет', async () => {
+      approveRow('e1', '');
+      const letters: string[] = [];
+      const p = await startPanel(q, 0, { adapters: [spyAdapter(letters)], config: CFG });
+      try {
+        await sendAndWait(p.port, { withoutLetters: 'true' });
+        await sendAndWait(p.port, { withoutLetters: 1 });
+        expect(letters).toEqual([]);
+      } finally { await p.close(); }
+    });
+
+    it('пустое тело запроса не ломает старт отправки', async () => {
+      approveRow('ok1', 'письмо');
+      const letters: string[] = [];
+      const p = await startPanel(q, 0, { adapters: [spyAdapter(letters)], config: CFG });
+      try {
+        const res = await fetch(`http://127.0.0.1:${p.port}/api/send/start`, { method: 'POST' });
+        expect(res.status).toBe(202);
+        await until(async () => !(await running(p.port, 'send')()));
+        expect(letters).toEqual(['письмо']);
+      } finally { await p.close(); }
+    });
+
+    it('автоотправка после поиска никогда не шлёт без письма', async () => {
+      approveRow('e1', '');
+      approveRow('ok1', 'письмо');
+      const letters: string[] = [];
+      const p = await startPanel(q, 0, {
+        adapters: [spyAdapter(letters)], config: CFG,
+        startSearch: async () => ({ report: {}, emptyLetters: 0, autoApproved: 1 }),
+      });
+      try {
+        await jpost(p.port, '/api/search/start', { limit: 5 });
+        await until(() => letters.length > 0);
+        await until(async () => !(await running(p.port, 'send')()));
+        expect(letters).toEqual(['письмо']);
+      } finally { await p.close(); }
+    });
+  });
+});

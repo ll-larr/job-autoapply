@@ -31,6 +31,13 @@ export interface CompletionOptions {
    * умолчанию запрос идёт через прокси, найденный в момент запроса.
    */
   fetchImpl?: typeof fetch;
+  /**
+   * Кнопка «Остановить» в панели. Подан — запрос обрывается сразу, а остальные
+   * попытки и модели цепочки не пробуются: иначе остановка ждала бы по
+   * таймауту на каждую из них. Результат — `{ ok: false }` с причиной
+   * «остановлено».
+   */
+  signal?: AbortSignal;
 }
 
 export type CompletionResult =
@@ -39,6 +46,9 @@ export type CompletionResult =
 
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+
+/** Причина отказа при остановке человеком. Выше по стеку её узнают по `signal.aborted`, не по тексту. */
+const STOPPED = 'остановлено человеком';
 
 /** Достаёт текст ответа из тела OpenRouter chat-completions, не веря его форме. */
 export function extractText(body: unknown): string | undefined {
@@ -167,8 +177,10 @@ export async function complete(
   const attempts = options.attemptsPerModel ?? 3;
   const timeoutMs = options.timeoutMs ?? 90_000;
 
+  const stop = options.signal;
   for (const model of options.models) {
     for (let attempt = 0; attempt < attempts; attempt++) {
+      if (stop?.aborted) return { ok: false, failure: STOPPED };
       try {
         // Таймаут обязателен. Бесплатные модели умеют вставать намертво: живой
         // прогон 2026-08-30 провисел больше пяти минут без единого байта ответа.
@@ -176,7 +188,7 @@ export async function complete(
           method: 'POST',
           headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ model, messages }),
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: stop === undefined ? AbortSignal.timeout(timeoutMs) : AbortSignal.any([AbortSignal.timeout(timeoutMs), stop]),
         });
         if (!res.ok) {
           failure = `${model}: ${describeHttpFailure(res.status, await res.text().catch(() => ''))}`;
@@ -194,6 +206,8 @@ export async function complete(
         }
         return { ok: true, text, model };
       } catch (e) {
+        // Оборвал человек, а не сеть: перебирать дальше нечего.
+        if (stop?.aborted) return { ok: false, failure: STOPPED };
         const msg = e instanceof Error ? e.message : String(e);
         failure = `${model}: ${msg.includes('timeout') || msg.includes('aborted')
           ? `модель не ответила за ${timeoutMs / 1000} с`

@@ -625,6 +625,7 @@ export class HhAdapter implements Adapter {
       const seenIds = new Set<string>();
 
       for (let pageNo = 0; collected.length < skip + budget; pageNo++) {
+        if (filters.signal?.aborted) break;
         const url = buildSearchUrl(filters.query, pageNo);
         // waitUntil:'load'/'networkidle' никогда не наступают на hh.ru —
         // страница держит фоновые запросы (реклама, опросы, аналитика)
@@ -694,6 +695,9 @@ export class HhAdapter implements Adapter {
 
       const out: Vacancy[] = [];
       for (const item of wanted) {
+        // «Остановить поиск»: отдаём прочитанное и выходим, а не дочитываем
+        // порцию — каждая вакансия здесь это навигация по сайту.
+        if (filters.signal?.aborted) break;
         // Скорер считает по title+description — карточка выдачи описания
         // не несёт, поэтому дочитка страницы вакансии не опциональна: без
         // неё вакансия почти всегда наберёт околонулевой балл и отсеется.
@@ -913,7 +917,9 @@ export class HhAdapter implements Adapter {
       // (иначе очередь ошибочно сочтёт заявку неподанной и попробует снова —
       // а откликов на hh.ru не отменить) и громко логируем, а не проглатываем
       // ошибку молча.
-      if (!letterInForm) try {
+      // Письма нет вовсе (отправка без письма) — в чат писать нечего: пустое
+      // сообщение не отправится, а попытка открыла бы чат ради ничего.
+      if (!letterInForm && letter.trim() !== '') try {
         await this.sendCoverLetterToChat(context, vacancy.sourceId, letter);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

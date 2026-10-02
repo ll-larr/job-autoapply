@@ -799,3 +799,122 @@ describe('Sender — Telegram (спека 2026-09-18, 5.3–5.5)', () => {
     expect(calls).toEqual([{ sourceId: '-1001:1', ctx: { specialty: 'system-analyst' } }]);
   });
 });
+
+describe('Sender — отправка без письма (по явному разрешению)', () => {
+  const CFG = {
+    ...CONFIG,
+    throttle: { hh: { minDelayMs: 0, maxDelayMs: 0 }, tg: { maxPerDay: 40, minDelayMs: 0, maxDelayMs: 0 } },
+  };
+
+  function seedRow(source: string, letter: string, sourceId: string): void {
+    q.insertPending(normalizeVacancy({
+      source, sourceId, title: `вакансия ${sourceId}`, company: 'C', url: 'u', description: 'd',
+      geo: 'Москва', postedAt: '2026-08-20T00:00:00Z', ...(source === 'tg' ? { contact: `hr_${sourceId}` } : {}),
+    }), 50, [], letter, 'hybrid');
+    const row = q.listByStatus('pending').find((r) => r.sourceId === sourceId)!;
+    q.approve(row.id, letter);
+  }
+
+  function spy(name: string): Adapter & { letters: string[] } {
+    const letters: string[] = [];
+    return {
+      name, letters,
+      async search() { return []; },
+      async apply(_v, letter) { letters.push(letter); return { status: 'sent' }; },
+    };
+  }
+
+  it('с allowEmptyLetter заявка с пустым письмом подаётся — apply получает пустую строку', async () => {
+    seedRow('hh', '', 'e1');
+    const hh = spy('hh');
+    const rep = await new Sender(q, new Map([['hh', hh]]), CFG, {
+      sleep: async () => {}, allowEmptyLetter: true,
+    }).run();
+
+    expect(hh.letters).toEqual(['']);
+    expect(rep.sent).toBe(1);
+    expect(rep.skippedEmptyLetter).toEqual([]);
+    expect(q.listByStatus('approved')).toHaveLength(0);
+  });
+
+  it('письмо из одних пробелов уходит в adapter.apply как пустая строка, а не как пробелы', async () => {
+    seedRow('hh', ' \n\t ', 'e1');
+    const hh = spy('hh');
+    await new Sender(q, new Map([['hh', hh]]), CFG, { sleep: async () => {}, allowEmptyLetter: true }).run();
+    expect(hh.letters).toEqual(['']);
+  });
+
+  it('отчёт считает, сколько откликов ушло БЕЗ письма, а не только сколько ушло', async () => {
+    seedRow('hh', '', 'e1');
+    seedRow('hh', '   ', 'e2');
+    seedRow('hh', 'настоящее письмо', 'ok1');
+    const hh = spy('hh');
+    const rep = await new Sender(q, new Map([['hh', hh]]), CFG, {
+      sleep: async () => {}, allowEmptyLetter: true,
+    }).run();
+
+    expect(rep.sent).toBe(3);
+    expect(rep.sentWithoutLetter).toBe(2);
+  });
+
+  it('по умолчанию пустое письмо по-прежнему не подаётся, sentWithoutLetter = 0', async () => {
+    seedRow('hh', '', 'e1');
+    const hh = spy('hh');
+    const rep = await new Sender(q, new Map([['hh', hh]]), CFG, { sleep: async () => {} }).run();
+
+    expect(hh.letters).toEqual([]);
+    expect(rep.sentWithoutLetter).toBe(0);
+    expect(rep.skippedEmptyLetter).toEqual(['вакансия e1']);
+  });
+
+  it('Telegram без текста не отправляется и с разрешением: первое сообщение рекрутёру — это и есть текст', async () => {
+    seedRow('tg', '', 't1');
+    seedRow('hh', '', 'e1');
+    const tg = spy('tg');
+    const hh = spy('hh');
+    const rep = await new Sender(q, new Map([['tg', tg], ['hh', hh]]), CFG, {
+      sleep: async () => {}, allowEmptyLetter: true,
+    }).run();
+
+    expect(tg.letters).toEqual([]);
+    expect(hh.letters).toEqual(['']);
+    expect(rep.skippedEmptyLetter).toEqual(['вакансия t1']);
+    expect(rep.sentWithoutLetter).toBe(1);
+    expect(q.listByStatus('approved').map((r) => r.source)).toEqual(['tg']);
+  });
+
+  it('заявка, уехавшая как already_applied, в «без письма» не считается', async () => {
+    seedRow('hh', '', 'e1');
+    const dup: Adapter = { name: 'hh', async search() { return []; }, async apply() { return { status: 'already_applied' }; } };
+    const rep = await new Sender(q, new Map([['hh', dup]]), CFG, {
+      sleep: async () => {}, allowEmptyLetter: true,
+    }).run();
+
+    expect(rep.sent).toBe(1);
+    expect(rep.sentWithoutLetter).toBe(0);
+  });
+});
+
+describe('Sender — стоп во время паузы между подачами', () => {
+  it('пауза между подачами прерывается стопом, а не досиживается до конца', async () => {
+    // Пауза на hh — минуты (3 с в config.json, до трёх минут на других
+    // площадках). Кнопка «Остановить отправку», нажатая посреди паузы, обязана
+    // сработать сразу, а не после неё: иначе она выглядит неработающей.
+    seed(q, 3);
+    let applied = 0;
+    let stop = false;
+    const adapter: Adapter = {
+      name: 'hh',
+      async search() { return []; },
+      async apply() { applied++; setTimeout(() => { stop = true; }, 100); return { status: 'sent' }; },
+    };
+    const cfg = { ...CONFIG, throttle: { hh: { minDelayMs: 60_000, maxDelayMs: 60_000 } } };
+    const started = Date.now();
+    const rep = await new Sender(q, new Map([['hh', adapter]]), cfg, { stopRequested: () => stop }).run();
+
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(applied).toBe(1);
+    expect(rep.halted).toEqual({ source: '-', reason: 'killed' });
+    expect(q.listByStatus('approved')).toHaveLength(2);
+  }, 15_000);
+});

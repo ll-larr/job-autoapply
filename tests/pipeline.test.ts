@@ -894,3 +894,84 @@ describe('runSearch — бесфразовый адаптер (Telegram)', () =>
     expect(rep).toMatchObject({ found: 5, tgNotVacancy: 3, tgNoContact: 2, tgSkippedChats: [{ title: 'X', why: 'чат недоступен' }] });
   });
 });
+
+
+describe('runSearch — остановка (signal)', () => {
+  const opts = (over: Partial<Parameters<typeof runSearch>[0]> & { adapters: Adapter[] }) => ({
+    queue: q, config: CONFIG, queries: [{ query: 'аналитик' }],
+    generate: async () => ({ letter: 'письмо', mode: 'hybrid' as const }),
+    ...over,
+  });
+
+  it('сигнал подан до старта — адаптеры не опрашиваются, причина «stopped»', async () => {
+    const ctl = new AbortController();
+    ctl.abort();
+    let searches = 0;
+    const adapter: Adapter = { ...mkAdapter([PROCESS_LANGUAGE]), async search() { searches++; return []; } };
+    const rep = await runSearch(opts({ adapters: [adapter], signal: ctl.signal }));
+
+    expect(searches).toBe(0);
+    expect(rep.stoppedBecause).toBe('stopped');
+    expect(rep.queued).toBe(0);
+  });
+
+  it('сигнал посреди порции — дальше вакансии не обрабатываются, уже поставленные остаются в очереди', async () => {
+    const ctl = new AbortController();
+    let letters = 0;
+    const rep = await runSearch(opts({
+      adapters: [mkAdapter([PROCESS_LANGUAGE, PROCESS_LANGUAGE + ' 2', PROCESS_LANGUAGE + ' 3'])],
+      signal: ctl.signal,
+      // Первое письмо готово и ставится; на втором человек жмёт «Остановить».
+      generate: async () => {
+        letters++;
+        if (letters === 2) ctl.abort();
+        return { letter: 'письмо', mode: 'hybrid' as const };
+      },
+    }));
+
+    expect(rep.stoppedBecause).toBe('stopped');
+    expect(letters).toBe(2);
+    // Вторая вакансия в момент стопа была «в полёте»: её письмо могло оборваться
+    // на полуслове (пустое или неполное), поэтому в очередь она не ставится —
+    // следующий поиск найдёт её заново.
+    expect(rep.queued).toBe(1);
+    expect(q.listByStatus('pending')).toHaveLength(1);
+  });
+
+  it('со стопом заказанное число не добирается: следующая порция не запрашивается', async () => {
+    const ctl = new AbortController();
+    let searches = 0;
+    const adapter: Adapter = {
+      name: 'hh',
+      async search(f) {
+        searches++;
+        ctl.abort(); // стоп приходит, пока читается первая порция
+        const skip = f.skip ?? 0;
+        return [normalizeVacancy({
+          source: 'hh', sourceId: String(skip), title: 'Бизнес-аналитик', company: 'C', url: `https://hh/vacancy/${skip}`,
+          description: PROCESS_LANGUAGE + ` #${skip}`, geo: 'Москва', postedAt: '2026-08-20T00:00:00Z',
+        })];
+      },
+      async apply() { return { status: 'sent' }; },
+    };
+    const rep = await runSearch(opts({ adapters: [adapter], target: 10, batchSize: 1, signal: ctl.signal }));
+
+    expect(searches).toBe(1);
+    expect(rep.stoppedBecause).toBe('stopped');
+    expect(rep.queued).toBe(0);
+  });
+
+  it('адаптер получает signal в фильтрах — чтобы оборвать чтение выдачи изнутри', async () => {
+    const ctl = new AbortController();
+    const seen: Array<AbortSignal | undefined> = [];
+    const adapter: Adapter = { ...mkAdapter([]), async search(f: SearchFilters) { seen.push(f.signal); return []; } };
+    await runSearch(opts({ adapters: [adapter], signal: ctl.signal }));
+    expect(seen).toEqual([ctl.signal]);
+  });
+
+  it('без signal прогон идёт как прежде', async () => {
+    const rep = await runSearch(opts({ adapters: [mkAdapter([PROCESS_LANGUAGE])] }));
+    expect(rep.stoppedBecause).toBe('exhausted');
+    expect(rep.queued).toBe(1);
+  });
+});
