@@ -99,6 +99,20 @@ export class BotApi {
     return r.ok ? { ok: true, value: r.value.document?.file_id ?? fileId } : r;
   }
 
+  /** Резюме с диска. Файл читается внутри общей отправки: его отсутствие — отказ, а не исключение. */
+  sendDocumentByPath(
+    chatId: number, path: string, filename: string, caption: string,
+  ): Promise<ApiResult<string>> {
+    return this.uploadDocument(chatId, () => readFileSync(path), filename, caption);
+  }
+
+  /** Текст документом, без файла на диске: так владельцу уходит вакансия вместе с пингом. */
+  sendDocumentFromText(
+    chatId: number, filename: string, content: string, caption: string,
+  ): Promise<ApiResult<string>> {
+    return this.uploadDocument(chatId, () => Buffer.from(content, 'utf8'), filename, caption);
+  }
+
   /**
    * Файл уходит ОДНИМ буфером с рассчитанным Content-Length, а не через
    * FormData. Живой прогон 2026-09-20: FormData поверх undici ProxyAgent
@@ -108,8 +122,8 @@ export class BotApi {
    * готовым буфером проходит. Файл у нас не больше 5 МБ, держать его в памяти
    * дешевле, чем разбираться в стриминге через туннель.
    */
-  async sendDocumentByPath(
-    chatId: number, path: string, filename: string, caption: string,
+  private async uploadDocument(
+    chatId: number, readBytes: () => Uint8Array, filename: string, caption: string,
   ): Promise<ApiResult<string>> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -126,7 +140,7 @@ export class BotApi {
         'utf8',
       );
       const tail = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
-      const body = Buffer.concat([head, readFileSync(path), tail]);
+      const body = Buffer.concat([head, readBytes(), tail]);
       const res = await this.fetchImpl(this.url('sendDocument'), {
         method: 'POST',
         headers: {

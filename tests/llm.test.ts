@@ -14,7 +14,6 @@ afterEach(() => {
 function config(): Config {
   return {
     minScore: 40,
-    letterFullThreshold: 75,
     letterModels: ['google/gemma-4-31b-it:free', 'openrouter/free'],
     throttle: {},
   };

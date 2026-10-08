@@ -48,7 +48,7 @@ describe('selectAutoApprovals (спека 7.2)', () => {
 });
 
 describe('autoApproveAfterSearch — на настоящей очереди', () => {
-  const CONFIG = { minScore: 40, letterFullThreshold: 75, letterModels: ['m'], throttle: {} };
+  const CONFIG = { minScore: 40, letterModels: ['m'], throttle: {} };
 
   function mk(): Queue {
     return new Queue(join(mkdtempSync(join(tmpdir(), 'jaa-auto-')), 't.db'));

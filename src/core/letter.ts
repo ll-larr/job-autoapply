@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import type { Vacancy } from './vacancy.js';
 import type { LetterMode } from './queue.js';
 import { complete, type CompletionOptions } from './openrouter.js';
@@ -7,21 +8,27 @@ import { candidateName, withCandidate } from './profile.js';
 // реэкспорт — чтобы вызывающие и тесты не искали его на новом месте.
 export { describeHttpFailure, isProxyBlockPage, extractText } from './openrouter.js';
 
-export type TemplateName =
-  | 'fullstack-analyst' | 'ai-llm-ba' | 'product-ba' | 'english-generic';
+/**
+ * Единственный скелет письма (решение владельца 2026-10-08). Письмо везде
+ * hybrid: модель дописывает в скелете только {{FIT}} (и {{TITLE}} с {{COMPANY}},
+ * если они в нём есть), остальной текст идёт точь-в-точь. Новые черновики
+ * делаются на основе этого файла.
+ */
+export const LETTER_TEMPLATE_PATH = 'templates/ai-llm-ba.md';
+
+export function readLetterTemplate(path: string = LETTER_TEMPLATE_PATH): string {
+  return readFileSync(path, 'utf8');
+}
 
 export interface LetterInput {
   vacancy: Vacancy;
   matched: string[];
-  mode: LetterMode;
+  /** Текст резюме той специальности, под которую подошла вакансия (core/resume.ts). */
   resume: string;
+  /** Скелет письма с плейсхолдером {{FIT}} — см. readLetterTemplate. */
   template: string;
-  /**
-   * Название специальности для инструкции модели. undefined — «вакансии
-   * бизнес-аналитика», как до 2026-09-18: у засеянных специальностей промпт
-   * не меняется ни на символ.
-   */
-  role?: string;
+  /** Название специальности вакансии: идёт в первую строку инструкции модели. */
+  role: string;
 }
 
 /** Модели, попытки, таймаут, подмена fetch — см. core/openrouter.ts. */
@@ -32,17 +39,6 @@ export interface PromptParts {
     system: { role: 'system'; content: string },
     user: { role: 'user'; content: string },
   ];
-}
-
-export function pickMode(score: number, threshold: number): LetterMode {
-  return score >= threshold ? 'full' : 'hybrid';
-}
-
-export function pickTemplate(v: Vacancy, matched: string[]): TemplateName {
-  if (v.source === 'hrge') return 'english-generic';
-  if (matched.includes('ai-llm')) return 'ai-llm-ba';
-  if (matched.includes('product')) return 'product-ba';
-  return 'fullstack-analyst';
 }
 
 /**
@@ -107,64 +103,41 @@ const WRITING_RULES = [
   RULE_INTERNSHIP,
 ].join('\n');
 
-/**
- * Первая строка инструкции. Без роли — дословно прежняя: засеянные
- * специальности (legacyLetters) не передают роль, и их промпт не меняется.
- */
-const roleLine = (role?: string): string => withCandidate(role === undefined
-  ? 'Ты помогаешь кандидату откликаться на вакансии бизнес-аналитика.'
-  : `Ты помогаешь кандидату откликаться на вакансии по специальности «${role}».`);
+/** Первая строка инструкции: специальность — та, под которую подошла вакансия. */
+const roleLine = (role: string): string =>
+  withCandidate(`Ты помогаешь кандидату откликаться на вакансии по специальности «${role}».`);
 
 /**
- * Чем закончить письмо. Имя не задано — подписи нет: выдуманная подпись хуже
- * её отсутствия, отклик на hh и так уходит от известного работодателю
- * человека.
+ * Скелет с подписью. {{SIGNATURE}} подставляет код, а не модель: подпись —
+ * такой же постоянный кусок скелета, как остальной текст, и isUsableLetter
+ * сверяет письмо уже с подписанным скелетом. До 2026-09-23 скелеты кончались
+ * словом «кандидат», и письма уходили подписанными им, хотя имя в настройках
+ * было. Имени нет — строка подписи убирается. В скелете ai-llm-ba.md
+ * {{SIGNATURE}} с 2026-10-08 нет (письмо от лица бота-ассистента), механизм
+ * остаётся для скелетов, где он есть.
  */
-const signatureLine = (): string => {
+export function signSkeleton(template: string): string {
   const who = candidateName();
   return who === null
-    ? 'Начни с обращения. Подпись не ставь.'
-    : `Начни с обращения, закончи подписью «${who}».`;
-};
+    ? template.replace(/\s*\{\{SIGNATURE\}\}/g, '')
+    : template.replace(/\{\{SIGNATURE\}\}/g, who);
+}
 
-const instructionHybrid = (role?: string): string => `${roleLine(role)}
-Тебе дан скелет письма с плейсхолдерами {{HOOK}} и {{FIT}}.
-Замени {{TITLE}} и {{COMPANY}} на данные вакансии.
-Вместо {{HOOK}} напиши одно-два предложения о том, что в описанных ЗАДАЧАХ
-близко к тому, чем он занимается. Опирайся только на текст вакансии.
-Пиши про работу, а не про работодателя. Название компании в письме не
-упоминай вообще, и не хвали её. Комплименты компании читаются как лесть и
-как машинный текст: работодатель и так знает, где он работает, а кандидат
-интересен тем, что он умеет, а не тем, как он отозвался о фирме.
-Плохо: "Меня привлекла направленность вашей команды на развитие сегментов
-в Компании — это как раз та сфера, где я вижу измеримый результат."
-Хорошо: "Сверка данных под требования регулятора и проектирование целевых
-процессов — это ровно та работа, которой я занимаюсь."
-ОБА плейсхолдера обязаны быть ЗАМЕНЕНЫ на живой текст. Удалить их и вернуть
-скелет без них — это провал задачи, а не её решение: без {{HOOK}} и {{FIT}}
-письмо не содержит ни слова про конкретную вакансию, и весь смысл теряется.
-Вместо {{FIT}} напиши одно-два предложения, связывающих опыт из резюме
-с конкретными требованиями вакансии. В {{FIT}} обязательно должна быть хотя бы одна
-конкретная опора из резюме: названный проект, инструмент или цифра, привязанная
-к тому, что вакансия реально просит.
+const instructionHybrid = (role: string): string => `${roleLine(role)}
+Тебе дан скелет письма с плейсхолдером {{FIT}}.
+Твоя задача дописать данное письмо, заменив плейсхолдеры {{TITLE}}, {{COMPANY}} и {{FIT}}.
+Замени {{TITLE}} и {{COMPANY}} на данные из вакансии.
+Вместо {{FIT}} напиши одно-два предложения, связывающих опыт из резюме с конкретными требованиями вакансии. 
+В {{FIT}} обязательно должна быть хотя бы одна конкретная опора из резюме: названный проект или инструмент, привязанный к тому, что вакансия реально просит.
 Не выдумывай фактов, которых нет в резюме. Верни только готовое письмо, без пояснений.
-
-${WRITING_RULES}`;
-
-const instructionFull = (role?: string): string => `${roleLine(role)}
-Напиши сопроводительное письмо с нуля под конкретную вакансию.
-Держи объём в 4–6 абзацев, деловой тон без канцелярита и без превосходных степеней.
-Опирайся только на факты из резюме — ничего не выдумывай.
-Пиши про работу, а не про работодателя: название компании не упоминай и не
-хвали её. Комплименты компании читаются как лесть и как машинный текст.
-${signatureLine()}
-Верни только письмо, без пояснений.
+Плейсхолдер обязательно должен быть ЗАМЕНЕН на живой текст. 
+Удалить его и вернуть скелет без него — это провал задачи, а не её решение: без {{FIT}} письмо не содержит ни слова про конкретную вакансию, и весь смысл теряется.
 
 ${WRITING_RULES}`;
 
 /**
- * Порядок сообщений: стабильное (инструкция + резюме, в hybrid-режиме — ещё
- * и скелет) идёт первым как system-сообщение, волатильное (текст вакансии) —
+ * Порядок сообщений: стабильное (инструкция + резюме + скелет) идёт первым как
+ * system-сообщение, волатильное (текст вакансии) —
  * вторым, как user-сообщение. Это просто гигиена расположения: стабильный
  * префикс первым не мешает и кое-где помогает — некоторые провайдеры кешируют
  * запросы на своей стороне без каких-либо явных маркеров от нас. Формального
@@ -172,10 +145,7 @@ ${WRITING_RULES}`;
  * `cache_control`, поэтому мы его не отправляем и не обещаем экономию на кеше.
  */
 export function buildPrompt(input: LetterInput): PromptParts {
-  const instruction = input.mode === 'full' ? instructionFull(input.role) : instructionHybrid(input.role);
-  const stable = input.mode === 'full'
-    ? `${instruction}\n\n=== РЕЗЮМЕ ===\n${input.resume}`
-    : `${instruction}\n\n=== РЕЗЮМЕ ===\n${input.resume}\n\n=== СКЕЛЕТ ===\n${input.template}`;
+  const stable = `${instructionHybrid(input.role)}\n\n=== РЕЗЮМЕ ===\n${input.resume}\n\n=== СКЕЛЕТ ===\n${signSkeleton(input.template)}`;
 
   const v = input.vacancy;
   const volatile = [
@@ -246,6 +216,13 @@ const FORBIDDEN_CLAIMS: ReadonlyArray<{ re: RegExp; what: string }> = [
    * ("писал", "пишет"), а не производные с приставкой.
    */
   { re: /(?<![а-яёА-ЯЁ])писа[а-яё]*\s+(контракт|API)/i, what: 'проектирование контрактов API' },
+  /**
+   * Решение владельца 2026-10-08: пользовательских метрик продукта и Power BI в
+   * опыте нет. Ловится именно «пользовательские метрики»: «пользовательские
+   * истории» (user story) и «метрики качества ответов» из резюме законны.
+   */
+  { re: /пользовательск[а-яё]*\s+метрик/i, what: 'пользовательские метрики' },
+  { re: /Power[\s-]*BI/i, what: 'Power BI' },
 ];
 
 /** Первое найденное запрещённое утверждение, либо null. */
@@ -257,13 +234,13 @@ export function findForbiddenClaim(text: string): string | null {
 }
 
 /** Куски скелета, по которым видно, что модель их не заполнила. */
-const PLACEHOLDER = /\{\{\s*(HOOK|FIT|TITLE|COMPANY)\s*\}\}/;
+const PLACEHOLDER = /\{\{\s*(FIT|TITLE|COMPANY)\s*\}\}/;
 
 /**
  * Годен ли ответ модели как письмо.
  *
- * Проверяется две вещи, обе — про гибридный режим, где модель должна была
- * заполнить {{HOOK}} и {{FIT}}:
+ * Проверяется две вещи: модель должна была заполнить {{FIT}} (и {{TITLE}} с
+ * {{COMPANY}}, если они есть в скелете):
  *
  * 1. В тексте не осталось незаполненных плейсхолдеров.
  * 2. Текст не является скелетом, из которого плейсхолдеры просто вырезали.
@@ -279,16 +256,16 @@ export function isUsableLetter(text: string, input: LetterInput): boolean {
   // Письмо, приписывающее человеку то, чего он не умеет, отправлять нельзя —
   // отвечать за это ему на собеседовании. См. FORBIDDEN_CLAIMS.
   if (findForbiddenClaim(trimmed) !== null) return false;
-  if (input.mode !== 'hybrid') return true;
 
   // Раньше здесь ещё стоял s.replace(PLACEHOLDER, ' ') первым шагом — PLACEHOLDER
-  // без /g заменяет только ПЕРВОЕ вхождение {{HOOK|FIT|TITLE|COMPANY}}, а
+  // без /g заменяет только ПЕРВОЕ вхождение {{FIT|TITLE|COMPANY}}, а
   // следующий .replace(/\{\{[^}]*\}\}/g, ...) глобален и ловит ЛЮБОЕ {{...}},
   // включая то же самое первое вхождение — то есть полностью его поглощает.
   // Первый вызов не мог повлиять на результат ни при каком входе; убран.
   const squash = (s: string): string =>
     s.replace(/\{\{[^}]*\}\}/g, ' ').replace(/\s+/g, ' ').trim();
-  if (squash(trimmed) === squash(input.template)) return false;
+  const skeleton = signSkeleton(input.template);
+  if (squash(trimmed) === squash(skeleton)) return false;
 
   // Постоянные куски скелета обязаны дойти дословно. Скелет — утверждённый
   // человеком голос, модели поручено только заполнить врезки. Живой прогон
@@ -297,7 +274,7 @@ export function isUsableLetter(text: string, input: LetterInput): boolean {
   // "защищай". Такое письмо выглядит заполненным и гейт выше проходит, но
   // отправлять его нельзя.
   const out = squash(trimmed);
-  for (const chunk of input.template.split(/\{\{[^}]*\}\}/)) {
+  for (const chunk of skeleton.split(/\{\{[^}]*\}\}/)) {
     const fixed = squash(chunk);
     // Короткие огрызки между плейсхолдерами не проверяем: на них ложные
     // срабатывания от разницы в пунктуации.
@@ -313,11 +290,11 @@ export async function generateLetter(
 ): Promise<{ letter: string; mode: LetterMode; failure?: string }> {
   const r = await complete(buildPrompt(input).messages, options, (text) =>
     // Внешне правдоподобное письмо бывает бесполезным: в гибридном режиме
-    // слабые модели вырезают {{HOOK}} и {{FIT}} вместо того, чтобы их
+    // слабые модели вырезают {{FIT}} вместо того, чтобы их
     // заполнить, портят скелет или выдумывают факт. Такой ответ — неудача,
     // пробуем следующую модель (см. isUsableLetter).
     isUsableLetter(text, input)
       ? null
       : 'письмо не прошло проверку (вырезаны вставки, испорчен скелет или выдуман факт)');
-  return r.ok ? { letter: r.text, mode: input.mode } : { ...EMPTY_RESULT, failure: r.failure };
+  return r.ok ? { letter: r.text, mode: 'hybrid' } : { ...EMPTY_RESULT, failure: r.failure };
 }

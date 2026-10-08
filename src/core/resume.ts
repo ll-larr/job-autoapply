@@ -10,11 +10,10 @@ import type { Specialty } from './specialty.js';
  * извлекается текст для писем. Извлечение небыстрое, поэтому текст кешируется
  * в data/resumes/<id>.txt и обновляется, только когда PDF новее кеша.
  *
- * Засеянные специальности (legacyLetters) пишут по прежнему .md: письма БА не
- * должны поменяться от того, что текст теперь можно брать из PDF.
+ * С 2026-10-08 резюме берётся только из того, что прикреплено в настройках
+ * (см. resumeTextFor): прежний запасной resume.md убран.
  */
 
-export const LEGACY_RESUME_MD = 'resume.md';
 export const RESUME_CACHE_DIR = 'data/resumes';
 
 export async function extractPdfText(path: string): Promise<string> {
@@ -57,15 +56,27 @@ export async function refreshResumeCache(
   }
 }
 
-export function resumeTextFor(
-  specialty: Specialty,
-  opts: { cacheDir?: string; legacyMdPath?: string } = {},
-): string {
-  const legacy = opts.legacyMdPath ?? LEGACY_RESUME_MD;
-  if (specialty.legacyLetters || specialty.resumePdf === null) return readFileSync(legacy, 'utf8');
+/**
+ * Текст резюме, прикреплённого к специальности в настройках, и больше ничего:
+ * решение владельца 2026-10-08. Запасного резюме нет — ни resume.md, ни
+ * «резюме БА»: письмо по резюме, о котором владелец не знает, хуже отсутствия
+ * письма. Нет PDF или текст не извлёкся — ошибка с названием специальности;
+ * вызывающий превращает её в пустое письмо с причиной (письмо допишет человек).
+ * Поиск перед стартом зовёт refreshResumeCache, панель — при сохранении
+ * настроек, так что кеш к этому моменту свежий.
+ */
+export function resumeTextFor(specialty: Specialty, opts: { cacheDir?: string } = {}): string {
+  if (specialty.resumePdf === null) {
+    throw new Error(
+      `К специальности «${specialty.name}» не прикреплено резюме — добавь PDF во вкладке «Настройки»`,
+    );
+  }
   const cached = cachePath(specialty, opts.cacheDir ?? RESUME_CACHE_DIR);
-  // Кеша нет — резюме БА, как у специальности без PDF (спека 3.7). Поиск
-  // перед стартом зовёт refreshResumeCache, так что сюда попадает только
-  // PDF, который не извлёкся; панель об этом уже сказала при сохранении.
-  return existsSync(cached) ? readFileSync(cached, 'utf8') : readFileSync(legacy, 'utf8');
+  if (!existsSync(cached)) {
+    throw new Error(
+      `Текст резюме специальности «${specialty.name}» не извлечён из ${specialty.resumePdf} — `
+      + 'проверь, что файл на месте и в нём есть текст',
+    );
+  }
+  return readFileSync(cached, 'utf8');
 }

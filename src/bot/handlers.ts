@@ -23,9 +23,9 @@ import { isVacancyPost, countVacancyMarkers } from '../telegram/parse.js';
 export type BotAction =
   | { kind: 'text'; chatId: number; text: string; keyboard?: boolean }
   /** Отправить PDF резюме: путь и file_id знает транспорт (bot/run.ts). */
-  | { kind: 'cv'; chatId: number }
-  /** Сообщение владельцу. Уходит тем же ботом в личку по TG_OWNER_CHAT_ID. */
-  | { kind: 'owner'; text: string };
+  | { kind: 'cv'; chatId: number };
+// Владельцу бот пишет только о назначенном собеседовании (решение 2026-10-05), и
+// этот пинг собирает цикл из bot_meetings (bot/run.ts), а не обработчик.
 
 export interface HandlerDeps {
   store: BotStore;
@@ -45,8 +45,6 @@ export interface HandlerDeps {
 
 /** Сколько живёт режим ожидания вакансии или даты (спека 2026-09-20, 4). */
 export const MODE_TTL_MS = 30 * 60 * 1000;
-/** Сколько текста вакансии уходит владельцу в пинге. */
-const PING_QUOTE_CHARS = 400;
 
 type Command = 'start' | 'cv' | 'profile' | 'add_vacancy' | 'set_meet';
 
@@ -197,9 +195,10 @@ async function handleVacancyText(
 }
 
 /**
- * Вакансия пришла: строка в очередь (если прошла отсев), ответ рекрутёру от
- * модели и пинг владельцу. Отсев не меняет ответ рекрутёру: отказ по фильтру —
- * решение владельца, а не повод грубить человеку.
+ * Вакансия пришла: строка в очередь (если прошла отсев и не повтор) и ответ
+ * рекрутёру от модели. Владельцу о вакансии не пишем — она лежит в очереди
+ * панели, а пингуется только собеседование. Отсев не меняет ответ рекрутёру:
+ * отказ по фильтру — решение владельца, а не повод грубить человеку.
  */
 async function processVacancy(
   raw: string, messageId: number, chatId: number, username: string | null,
@@ -211,54 +210,38 @@ async function processVacancy(
   const vacancy = buildVacancy({ text, chatId, messageId, username, titleWords, now: deps.now() });
   const { specialty, screen, score, matched } = assessVacancy(vacancy, settings);
 
-  let queueId: number | null = null;
-  let note = '';
-  if (!screen.passed) {
-    note = `отсеяна: ${screen.reason} (${screen.detail})`;
-  } else if (vacancy.contentHash !== null && deps.queue.hasContentHash(vacancy.contentHash)) {
-    note = 'такая вакансия уже в очереди';
-  } else if (deps.queue.insertPending(vacancy, score, matched, '', 'none', specialty.id)) {
-    queueId = deps.queue.idOf(vacancy.source, vacancy.sourceId);
+  const duplicate = vacancy.contentHash !== null && deps.queue.hasContentHash(vacancy.contentHash);
+  if (screen.passed && !duplicate
+    && deps.queue.insertPending(vacancy, score, matched, '', 'none', specialty.id)) {
+    const queueId = deps.queue.idOf(vacancy.source, vacancy.sourceId);
     if (queueId !== null) deps.store.setLastQueueId(chatId, queueId);
-  } else {
-    note = 'уже была в очереди';
   }
 
   deps.store.setMode(chatId, 'idle', null);
 
-  const actions: BotAction[] = [];
   const allowed = allowModelCall(chatId, day, deps);
-  if (allowed) {
-    deps.store.countModelCall(day, chatId);
-    deps.store.countModelCall(day, 0);
-    const reply = await deps.askModel(buildVacancyMessages({
-      text, resume: deps.resume(), role: specialty.name,
-    }));
-    actions.push(say(chatId, replyText(reply, chatId, deps)));
-  } else {
-    actions.push(say(chatId, TEXTS.limit(deps.profile.telegram)));
-  }
-
-  actions.push({
-    kind: 'owner',
-    text: [
-      `Вакансия от ${username === null ? `id ${chatId}` : `@${username}`}`,
-      `${vacancy.title} — скор ${score}, специальность «${specialty.name}»`,
-      queueId === null ? note : `в очереди #${queueId}`,
-      vacancy.url === '' ? '' : vacancy.url,
-      '',
-      text.slice(0, PING_QUOTE_CHARS),
-    ].filter((s) => s !== '').join('\n'),
-  });
-  return actions;
+  if (!allowed) return [say(chatId, TEXTS.limit(deps.profile.telegram))];
+  deps.store.countModelCall(day, chatId);
+  deps.store.countModelCall(day, 0);
+  const reply = await deps.askModel(buildVacancyMessages({
+    text, resume: deps.resume(), role: specialty.name,
+  }));
+  return [say(chatId, replyText(reply, chatId, deps))];
 }
 
 function handleMeetAnswer(
   text: string, chatId: number, now: Date, day: string, deps: HandlerDeps,
 ): BotAction[] {
   const parsed = parseMeetTime(text, now);
-  // Режим не снимается: человек ошибся форматом, а не передумал встречаться.
-  if (parsed === null) return [say(chatId, TEXTS.meetBadFormat)];
+  // Режим не снимается: человек написал так, что мы не поняли, а не передумал
+  // встречаться. Что именно не так — дата, время или прошедший срок — решает
+  // разбор, и переспрос называет причину.
+  if (!parsed.ok) {
+    const reply = parsed.reason === 'no-time' ? TEXTS.meetNoTime
+      : parsed.reason === 'past' ? TEXTS.meetPast
+        : TEXTS.meetBadFormat;
+    return [say(chatId, reply)];
+  }
 
   if (deps.store.meetingsToday(chatId, day) >= deps.limits.meetingsPerChatPerDay) {
     return [say(chatId, TEXTS.limit(deps.profile.telegram))];

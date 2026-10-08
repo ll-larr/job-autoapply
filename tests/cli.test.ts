@@ -29,7 +29,7 @@ import type { Config } from '../src/core/config.js';
 import { seedSettings } from '../src/core/settings.js';
 import { DEFAULT_SPECIALTY } from '../src/core/specialty-defaults.js';
 
-const CONFIG = { minScore: 40, letterFullThreshold: 75, letterModels: ['m:free'], searchQueries: [], throttle: {} };
+const CONFIG = { minScore: 40, letterModels: ['m:free'], searchQueries: [], throttle: {} };
 
 /** Для прогонов без Telegram: сообщение рекрутёру здесь не должно понадобиться. */
 const NO_DM = async (): Promise<never> => { throw new Error('generateDm не должен вызываться для не-Telegram вакансий'); };
@@ -395,25 +395,24 @@ describe('runSearchCommand — связка pipeline + генерация пис
     'Проводим gap-анализ AS-IS/TO-BE, пишем регламенты бизнес-процессов, ' +
     'готовим BRD и FSD, отвечаем за постановку задач.';
 
-  it('новая специальность: её резюме и роль, письмо целиком, без скелета', async () => {
+  it('каждая специальность: её резюме, её название в роли, один и тот же скелет', async () => {
     const PM = {
       ...DEFAULT_SPECIALTY, id: 'pm', name: 'Менеджер продукта', legacyLetters: false,
       titleWords: ['аналитик'],
     };
-    const seen: Array<{ resume: string; template: string; mode: string; role?: string }> = [];
+    const seen: Array<{ resume: string; template: string; role?: string }> = [];
     await runSearchCommand({
       queue: q, config: CONFIG, adapters: [mkAdapter([PROCESS_LANGUAGE])],
       queries: [{ query: 'pm', specialty: PM }], limit: 10,
       resumeFor: (s) => `РЕЗЮМЕ:${s.id}`,
       generateLetterFn: async (input) => {
-        seen.push({ resume: input.resume, template: input.template, mode: input.mode, role: input.role });
-        return { letter: 'п', mode: input.mode };
+        seen.push({ resume: input.resume, template: input.template, role: input.role });
+        return { letter: 'п', mode: 'hybrid' as const };
       },
       generateDmFn: NO_DM,
-      pickTemplateFn: () => 'fullstack-analyst',
-      readTemplate: (name) => `ШАБЛОН:${name}`,
+      readTemplate: () => 'СКЕЛЕТ',
     });
-    expect(seen).toEqual([{ resume: 'РЕЗЮМЕ:pm', template: '', mode: 'full', role: 'Менеджер продукта' }]);
+    expect(seen).toEqual([{ resume: 'РЕЗЮМЕ:pm', template: 'СКЕЛЕТ', role: 'Менеджер продукта' }]);
   });
 
   it('пост Telegram — сообщение рекрутёру (generateDm), не письмо; резюме и роль специальности', async () => {
@@ -438,7 +437,6 @@ describe('runSearchCommand — связка pipeline + генерация пис
         dm.push({ resume: input.resume, role: input.role, url: input.vacancy.url });
         return { letter: 'Здравствуйте! https://t.me/x/7', mode: 'dm' };
       },
-      pickTemplateFn: () => 'fullstack-analyst',
       readTemplate: () => 'СКЕЛЕТ',
     });
     expect(dm).toEqual([{ resume: 'РЕЗЮМЕ:business-analyst', role: 'Бизнес-аналитик', url: 'https://t.me/x/7' }]);
@@ -451,8 +449,8 @@ describe('runSearchCommand — связка pipeline + генерация пис
     const r = await runSearchCommand({
       queue: q, config: CONFIG, adapters: [mkAdapter([PROCESS_LANGUAGE])],
       queries: [{ query: 'бизнес-аналитик' }], limit: 10, settings,
-      resumeFor: () => 'Р', generateLetterFn: async (i) => ({ letter: 'письмо', mode: i.mode }),
-      generateDmFn: NO_DM, pickTemplateFn: () => 'fullstack-analyst', readTemplate: () => 'СКЕЛЕТ',
+      resumeFor: () => 'Р', generateLetterFn: async (i) => ({ letter: 'письмо', mode: 'hybrid' as const }),
+      generateDmFn: NO_DM, readTemplate: () => 'СКЕЛЕТ',
     });
     expect(r.autoApproved).toBe(1);
     expect(q.listByStatus('approved').map((x) => x.approvedBy)).toEqual(['auto']);
@@ -464,17 +462,41 @@ describe('runSearchCommand — связка pipeline + генерация пис
     const r = await runSearchCommand({
       queue: q, config: CONFIG, adapters: [mkAdapter([PROCESS_LANGUAGE])],
       queries: [{ query: 'бизнес-аналитик' }], limit: 10, settings,
-      resumeFor: () => 'Р', generateLetterFn: async (i) => ({ letter: 'письмо', mode: i.mode }),
-      generateDmFn: NO_DM, pickTemplateFn: () => 'fullstack-analyst', readTemplate: () => 'СКЕЛЕТ',
+      resumeFor: () => 'Р', generateLetterFn: async (i) => ({ letter: 'письмо', mode: 'hybrid' as const }),
+      generateDmFn: NO_DM, readTemplate: () => 'СКЕЛЕТ',
     });
     expect(r.autoApproved).toBe(0);
     expect(q.listByStatus('pending')).toHaveLength(1);
   });
 
-  it('specialtyOf: удалённая специальность — бизнес-аналитик', () => {
-    const settings = seedSettings(undefined, null);
+  it('specialtyOf: удалённая специальность — первая включённая с прикреплённым резюме', () => {
+    const settings = seedSettings(undefined, 'C:/cv/ba.pdf');
     expect(specialtyOf(settings, 'system-analyst').name).toBe('Системный аналитик');
     expect(specialtyOf(settings, 'нет-такой').id).toBe('business-analyst');
+    // Первая специальность выключена — берётся следующая, у которой резюме есть.
+    settings.specialties[0]!.enabled = false;
+    expect(specialtyOf(settings, 'нет-такой').id).toBe('system-analyst');
+  });
+
+  it('specialtyOf: резюме нигде не прикреплено — запасная БА, и без резюме письмо честно не пишется', () => {
+    const settings = seedSettings(undefined, null);
+    expect(specialtyOf(settings, 'нет-такой').resumePdf).toBeNull();
+  });
+
+  it('у специальности нет резюме: письмо пустое, причина названа, поиск не падает', async () => {
+    let calls = 0;
+    const r = await runSearchCommand({
+      queue: q, config: CONFIG, adapters: [mkAdapter([PROCESS_LANGUAGE])],
+      queries: [{ query: 'бизнес-аналитик' }], limit: 10,
+      resumeFor: () => { throw new Error('К специальности «Бизнес-аналитик» не прикреплено резюме'); },
+      generateLetterFn: async () => { calls++; return { letter: 'x', mode: 'hybrid' as const }; },
+      generateDmFn: NO_DM, readTemplate: () => 'СКЕЛЕТ',
+    });
+    expect(calls).toBe(0);
+    expect(r.report.queued).toBe(1);
+    expect(r.emptyLetters).toBe(1);
+    expect(r.letterFailure).toMatch(/не прикреплено резюме/);
+    expect(q.listByStatus('pending')[0]!.letter).toBe('');
   });
 
   it('вызывает generateLetterFn с резюме/скелетом из инъецированных зависимостей, не трогая диск и сеть', async () => {
@@ -489,17 +511,16 @@ describe('runSearchCommand — связка pipeline + генерация пис
         receivedResume = input.resume;
         receivedTemplate = input.template;
         receivedModels = options.models;
-        return { letter: 'готовое письмо', mode: input.mode };
+        return { letter: 'готовое письмо', mode: 'hybrid' as const };
       },
       generateDmFn: NO_DM,
-      pickTemplateFn: () => 'fullstack-analyst',
-      readTemplate: (name) => `ШАБЛОН:${name}`,
+      readTemplate: () => 'СКЕЛЕТ',
     });
 
     expect(report.queued).toBe(1);
     expect(emptyLetters).toBe(0);
     expect(receivedResume).toBe('ФЕЙКОВОЕ РЕЗЮМЕ');
-    expect(receivedTemplate).toBe('ШАБЛОН:fullstack-analyst');
+    expect(receivedTemplate).toBe('СКЕЛЕТ');
     expect(receivedModels).toEqual(CONFIG.letterModels);
     expect(q.listByStatus('pending')).toHaveLength(1);
     expect(q.listByStatus('pending')[0]!.letter).toBe('готовое письмо');
@@ -511,7 +532,6 @@ describe('runSearchCommand — связка pipeline + генерация пис
       queries: [{ query: 'q' }], limit: 10, resumeFor: () => 'r',
       generateLetterFn: async () => ({ letter: '', mode: 'none' }),
       generateDmFn: NO_DM,
-      pickTemplateFn: () => 'fullstack-analyst',
       readTemplate: () => 't',
     });
 
@@ -528,7 +548,6 @@ describe('runSearchCommand — связка pipeline + генерация пис
       queries: [{ query: 'q' }], limit: 10, resumeFor: () => 'r',
       generateLetterFn: async () => { calls++; return { letter: 'x', mode: 'hybrid' }; },
       generateDmFn: NO_DM,
-      pickTemplateFn: () => 'fullstack-analyst',
       readTemplate: () => 't',
     });
     expect(report.queued).toBe(0);
@@ -563,7 +582,7 @@ describe('runSearchCommand — остановка (signal)', () => {
 
   const base = (adapters: Adapter[]) => ({
     queue: q, config: CONFIG, adapters, queries: [{ query: 'бизнес-аналитик' }], limit: 10,
-    resumeFor: () => 'Р', generateDmFn: NO_DM, pickTemplateFn: () => 'fullstack-analyst' as const, readTemplate: () => 'СКЕЛЕТ',
+    resumeFor: () => 'Р', generateDmFn: NO_DM, readTemplate: () => 'СКЕЛЕТ',
   });
 
   it('модель получает signal — чтобы оборвать письмо в полёте', async () => {
@@ -571,7 +590,7 @@ describe('runSearchCommand — остановка (signal)', () => {
     const seen: Array<AbortSignal | undefined> = [];
     await runSearchCommand({
       ...base([mkAdapter(1)]), signal: ctl.signal,
-      generateLetterFn: async (i, options) => { seen.push(options.signal); return { letter: 'п', mode: i.mode }; },
+      generateLetterFn: async (i, options) => { seen.push(options.signal); return { letter: 'п', mode: 'hybrid' as const }; },
     });
     expect(seen).toEqual([ctl.signal]);
   });
@@ -587,7 +606,7 @@ describe('runSearchCommand — остановка (signal)', () => {
       ...base([mkAdapter(3)]), settings, signal: ctl.signal,
       generateLetterFn: async (i) => {
         if (++letters === 2) ctl.abort();
-        return { letter: 'письмо', mode: i.mode };
+        return { letter: 'письмо', mode: 'hybrid' as const };
       },
     });
 
@@ -628,8 +647,8 @@ describe('fillEmptyLetters', () => {
 
   const deps = (over: Partial<Parameters<typeof fillEmptyLetters>[0]> = {}) => ({
     queue: q, config: CONFIG, resumeFor: () => 'Р', specialtyById: () => DEFAULT_SPECIALTY,
-    generateLetterFn: async () => ({ letter: 'письмо', mode: 'full' as const }),
-    generateDmFn: NO_DM, pickTemplateFn: () => 'fullstack-analyst' as const, readTemplate: () => 'СКЕЛЕТ',
+    generateLetterFn: async () => ({ letter: 'письмо', mode: 'hybrid' as const }),
+    generateDmFn: NO_DM, readTemplate: () => 'СКЕЛЕТ',
     ...over,
   });
 
@@ -646,7 +665,7 @@ describe('fillEmptyLetters', () => {
       signal: ctl.signal,
       generateLetterFn: async () => {
         if (++calls === 2) ctl.abort();
-        return { letter: 'письмо', mode: 'full' as const };
+        return { letter: 'письмо', mode: 'hybrid' as const };
       },
     }));
 
@@ -656,13 +675,27 @@ describe('fillEmptyLetters', () => {
     expect(q.listByStatus('pending').filter((row) => row.letter === '')).toHaveLength(2);
   });
 
+  it('у специальности нет резюме: модель не зовётся, письма пустые, причина названа', async () => {
+    // Решение владельца 2026-10-08: запасного резюме нет. Письмо по чужому или
+    // устаревшему резюме хуже пустого — пустое человек допишет сам.
+    let calls = 0;
+    const r = await fillEmptyLetters(deps({
+      resumeFor: () => { throw new Error('К специальности «Бизнес-аналитик» не прикреплено резюме'); },
+      generateLetterFn: async () => { calls++; return { letter: 'x', mode: 'hybrid' as const }; },
+    }));
+    expect(calls).toBe(0);
+    expect(r).toMatchObject({ found: 3, filled: 0 });
+    expect(r.failure).toMatch(/не прикреплено резюме/);
+    expect(q.listByStatus('pending').every((row) => row.letter === '')).toBe(true);
+  });
+
   it('сигнал подан до старта — модель не зовётся вовсе', async () => {
     const ctl = new AbortController();
     ctl.abort();
     let calls = 0;
     const r = await fillEmptyLetters(deps({
       signal: ctl.signal,
-      generateLetterFn: async () => { calls++; return { letter: 'x', mode: 'full' as const }; },
+      generateLetterFn: async () => { calls++; return { letter: 'x', mode: 'hybrid' as const }; },
     }));
     expect(calls).toBe(0);
     expect(r).toMatchObject({ found: 3, filled: 0, stopped: true });
@@ -732,7 +765,7 @@ describe('formatProxyReport — что сказать в консоли про �
 });
 
 describe('gigarecruiterOnSent: хук отправки резолвит блок gigarecruiter (M1)', () => {
-  const base = { minScore: 40, letterFullThreshold: 60, letterModels: ['m1'], throttle: {} };
+  const base = { minScore: 40, letterModels: ['m1'], throttle: {} };
   const sber = normalizeVacancy({
     source: 'hh', sourceId: 'sb-1', title: 'Бизнес-аналитик', company: 'ПАО Сбербанк', url: 'u',
     description: 'd', geo: 'Москва', postedAt: '2026-09-25T00:00:00Z',

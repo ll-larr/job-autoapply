@@ -505,3 +505,22 @@ describe('Queue — Telegram и автоотклик', () => {
     expect(sent[0]!.sentAt).toBeGreaterThan(0);
   });
 });
+
+describe('Queue.byId', () => {
+  // Пинг о собеседовании называет вакансию номером строки. Строка к этому
+  // моменту может быть skipped (отсев, автоархив), и по статусу pending её уже
+  // не найти — владелец получал «вакансия #197» без названия.
+  it('отдаёт строку в любом статусе, включая skipped', () => {
+    q.insertPending(mkVacancy('11'), 50, [], 'l', 'hybrid');
+    const id = q.listByStatus('pending')[0]!.id;
+    q.skip(id);
+    const row = q.byId(id);
+    expect(row?.status).toBe('skipped');
+    expect(row?.vacancy.title).toBe('БА');
+    expect(row?.createdAt).toBeGreaterThan(0);
+  });
+
+  it('неизвестный номер — null, а не исключение', () => {
+    expect(q.byId(999)).toBeNull();
+  });
+});

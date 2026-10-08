@@ -245,7 +245,7 @@ describe('панель — поиск с проводкой', () => {
 // ============================================================================
 describe('панель — поиск и отправка не идут одновременно', () => {
   const CONFIG = {
-    minScore: 40, letterFullThreshold: 75, letterModels: ['m:free'],
+    minScore: 40, letterModels: ['m:free'],
     searchQueries: [{ query: 'бизнес-аналитик' }],
     throttle: { hh: { minDelayMs: 0, maxDelayMs: 0 } },
   };
@@ -380,7 +380,7 @@ describe('панель — startedAt в статусе поиска/отправ
         },
       }],
       config: {
-        minScore: 40, letterFullThreshold: 75, letterModels: ['m:free'],
+        minScore: 40, letterModels: ['m:free'],
         searchQueries: [{ query: 'q' }], throttle: { hh: { minDelayMs: 0, maxDelayMs: 0 } },
       },
     });
@@ -420,7 +420,7 @@ describe('панель — close() освобождает адаптеры (find
     const p2 = await startPanel(q, 0, {
       adapters: [adapter],
       config: {
-        minScore: 40, letterFullThreshold: 75, letterModels: ['m:free'],
+        minScore: 40, letterModels: ['m:free'],
         searchQueries: [{ query: 'q' }], throttle: {},
       },
     });
@@ -437,7 +437,7 @@ describe('панель — close() освобождает адаптеры (find
     const p2 = await startPanel(q, 0, {
       adapters: [adapter],
       config: {
-        minScore: 40, letterFullThreshold: 75, letterModels: ['m:free'],
+        minScore: 40, letterModels: ['m:free'],
         searchQueries: [{ query: 'q' }], throttle: {},
       },
     });
@@ -627,7 +627,7 @@ describe('панель — Telegram', () => {
 
 describe('панель — автоотклик (спека 7.2–7.4)', () => {
   const CONFIG = {
-    minScore: 40, letterFullThreshold: 75, letterModels: ['m'],
+    minScore: 40, letterModels: ['m'],
     throttle: { hh: { minDelayMs: 0, maxDelayMs: 0 } },
   };
 
@@ -741,7 +741,7 @@ describe('панель — автоотклик (спека 7.2–7.4)', () => {
 // ============================================================================
 describe('панель — остановка процессов и отправка без письма', () => {
   const CFG = {
-    minScore: 40, letterFullThreshold: 75, letterModels: ['m:free'],
+    minScore: 40, letterModels: ['m:free'],
     searchQueries: [{ query: 'бизнес-аналитик' }],
     throttle: { hh: { minDelayMs: 0, maxDelayMs: 0 } },
   };

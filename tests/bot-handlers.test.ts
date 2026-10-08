@@ -85,11 +85,12 @@ describe('вакансия', () => {
     expect(deps.store.chat(77)?.mode).toBe('await_vacancy');
   });
 
-  it('следующее сообщение становится вакансией: строка в очереди, ответ и пинг', async () => {
+  it('следующее сообщение становится вакансией: строка в очереди и ответ рекрутёру, владельца не пингуем', async () => {
+    // Решение владельца 2026-10-05: пинг — только о назначенном собеседовании.
+    // Присланная вакансия молча ложится в очередь панели.
     await send({ text: '/add_vacancy' });
     const actions = await send({ message_id: 2, text: vacancyText });
-    expect(actions.some((a) => a.kind === 'text' && a.text === 'ответ модели')).toBe(true);
-    expect(actions.some((a) => a.kind === 'owner')).toBe(true);
+    expect(actions).toEqual([{ kind: 'text', chatId: 77, text: 'ответ модели' }]);
     expect(deps.queue.listByStatus('pending')).toHaveLength(1);
     expect(deps.store.chat(77)?.mode).toBe('idle');
   });
@@ -110,8 +111,8 @@ describe('вакансия', () => {
       text: 'Бизнес-аналитик 1С\nОбязанности: доработка 1С, отчёты 1С.\nТребования: опыт с 1С.',
     });
     expect(deps.queue.listByStatus('pending')).toHaveLength(0);
-    expect(actions.some((a) => a.kind === 'text' && a.text === 'ответ модели')).toBe(true);
-    expect(actions.some((a) => a.kind === 'owner' && a.text.includes('отсеяна'))).toBe(true);
+    // Только ответ рекрутёру: об отсеянной вакансии владельцу тоже не пишем.
+    expect(actions).toEqual([{ kind: 'text', chatId: 77, text: 'ответ модели' }]);
   });
 
   /** Текст, который площадка отдаёт, когда всё в порядке: по нему видно вакансию. */
@@ -228,11 +229,30 @@ describe('собеседование', () => {
     await send({ message_id: 2, text: 'Бизнес-аналитик\nBPMN, SQL, требования' });
     await send({ message_id: 3, text: '/set_meet' });
     const actions = await send({ message_id: 4, text: '07.10;15:30' });
-    expect(actions[0]).toEqual({ kind: 'text', chatId: 77, text: TEXTS.meetSaved('07.10 в 15:30') });
+    expect(actions[0]).toEqual({ kind: 'text', chatId: 77, text: TEXTS.meetSaved('7 октября (среда), 15:30') });
     const pending = deps.store.pendingMeetings();
     expect(pending).toHaveLength(1);
     expect(pending[0]?.queueId).not.toBeNull();
     expect(deps.store.chat(77)?.mode).toBe('idle');
+  });
+
+  it('рекрутёр пишет время как угодно: бот понимает и отбивает дату и время словами', async () => {
+    await send({ text: '/set_meet' });
+    const first = await send({ message_id: 2, text: '10 октября в 15:00' });
+    expect(first[0]).toEqual({
+      kind: 'text', chatId: 77, text: TEXTS.meetSaved('10 октября (суббота), 15:00'),
+    });
+    await send({ text: '/set_meet' });
+    const second = await send({ message_id: 4, text: '10.10 в час дня' });
+    expect(second[0]).toEqual({
+      kind: 'text', chatId: 77, text: TEXTS.meetSaved('10 октября (суббота), 13:00'),
+    });
+
+    // В записи — слова рекрутёра как есть и разобранное время.
+    const saved = deps.store.pendingMeetings();
+    expect(saved.map((m) => m.raw)).toEqual(['10 октября в 15:00', '10.10 в час дня']);
+    expect(saved.map((m) => new Date(m.meetAt).getHours())).toEqual([15, 13]);
+    expect(saved.map((m) => new Date(m.meetAt).getDate())).toEqual([10, 10]);
   });
 
   it('вакансии не было — запись всё равно делается, без привязки', async () => {
@@ -241,11 +261,35 @@ describe('собеседование', () => {
     expect(deps.store.pendingMeetings()[0]?.queueId).toBeNull();
   });
 
-  it('дата не разобрана: режим сохраняется, повторяется формат', async () => {
+  it('ничего похожего на дату: режим сохраняется, бот просит написать ещё раз', async () => {
     await send({ text: '/set_meet' });
-    const actions = await send({ message_id: 2, text: 'в среду' });
+    const actions = await send({ message_id: 2, text: 'позвоните мне, пожалуйста' });
     expect(actions[0]).toEqual({ kind: 'text', chatId: 77, text: TEXTS.meetBadFormat });
     expect(deps.store.chat(77)?.mode).toBe('await_meet');
+    expect(deps.store.pendingMeetings()).toHaveLength(0);
+  });
+
+  it('дата есть, времени нет: просим время, запись не делается, режим сохраняется', async () => {
+    await send({ text: '/set_meet' });
+    const actions = await send({ message_id: 2, text: 'в среду' });
+    expect(actions[0]).toEqual({ kind: 'text', chatId: 77, text: TEXTS.meetNoTime });
+    expect(deps.store.chat(77)?.mode).toBe('await_meet');
+    expect(deps.store.pendingMeetings()).toHaveLength(0);
+  });
+
+  it('время уже прошло: бот так и говорит, запись не делается', async () => {
+    // Часы теста — 20.09 около 12:00, «сегодня в 9» осталось в прошлом.
+    await send({ text: '/set_meet' });
+    const actions = await send({ message_id: 2, text: 'сегодня в 9' });
+    expect(actions[0]).toEqual({ kind: 'text', chatId: 77, text: TEXTS.meetPast });
+    expect(deps.store.chat(77)?.mode).toBe('await_meet');
+    expect(deps.store.pendingMeetings()).toHaveLength(0);
+  });
+
+  it('подсказки бота не навязывают формат даты: рекрутёр пишет как хочет', () => {
+    // Решение владельца 2026-10-05: убрать из текстов «в формате дд.мм;чч:мм».
+    const prompts = [TEXTS.askMeet, TEXTS.meetBadFormat, TEXTS.meetNoTime, TEXTS.meetPast];
+    for (const text of prompts) expect(text).not.toMatch(/дд\.мм|чч:мм|формат/i);
   });
 
   it('лимит записей в сутки', async () => {

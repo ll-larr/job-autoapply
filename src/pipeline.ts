@@ -4,7 +4,6 @@ import type { Adapter } from './adapters/types.js';
 import type { Specialty } from './core/specialty.js';
 import { scoreVacancy } from './core/scorer.js';
 import { screenVacancy, hasTitleWord, type ScreenResult } from './core/screening.js';
-import { pickMode } from './core/letter.js';
 import { DEFAULT_SPECIALTY, DEFAULT_STOP_WORDS } from './core/specialty-defaults.js';
 import { vacancyKey, type Vacancy } from './core/vacancy.js';
 
@@ -203,7 +202,8 @@ export interface RunSearchOptions {
    */
   signal?: AbortSignal;
   adapters: Adapter[];
-  generate: (v: Vacancy, matched: string[], mode: LetterMode, specialty: Specialty)
+  /** Письмо под вакансию. Режим один — hybrid (core/letter.ts), поэтому его сюда не передают. */
+  generate: (v: Vacancy, matched: string[], specialty: Specialty)
     => Promise<{ letter: string; mode: LetterMode }>;
 }
 
@@ -452,11 +452,7 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
       }
       const { specialty, score, matched } = best;
 
-      // Скелеты писем и выбор hybrid/full — только у засеянных специальностей
-      // (legacyLetters). У остальных скелетов нет, письмо пишется целиком
-      // (спека 3.7).
-      const mode = specialty.legacyLetters ? pickMode(score, opts.config.letterFullThreshold) : 'full';
-      const { letter, mode: usedMode } = await opts.generate(v, matched, mode, specialty);
+      const { letter, mode: usedMode } = await opts.generate(v, matched, specialty);
       // Стоп пришёл, пока писалось письмо: оно могло оборваться, и ставить в
       // очередь вакансию с оборванным письмом нельзя.
       if (stopped()) break;

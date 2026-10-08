@@ -50,17 +50,32 @@ describe('refreshResumeCache + resumeTextFor', () => {
     expect(existsSync(join(dir, 'pm.txt'))).toBe(false);
   });
 
-  it('legacyLetters — всегда .md БА, даже если PDF задан', () => {
-    const md = join(mkdtempSync(join(tmpdir(), 'jaa-md-')), 'cv.md');
-    writeFileSync(md, 'РЕЗЮМЕ БА', 'utf8');
-    expect(resumeTextFor({ ...DEFAULT_SPECIALTY, resumePdf: PDF }, { legacyMdPath: md })).toBe('РЕЗЮМЕ БА');
+  // Решение владельца 2026-10-08: резюме берётся только из того, что прикреплено
+  // в настройках. Прежний запасной resume.md (у засеянных специальностей он был
+  // главным, у остальных — запасным) убран: письмо уходит по резюме, о котором
+  // владелец не знает, что оно в игре.
+  it('засеянная специальность (legacyLetters) читает текст своего PDF, а не resume.md', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jaa-cv-'));
+    const ba = { ...DEFAULT_SPECIALTY, resumePdf: PDF };
+    await refreshResumeCache(ba, dir);
+    expect(resumeTextFor(ba, { cacheDir: dir })).toContain('Роадмап');
   });
 
-  it('PDF не задан или кеша нет — .md БА', () => {
-    const md = join(mkdtempSync(join(tmpdir(), 'jaa-md-')), 'cv.md');
-    writeFileSync(md, 'РЕЗЮМЕ БА', 'utf8');
+  it('PDF не прикреплён — отказ с названием специальности, а не молчаливое резюме БА', () => {
+    expect(() => resumeTextFor(pm(null))).toThrow(/Менеджер продукта.*не прикреплено/);
+  });
+
+  it('PDF прикреплён, но текст не извлечён — отказ с путём к файлу', () => {
     const empty = mkdtempSync(join(tmpdir(), 'jaa-cv-'));
-    expect(resumeTextFor(pm(null), { legacyMdPath: md, cacheDir: empty })).toBe('РЕЗЮМЕ БА');
-    expect(resumeTextFor(pm(PDF), { legacyMdPath: md, cacheDir: empty })).toBe('РЕЗЮМЕ БА');
+    expect(() => resumeTextFor(pm(PDF), { cacheDir: empty })).toThrow(PDF);
+  });
+
+  it('у каждой специальности своё резюме: вакансия получает то, что прикреплено к её специальности', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jaa-cv-'));
+    writeFileSync(join(dir, 'pm.txt'), 'РЕЗЮМЕ МЕНЕДЖЕРА ПРОДУКТА', 'utf8');
+    writeFileSync(join(dir, 'business-analyst.txt'), 'РЕЗЮМЕ БИЗНЕС-АНАЛИТИКА', 'utf8');
+    const ba = { ...DEFAULT_SPECIALTY, resumePdf: 'ba.pdf' };
+    expect(resumeTextFor(pm('pm.pdf'), { cacheDir: dir })).toBe('РЕЗЮМЕ МЕНЕДЖЕРА ПРОДУКТА');
+    expect(resumeTextFor(ba, { cacheDir: dir })).toBe('РЕЗЮМЕ БИЗНЕС-АНАЛИТИКА');
   });
 });

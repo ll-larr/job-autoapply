@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import {
-  findForbiddenClaim, buildPrompt, pickTemplate, pickMode, generateLetter, isUsableLetter,
+  findForbiddenClaim, buildPrompt, readLetterTemplate, generateLetter, isUsableLetter,
   describeHttpFailure, isProxyBlockPage,
 } from '../src/core/letter.js';
 import type { LetterInput } from '../src/core/letter.js';
@@ -17,74 +17,58 @@ function mk(over: Partial<Parameters<typeof normalizeVacancy>[0]> = {}) {
 
 const RESUME = 'РЕЗЮМЕ АРТЁМА';
 
-describe('pickMode', () => {
-  it('скор ниже порога — hybrid', () => expect(pickMode(60, 75)).toBe('hybrid'));
-  it('скор на пороге — full', () => expect(pickMode(75, 75)).toBe('full'));
-  it('скор выше порога — full', () => expect(pickMode(90, 75)).toBe('full'));
-});
-
-describe('pickTemplate', () => {
-  it('площадка hrge даёт английский скелет', () => {
-    expect(pickTemplate(mk({ source: 'hrge' }), ['sql'])).toBe('english-generic');
-  });
-  it('совпадение ai-llm даёт ai-llm-ba', () => {
-    expect(pickTemplate(mk(), ['ai-llm', 'sql'])).toBe('ai-llm-ba');
-  });
-  it('продуктовые ключевики дают product-ba', () => {
-    expect(pickTemplate(mk(), ['product'])).toBe('product-ba');
-  });
-  it('иначе fullstack-analyst', () => {
-    expect(pickTemplate(mk(), ['sql', 'bpmn'])).toBe('fullstack-analyst');
+describe('скелет письма', () => {
+  // Решение владельца 2026-10-08: скелет один, templates/ai-llm-ba.md, и письмо
+  // везде hybrid — модель дописывает только {{FIT}}. Скелет правят руками, и
+  // без {{FIT}} письмо ушло бы без единого слова про вакансию.
+  it('читается templates/ai-llm-ba.md, и в нём есть {{FIT}}', () => {
+    const text = readLetterTemplate();
+    expect(text).toContain('{{FIT}}');
+    expect(text).not.toContain('{{HOOK}}');
   });
 });
 
 describe('buildPrompt — снимок промпта писем', () => {
-  // Снимок снят 2026-09-19 ДО выноса общих правил в COMMON_WRITING_RULES
-  // (core/dm.ts берёт их для сообщений рекрутёру). Промпт писем не должен
-  // измениться ни на символ — ни в hybrid, ни в full.
-  it('hybrid и full — без изменений', () => {
-    for (const mode of ['hybrid', 'full'] as const) {
-      const p = buildPrompt({ vacancy: mk(), matched: ['sql'], mode, resume: RESUME, template: 'СКЕЛЕТ {{HOOK}} {{FIT}}' });
-      expect(p.messages[0].content).toMatchSnapshot(mode);
-    }
+  // Снимок обновлён 2026-10-08 после правки владельцем инструкции (только
+  // {{FIT}}) и удаления режима full: промпт письма теперь один, hybrid.
+  it('промпт письма — без непреднамеренных изменений', () => {
+    const p = buildPrompt({
+      vacancy: mk(), matched: ['sql'], resume: RESUME, template: 'СКЕЛЕТ {{FIT}}', role: 'Бизнес-аналитик',
+    });
+    expect(p.messages[0].content).toMatchSnapshot('hybrid');
   });
 });
 
 describe('buildPrompt — специальность', () => {
-  it('без role — первая строка про бизнес-аналитика', () => {
-    const p = buildPrompt({ vacancy: mk(), matched: [], mode: 'full', resume: RESUME, template: '' });
-    expect(p.messages[0].content).toMatch(/^Ты помогаешь кандидату откликаться на вакансии бизнес-аналитика\./);
-  });
-
   // Имя перестало быть вписанным в промпт 2026-09-20: копию проекта отдают
   // другому человеку, и правка имени не должна требовать правки кода.
-  it('имя из настроек попадает в промпт и в подпись', () => {
+  it('имя из настроек попадает в промпт и подставляется в {{SIGNATURE}} скелета', () => {
     setCandidateName('Иван Петров');
-    const p = buildPrompt({ vacancy: mk(), matched: [], mode: 'full', resume: RESUME, template: '' });
+    const p = buildPrompt({
+      vacancy: mk(), matched: [], resume: RESUME, template: 'Текст {{FIT}}\n\n{{SIGNATURE}}', role: 'Бизнес-аналитик',
+    });
     expect(p.messages[0].content).toContain('Кандидат: Иван Петров.');
-    expect(p.messages[0].content).toContain('закончи подписью «Иван Петров»');
+    expect(p.messages[0].content).toContain('{{FIT}}\n\nИван Петров');
     setCandidateName(null);
   });
 
-  it('имени нет — модель не выдумывает подпись', () => {
-    const p = buildPrompt({ vacancy: mk(), matched: [], mode: 'full', resume: RESUME, template: '' });
-    expect(p.messages[0].content).toContain('Подпись не ставь.');
+  it('имени нет — строки «Кандидат» нет', () => {
+    const p = buildPrompt({ vacancy: mk(), matched: [], resume: RESUME, template: 'x', role: 'Бизнес-аналитик' });
     expect(p.messages[0].content).not.toContain('Кандидат:');
   });
 
-  it('с role — специальность в инструкции, и в hybrid, и в full', () => {
-    for (const mode of ['full', 'hybrid'] as const) {
-      const p = buildPrompt({ vacancy: mk(), matched: [], mode, resume: RESUME, template: 'С', role: 'Менеджер продукта' });
-      expect(p.messages[0].content).toContain('по специальности «Менеджер продукта»');
-      expect(p.messages[0].content).not.toContain('вакансии бизнес-аналитика.');
-    }
+  it('специальность вакансии — в инструкции', () => {
+    const p = buildPrompt({
+      vacancy: mk(), matched: [], resume: RESUME, template: 'С', role: 'Менеджер продукта',
+    });
+    expect(p.messages[0].content).toContain('по специальности «Менеджер продукта»');
   });
 });
 
 describe('buildPrompt — порядок сообщений для OpenRouter', () => {
   it('стабильный блок (инструкция + резюме) идёт первым, как system-сообщение', () => {
     const p = buildPrompt({
-      vacancy: mk(), matched: ['sql'], mode: 'hybrid', resume: RESUME, template: 'x',
+      vacancy: mk(), matched: ['sql'], resume: RESUME, template: 'x', role: 'БА',
     });
     expect(p.messages[0].role).toBe('system');
     expect(p.messages[0].content).toContain(RESUME);
@@ -93,53 +77,44 @@ describe('buildPrompt — порядок сообщений для OpenRouter', 
   it('текст вакансии идёт в user-сообщение и отсутствует в system — он волатилен', () => {
     const p = buildPrompt({
       vacancy: mk({ description: 'УНИКАЛЬНЫЙ ТЕКСТ' }), matched: ['sql'],
-      mode: 'hybrid', resume: RESUME, template: 'x',
+      resume: RESUME, template: 'x', role: 'БА',
     });
     expect(p.messages[0].content).not.toContain('УНИКАЛЬНЫЙ ТЕКСТ');
     expect(p.messages[1].role).toBe('user');
     expect(p.messages[1].content).toContain('УНИКАЛЬНЫЙ ТЕКСТ');
   });
 
-  it('режим full не подмешивает скелет', () => {
-    const p = buildPrompt({
-      vacancy: mk(), matched: [], mode: 'full', resume: RESUME, template: 'СКЕЛЕТ',
-    });
-    expect(JSON.stringify(p)).not.toContain('СКЕЛЕТ');
+  it('скелет письма идёт в system-сообщении после резюме', () => {
+    const p = buildPrompt({ vacancy: mk(), matched: [], resume: RESUME, template: 'СКЕЛЕТ', role: 'БА' });
+    const system = p.messages[0].content;
+    expect(system.indexOf('=== РЕЗЮМЕ ===')).toBeLessThan(system.indexOf('=== СКЕЛЕТ ==='));
+    expect(system.endsWith('=== СКЕЛЕТ ===\nСКЕЛЕТ')).toBe(true);
   });
 
   it('не содержит cache_control — это фича Anthropic, OpenRouter её не понимает', () => {
     const p = buildPrompt({
-      vacancy: mk(), matched: [], mode: 'hybrid', resume: RESUME, template: 'x',
+      vacancy: mk(), matched: [], resume: RESUME, template: 'x', role: 'БА',
     });
     expect(JSON.stringify(p)).not.toContain('cache_control');
   });
 
-  it('инструкция запрещает упоминать диплом и университет, в обоих режимах', () => {
-    const hybrid = buildPrompt({ vacancy: mk(), matched: [], mode: 'hybrid', resume: RESUME, template: 'x' });
-    const full = buildPrompt({ vacancy: mk(), matched: [], mode: 'full', resume: RESUME, template: 'x' });
-    expect(hybrid.messages[0].content).toMatch(/диплом/i);
-    expect(hybrid.messages[0].content).toMatch(/университет/i);
-    expect(full.messages[0].content).toMatch(/диплом/i);
-    expect(full.messages[0].content).toMatch(/университет/i);
+  it('инструкция запрещает упоминать диплом и университет', () => {
+    const p = buildPrompt({ vacancy: mk(), matched: [], resume: RESUME, template: 'x', role: 'БА' });
+    expect(p.messages[0].content).toMatch(/диплом/i);
+    expect(p.messages[0].content).toMatch(/университет/i);
   });
 
-  it('инструкция запрещает преувеличивать SQL и авторство API-контрактов, в обоих режимах', () => {
-    const hybrid = buildPrompt({ vacancy: mk(), matched: [], mode: 'hybrid', resume: RESUME, template: 'x' });
-    const full = buildPrompt({ vacancy: mk(), matched: [], mode: 'full', resume: RESUME, template: 'x' });
-    for (const p of [hybrid, full]) {
-      expect(p.messages[0].content).toMatch(/Postman/);
-      expect(p.messages[0].content).toMatch(/контракт/i);
-      expect(p.messages[0].content).toMatch(/сложные запросы с нуля/i);
-    }
+  it('инструкция запрещает преувеличивать SQL и авторство API-контрактов', () => {
+    const p = buildPrompt({ vacancy: mk(), matched: [], resume: RESUME, template: 'x', role: 'БА' });
+    expect(p.messages[0].content).toMatch(/Postman/);
+    expect(p.messages[0].content).toMatch(/контракт/i);
+    expect(p.messages[0].content).toMatch(/сложные запросы с нуля/i);
   });
 
-  it('инструкция требует прямо назвать junior+/middle для стажировок, в обоих режимах', () => {
-    const hybrid = buildPrompt({ vacancy: mk(), matched: [], mode: 'hybrid', resume: RESUME, template: 'x' });
-    const full = buildPrompt({ vacancy: mk(), matched: [], mode: 'full', resume: RESUME, template: 'x' });
-    for (const p of [hybrid, full]) {
-      expect(p.messages[0].content).toMatch(/стажировка/i);
-      expect(p.messages[0].content).toMatch(/junior\+\/middle/);
-    }
+  it('инструкция требует прямо назвать junior+/middle для стажировок', () => {
+    const p = buildPrompt({ vacancy: mk(), matched: [], resume: RESUME, template: 'x', role: 'БА' });
+    expect(p.messages[0].content).toMatch(/стажировка/i);
+    expect(p.messages[0].content).toMatch(/junior\+\/middle/);
   });
 });
 
@@ -151,7 +126,7 @@ describe('generateLetter', () => {
     else process.env['OPENROUTER_API_KEY'] = ORIGINAL_KEY;
   });
 
-  const input = { vacancy: mk(), matched: [], mode: 'hybrid' as const, resume: RESUME, template: 't' };
+  const input = { vacancy: mk(), matched: [], resume: RESUME, template: 't', role: 'БА' };
 
   it('возвращает текст первой же модели, если та ответила успешно', async () => {
     process.env['OPENROUTER_API_KEY'] = 'test-key';
@@ -329,8 +304,6 @@ describe('isUsableLetter', () => {
   const SKELETON = [
     'Здравствуйте!',
     '',
-    '{{HOOK}}',
-    '',
     'Я аналитик.',
     '',
     '{{FIT}}',
@@ -341,9 +314,9 @@ describe('isUsableLetter', () => {
   const base = (over: Partial<LetterInput> = {}): LetterInput => ({
     vacancy: mk(),
     matched: [],
-    mode: 'hybrid',
     resume: RESUME,
     template: SKELETON,
+    role: 'Бизнес-аналитик',
     ...over,
   });
 
@@ -362,11 +335,9 @@ describe('isUsableLetter', () => {
     expect(isUsableLetter('   ', base())).toBe(false);
   });
 
-  it('принимает письмо, где врезки заполнены', () => {
+  it('принимает письмо, где вставка заполнена', () => {
     const filled = [
       'Здравствуйте!',
-      '',
-      'Вас зацепила автоматизация закупок.',
       '',
       'Я аналитик.',
       '',
@@ -378,14 +349,12 @@ describe('isUsableLetter', () => {
   });
 
   it('отбраковывает письмо, в котором модель переписала и покорёжила скелет', () => {
-    // Настоящий случай из живого прогона 2026-08-30: врезки заполнены, но
+    // Настоящий случай из живого прогона 2026-08-30: вставка заполнена, но
     // постоянный текст скелета модель переписала по-своему и испортила
     // ("интервьюирую" -> "intervieuирую", "защищаю" -> "защищай"). Внешне
     // письмо выглядит нормальным и предыдущие проверки проходит.
     const skeleton = [
       'Здравствуйте!',
-      '',
-      '{{HOOK}}',
       '',
       'Я интервьюирую владельцев процесса, собираю схему AS-IS, нахожу узкие места и защищаю TO-BE.',
       '',
@@ -396,8 +365,6 @@ describe('isUsableLetter', () => {
     const corrupted = [
       'Здравствуйте!',
       '',
-      'Вакансия про оптимизацию процессов.',
-      '',
       'Я intervieuирую владельцев процесса, собираю схему AS-IS, нахожу узкие места и защищай TO-BE.',
       '',
       'Вёл AS-IS в похожем проекте.',
@@ -407,11 +374,9 @@ describe('isUsableLetter', () => {
     expect(isUsableLetter(corrupted, base({ template: skeleton }))).toBe(false);
   });
 
-  it('принимает письмо, где скелет дошёл дословно, а врезки заполнены', () => {
+  it('принимает письмо, где скелет дошёл дословно, а вставка заполнена', () => {
     const skeleton = [
       'Здравствуйте!',
-      '',
-      '{{HOOK}}',
       '',
       'Я интервьюирую владельцев процесса, собираю схему AS-IS, нахожу узкие места и защищаю TO-BE.',
       '',
@@ -419,15 +384,62 @@ describe('isUsableLetter', () => {
       '',
       'Артём',
     ].join('\n');
-    const good = skeleton
-      .replace('{{HOOK}}', 'Вакансия про оптимизацию процессов.')
-      .replace('{{FIT}}', 'Вёл AS-IS в похожем проекте.');
+    const good = skeleton.replace('{{FIT}}', 'Вёл AS-IS в похожем проекте.');
     expect(isUsableLetter(good, base({ template: skeleton }))).toBe(true);
   });
 
-  it('в режиме full скелет не с чем сравнивать, проверяются только плейсхолдеры', () => {
-    expect(isUsableLetter('Любой связный текст письма.', base({ mode: 'full' }))).toBe(true);
-    expect(isUsableLetter('Текст с {{FIT}} внутри.', base({ mode: 'full' }))).toBe(false);
+  it('отбраковывает неподставленные {{TITLE}} и {{COMPANY}}, если они есть в скелете', () => {
+    const skeleton = 'Здравствуйте! Откликаюсь на {{TITLE}} в {{COMPANY}}.\n\n{{FIT}}';
+    const unfilled = 'Здравствуйте! Откликаюсь на {{TITLE}} в {{COMPANY}}.\n\nВёл AS-IS в похожем проекте.';
+    expect(isUsableLetter(unfilled, base({ template: skeleton }))).toBe(false);
+  });
+});
+
+// До 2026-09-23 скелеты кончались буквальной подписью «кандидат». Подпись
+// подставляет код, не модель: {{SIGNATURE}} в скелете, если он там есть,
+// заменяется именем из настроек (в ai-llm-ba.md с 2026-10-08 его нет —
+// письмо от лица бота-ассистента, но механизм остаётся).
+describe('подпись в скелете', () => {
+  const SIGNED = [
+    'Здравствуйте!',
+    '',
+    'Я интервьюирую владельцев процесса, собираю схему AS-IS, нахожу узкие места и защищаю TO-BE.',
+    '',
+    '{{FIT}}',
+    '',
+    '{{SIGNATURE}}',
+    '',
+  ].join('\n');
+
+  const input = (): LetterInput => ({
+    vacancy: mk(), matched: [], resume: RESUME, template: SIGNED, role: 'Бизнес-аналитик',
+  });
+
+  const skeletonOf = (content: string): string => content.split('=== СКЕЛЕТ ===\n')[1] ?? '';
+
+  afterEach(() => setCandidateName(null));
+
+  it('имя из настроек встаёт в подпись скелета', () => {
+    setCandidateName('Иван Петров');
+    const skeleton = skeletonOf(buildPrompt(input()).messages[0].content);
+    expect(skeleton).not.toContain('{{SIGNATURE}}');
+    expect(skeleton.trimEnd().endsWith('{{FIT}}\n\nИван Петров')).toBe(true);
+  });
+
+  it('имени нет — подписи в скелете нет', () => {
+    const skeleton = skeletonOf(buildPrompt(input()).messages[0].content);
+    expect(skeleton).not.toContain('{{SIGNATURE}}');
+    expect(skeleton.trimEnd().endsWith('{{FIT}}')).toBe(true);
+  });
+
+  it('письмо с именем в подписи годно, скелет с вырезанной вставкой — нет', () => {
+    setCandidateName('Иван Петров');
+    const filled = SIGNED
+      .replace('{{FIT}}', 'Вёл AS-IS в похожем проекте.')
+      .replace('{{SIGNATURE}}', 'Иван Петров');
+    expect(isUsableLetter(filled, input())).toBe(true);
+    const stripped = SIGNED.replace('{{FIT}}', '').replace('{{SIGNATURE}}', 'Иван Петров');
+    expect(isUsableLetter(stripped, input())).toBe(false);
   });
 });
 
@@ -470,13 +482,30 @@ describe('findForbiddenClaim', () => {
     expect(findForbiddenClaim('подписал контракт на техническое обслуживание')).toBeNull();
   });
 
+  // Решение владельца 2026-10-08: этих навыков у него нет, в письме они недопустимы.
+  it.each([
+    'строил пользовательские метрики продукта',
+    'настраивал пользовательских метрик для команды',
+    'работал с пользовательскими метриками',
+    'собирал дашборды в Power BI',
+    'отчёты в PowerBI',
+    'визуализация в power-bi',
+  ])('ловит недопустимый навык: «%s»', (text) => {
+    expect(findForbiddenClaim(text)).not.toBeNull();
+  });
+
+  it('не принимает за запрещённое соседние законные слова: пользовательские истории и метрики качества', () => {
+    // В резюме есть user story («пользовательские истории») и «метрики качества
+    // ответов» LLM-пайплайнов — ловить нужно именно «пользовательские метрики».
+    expect(findForbiddenClaim('писал пользовательские истории и use case')).toBeNull();
+    expect(findForbiddenClaim('считал метрики качества ответов LLM')).toBeNull();
+  });
+
   it('письмо с выдумкой считается негодным и уходит на повтор', () => {
-    const skeleton = ['Здравствуйте!', '', '{{HOOK}}', '', 'Я аналитик.', '', '{{FIT}}', '', 'Артём'].join('\n');
-    const lying = skeleton
-      .replace('{{HOOK}}', 'Задачи близки к моим.')
-      .replace('{{FIT}}', 'Писал запросы с оконными функциями.');
+    const skeleton = ['Здравствуйте!', '', 'Я аналитик.', '', '{{FIT}}', '', 'Артём'].join('\n');
+    const lying = skeleton.replace('{{FIT}}', 'Писал запросы с оконными функциями.');
     expect(isUsableLetter(lying, {
-      vacancy: mk(), matched: [], mode: 'hybrid', resume: RESUME, template: skeleton,
+      vacancy: mk(), matched: [], resume: RESUME, template: skeleton, role: 'Бизнес-аналитик',
     })).toBe(false);
   });
 });

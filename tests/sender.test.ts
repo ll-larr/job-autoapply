@@ -9,7 +9,6 @@ import type { Adapter, ApplyResult } from '../src/adapters/types.js';
 
 const CONFIG = {
   minScore: 40,
-  letterFullThreshold: 75,
   letterModels: ['model-a:free'],
   // Отправщик поисковыми запросами не пользуется, но Config требует их для
   // команды search, поэтому фикстура несёт пустой список.

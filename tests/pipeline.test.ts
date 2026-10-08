@@ -11,7 +11,7 @@ import { DEFAULT_SPECIALTY } from '../src/core/specialty-defaults.js';
 import type { Specialty } from '../src/core/specialty.js';
 
 const CONFIG = {
-  minScore: 40, letterFullThreshold: 75, letterModels: ['m:free'],
+  minScore: 40, letterModels: ['m:free'],
   searchQueries: [{ query: 'аналитик' }], throttle: {},
 };
 
@@ -771,14 +771,13 @@ describe('runSearch — специальности', () => {
     const rep = await runSearch({
       queue: q, config: CONFIG, queries: [{ query: 'product manager', specialty: PM }],
       adapters: [titled('Менеджер продукта', 'Ведём роадмап')],
-      generate: async (_v, matched, mode, specialty) => {
-        seen.push(`${specialty.id}:${matched.join()}:${mode}`);
-        return { letter: 'письмо', mode };
+      generate: async (_v, matched, specialty) => {
+        seen.push(`${specialty.id}:${matched.join()}`);
+        return { letter: 'письмо', mode: 'hybrid' as const };
       },
     });
     expect(rep.queued).toBe(1);
-    // не legacyLetters — письмо всегда целиком (спека 3.7)
-    expect(seen).toEqual(['product-manager:roadmap:full']);
+    expect(seen).toEqual(['product-manager:roadmap']);
     expect(q.listByStatus('pending')[0]!.specialty).toBe('product-manager');
   });
 
@@ -851,7 +850,7 @@ describe('runSearch — бесфразовый адаптер (Telegram)', () =>
         { id: '2', title: 'Product manager', text: 'Product manager, ведём роадмап продукта и не только.' },
         { id: '3', title: 'Повар', text: 'Повар на кухню, опыт от года.' },
       ])],
-      generate: async (_v, _m, mode, s) => { seen.push(s.id); return { letter: 'п', mode }; },
+      generate: async (_v, _m, s) => { seen.push(s.id); return { letter: 'п', mode: 'hybrid' as const }; },
     });
     expect(seen.sort()).toEqual(['business-analyst', 'pm']);
     expect(rep.rejectedTitle).toBe(1); // повар — ни одна специальность

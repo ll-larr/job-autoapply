@@ -26,7 +26,6 @@ import type { Config } from '../src/core/config.js';
 
 const CONFIG: Config = {
   minScore: 40,
-  letterFullThreshold: 75,
   letterModels: ['m:free'],
   searchQueries: [{ query: 'аналитик' }],
   // Нулевые паузы: в бою между подачами стоит 3 секунды, но проверяется здесь

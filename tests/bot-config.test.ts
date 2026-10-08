@@ -4,7 +4,7 @@ import { resolveBotConfig, DEFAULT_BOT_LIMITS, type Config } from '../src/core/c
 import { TEXTS, BUTTONS } from '../src/bot/texts.js';
 
 const base = (): Config => ({
-  minScore: 40, letterFullThreshold: 60, letterModels: ['m1'], throttle: {},
+  minScore: 40, letterModels: ['m1'], throttle: {},
 });
 
 describe('resolveBotConfig', () => {
@@ -47,7 +47,9 @@ describe('тексты', () => {
   it('дословные формулировки владельца не переписаны', () => {
     expect(TEXTS.start).toBe('Выбери нужную функцию в меню ниже!');
     expect(TEXTS.cvCaption).toBe('Резюме кандидата:');
-    expect(TEXTS.askMeet).toBe('Укажи дату и время когда хочешь провести собеседование с кандидатом в формате "дд.мм;чч:мм"');
+    // 2026-10-05 владелец велел убрать из него «в формате "дд.мм;чч:мм"»: рекрутёры
+    // пишут дату как хотят.
+    expect(TEXTS.askMeet).toBe('Укажи дату и время когда хочешь провести собеседование с кандидатом');
     expect(TEXTS.offTopic).toBe('Я отвечаю только на вопросы по вакансиям и опыту кандидата');
     // Контакт подставляется из config.json (bot.profile.telegram) с 2026-09-20:
     // в чужой копии проекта бот слал бы рекрутёров к прежнему владельцу.

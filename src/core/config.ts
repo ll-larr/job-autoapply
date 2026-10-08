@@ -43,7 +43,6 @@ export interface SearchQueryConfig {
 
 export interface Config {
   minScore: number;
-  letterFullThreshold: number;
   /**
    * Модели OpenRouter для генерации писем, в порядке попытки. Первая,
    * которая вернула успешный ответ, используется; остальные — фолбэк.
@@ -230,13 +229,8 @@ export function resolveBotConfig(config: Config): ResolvedBotConfig {
 export function loadConfig(path = 'config.json'): Config {
   const parsed = JSON.parse(readFileSync(path, 'utf8')) as Config;
 
-  if (typeof parsed.minScore !== 'number' || typeof parsed.letterFullThreshold !== 'number') {
-    throw new Error('loadConfig: minScore и letterFullThreshold обязательны и должны быть числами');
-  }
-  if (parsed.letterFullThreshold < parsed.minScore) {
-    throw new Error(
-      `loadConfig: letterFullThreshold (${parsed.letterFullThreshold}) ниже minScore (${parsed.minScore}) — режим full недостижим`,
-    );
+  if (typeof parsed.minScore !== 'number') {
+    throw new Error('loadConfig: minScore обязателен и должен быть числом');
   }
   if (
     !Array.isArray(parsed.letterModels)

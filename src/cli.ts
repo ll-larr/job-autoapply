@@ -39,7 +39,7 @@ import { startPanel } from './ui/server.js';
 import { HhAdapter } from './adapters/hh.js';
 import { HrGeAdapter } from './adapters/hrge.js';
 import { CareeristAdapter } from './adapters/careerist.js';
-import { generateLetter, pickTemplate, pickMode } from './core/letter.js';
+import { generateLetter, readLetterTemplate } from './core/letter.js';
 import { answerQuestions } from './core/questions.js';
 import { generateDm } from './core/dm.js';
 import { proxyResolver, type ProxyDiscovery, type ProxySource } from './core/proxy.js';
@@ -47,7 +47,7 @@ import { applyLlmSettings } from './core/llm.js';
 import { setCandidateName } from './core/profile.js';
 import { hasApiKey } from './core/openrouter.js';
 import type { Adapter } from './adapters/types.js';
-import { extractPdfText, refreshResumeCache, resumeTextFor, LEGACY_RESUME_MD } from './core/resume.js';
+import { extractPdfText, refreshResumeCache, resumeTextFor } from './core/resume.js';
 import { suggestSpecialty } from './core/suggest.js';
 import { autoApproveAfterSearch, type AutoSkipReason } from './core/autoapply.js';
 import { runBot, makeReadFile } from './bot/run.js';
@@ -115,7 +115,7 @@ const PANEL_PORT = 4321;
 async function refreshResumes(settings: Settings, log: (line: string) => void): Promise<void> {
   for (const s of enabledSpecialties(settings)) {
     const r = await refreshResumeCache(s);
-    if (!r.ok) log(`Резюме «${s.name}» не извлеклось (${r.error}) — письма пойдут по резюме БА.`);
+    if (!r.ok) log(`Резюме «${s.name}» не извлеклось (${r.error}) — письма этой специальности будут пустыми, пока резюме не читается.`);
   }
 }
 
@@ -148,11 +148,24 @@ function currentSettings(config: Config): Settings {
 }
 
 /**
- * Специальность строки очереди. Удалённая из настроек — бизнес-аналитик:
- * письмо всё равно нужно дописать, а других сведений о ней не осталось.
+ * Специальность, чьё резюме годится, когда своего у вещи нет: первая включённая
+ * с прикреплённым PDF, иначе любая с PDF, иначе запасная БА (у неё резюме может
+ * не быть — тогда письмо честно не пишется, см. resumeTextFor). Резюме только
+ * из настроек: решение владельца 2026-10-08.
+ */
+export function primaryResumeSpecialty(settings: Settings): Specialty {
+  return settings.specialties.find((s) => s.enabled && s.resumePdf !== null)
+    ?? settings.specialties.find((s) => s.resumePdf !== null)
+    ?? DEFAULT_SPECIALTY;
+}
+
+/**
+ * Специальность строки очереди. Удалённая из настроек — та, чьё резюме годится
+ * (primaryResumeSpecialty): письмо всё равно нужно дописать, а других сведений
+ * о ней не осталось.
  */
 export function specialtyOf(settings: Settings, id: string): Specialty {
-  return settings.specialties.find((s) => s.id === id) ?? DEFAULT_SPECIALTY;
+  return settings.specialties.find((s) => s.id === id) ?? primaryResumeSpecialty(settings);
 }
 
 /** Предупреждение перед прогоном, когда автоотклик включён (спека 7.4). */
@@ -452,10 +465,14 @@ export function buildAdapters(tg?: TelegramWiring, config?: Config): Adapter[] {
     : new HhAdapter({
       answerTest: (questions, vacancy) => answerQuestions(
         questions,
-        // Анкета видит базовое резюме в markdown: у hh нет ctx со специальностью
-        // строки, а вопросы работодателя — про факты биографии, общие для всех
-        // специальностей (PDF специальности идёт отдельно, в отклик и в Telegram).
-        { vacancy, resume: readFileSync(LEGACY_RESUME_MD, 'utf8'), salaryExpectation: config.salaryExpectation },
+        // Анкета видит резюме основной специальности из настроек: у hh нет ctx со
+        // специальностью строки, а вопросы работодателя — про факты биографии,
+        // общие для всех специальностей.
+        {
+          vacancy,
+          resume: resumeTextFor(primaryResumeSpecialty(currentSettings(config))),
+          salaryExpectation: config.salaryExpectation,
+        },
         { models: config.letterModels },
       ),
     });
@@ -482,6 +499,21 @@ export function buildAdapterMap(adapters: readonly Adapter[]): Map<string, Adapt
 }
 
 
+/**
+ * Текст резюме специальности или причина, почему его нет (resumeTextFor
+ * бросает). Ошибка не должна ронять поиск и дозаполнение: письмо без резюме
+ * не пишется, а в очередь вакансия всё равно ложится — с пустым письмом.
+ */
+function resumeOrFailure(
+  resumeFor: (specialty: Specialty) => string, specialty: Specialty,
+): { ok: true; text: string } | { ok: false; error: string } {
+  try {
+    return { ok: true, text: resumeFor(specialty) };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 export interface FillLettersDeps {
   queue: Queue;
   config: Config;
@@ -495,8 +527,8 @@ export interface FillLettersDeps {
   generateLetterFn: typeof generateLetter;
   /** Личное сообщение рекрутёру для постов Telegram (core/dm.ts). */
   generateDmFn: typeof generateDm;
-  pickTemplateFn: typeof pickTemplate;
-  readTemplate: (name: string) => string;
+  /** Скелет письма — единственный, templates/ai-llm-ba.md (core/letter.ts). */
+  readTemplate: () => string;
   /** Куда сообщать о ходе. Команда пишет в консоль, панель — никуда. */
   log?: (line: string) => void;
   /**
@@ -541,28 +573,28 @@ export async function fillEmptyLetters(deps: FillLettersDeps): Promise<FillLette
   const options = { models: deps.config.letterModels, signal: deps.signal };
   for (const row of empty) {
     if (deps.signal?.aborted) return { found: empty.length, filled, failure, stopped: true };
-    // Та же развилка, что при поиске (pipeline.ts): скелеты и hybrid/full —
-    // только у засеянных специальностей, остальные пишут письмо целиком.
+    // Та же развилка, что при поиске (pipeline.ts): резюме — той специальности,
+    // под которую подошла вакансия, скелет один, письмо везде hybrid.
     const specialty = deps.specialtyById(row.specialty);
-    const result = row.source === 'tg'
-      // Пост Telegram: не письмо, а личное сообщение рекрутёру (core/dm.ts).
-      ? await deps.generateDmFn(
-        { vacancy: row.vacancy, resume: deps.resumeFor(specialty), role: specialty.name },
-        options,
-      )
-      : await deps.generateLetterFn(
-        {
-          vacancy: row.vacancy,
-          matched: row.matched,
-          mode: specialty.legacyLetters ? pickMode(row.score, deps.config.letterFullThreshold) : 'full',
-          template: specialty.legacyLetters
-            ? deps.readTemplate(deps.pickTemplateFn(row.vacancy, row.matched))
-            : '',
-          resume: deps.resumeFor(specialty),
-          role: specialty.legacyLetters ? undefined : specialty.name,
-        },
-        options,
-      );
+    const resume = resumeOrFailure(deps.resumeFor, specialty);
+    const result = !resume.ok
+      ? { letter: '', mode: 'none' as const, failure: resume.error }
+      : row.source === 'tg'
+        // Пост Telegram: не письмо, а личное сообщение рекрутёру (core/dm.ts).
+        ? await deps.generateDmFn(
+          { vacancy: row.vacancy, resume: resume.text, role: specialty.name },
+          options,
+        )
+        : await deps.generateLetterFn(
+          {
+            vacancy: row.vacancy,
+            matched: row.matched,
+            template: deps.readTemplate(),
+            resume: resume.text,
+            role: specialty.name,
+          },
+          options,
+        );
     // Стоп пришёл, пока писалось это письмо: оно могло оборваться — не пишем его
     // в строку и не выдаём обрыв за сбой модели.
     if (deps.signal?.aborted) return { found: empty.length, filled, failure, stopped: true };
@@ -605,8 +637,8 @@ export interface SearchCommandDeps {
   generateLetterFn: typeof generateLetter;
   /** Личное сообщение рекрутёру для постов Telegram (core/dm.ts). */
   generateDmFn: typeof generateDm;
-  pickTemplateFn: typeof pickTemplate;
-  readTemplate: (name: string) => string;
+  /** Скелет письма — единственный, templates/ai-llm-ba.md (core/letter.ts). */
+  readTemplate: () => string;
   /**
    * Кнопка «Остановить поиск» (см. RunSearchOptions.signal). Остановленный
    * поиск автоотклик не запускает: человек передумал, и одобрять за него то,
@@ -648,28 +680,31 @@ export async function runSearchCommand(
     target: deps.limit,
     adapters: deps.adapters,
     signal: deps.signal,
-    generate: async (v, matched, mode, specialty) => {
+    generate: async (v, matched, specialty) => {
+      // Резюме — только прикреплённое к специальности вакансии в настройках.
+      // Нет его — письмо пустое с названной причиной: поиск идёт дальше, а
+      // письмо допишет человек.
+      const resume = resumeOrFailure(deps.resumeFor, specialty);
       // Пост Telegram: не письмо, а короткое личное сообщение рекрутёру со
       // ссылкой на пост (core/dm.ts, спека 5.1).
-      // Остальное — письмо. Скелеты — только у засеянных специальностей
-      // (legacyLetters); остальным конвейер уже выставил mode 'full', и скелет
-      // модели не показывается.
-      const result = v.source === 'tg'
-        ? await deps.generateDmFn(
-          { vacancy: v, resume: deps.resumeFor(specialty), role: specialty.name },
-          { models: deps.config.letterModels, signal: deps.signal },
-        )
-        : await deps.generateLetterFn(
-          {
-            vacancy: v,
-            matched,
-            mode,
-            template: specialty.legacyLetters ? deps.readTemplate(deps.pickTemplateFn(v, matched)) : '',
-            resume: deps.resumeFor(specialty),
-            role: specialty.legacyLetters ? undefined : specialty.name,
-          },
-          { models: deps.config.letterModels, signal: deps.signal },
-        );
+      // Остальное — письмо: один скелет, режим hybrid (core/letter.ts).
+      const result = !resume.ok
+        ? { letter: '', mode: 'none' as const, failure: resume.error }
+        : v.source === 'tg'
+          ? await deps.generateDmFn(
+            { vacancy: v, resume: resume.text, role: specialty.name },
+            { models: deps.config.letterModels, signal: deps.signal },
+          )
+          : await deps.generateLetterFn(
+            {
+              vacancy: v,
+              matched,
+              template: deps.readTemplate(),
+              resume: resume.text,
+              role: specialty.name,
+            },
+            { models: deps.config.letterModels, signal: deps.signal },
+          );
       // Письмо оборвал человек, а не модель: пустым по сбою его считать нельзя
       // (конвейер такую вакансию в очередь не поставит).
       if (result.mode === 'none' && deps.signal?.aborted !== true) {
@@ -880,7 +915,8 @@ async function main(): Promise<void> {
           suggest: async (name, resumePdf) => {
             let resume: string;
             try {
-              resume = resumePdf === null ? readFileSync(LEGACY_RESUME_MD, 'utf8') : await extractPdfText(resumePdf);
+              if (resumePdf === null) throw new Error('Сначала прикрепи резюме (PDF) к специальности: подсказка строится по нему');
+              resume = await extractPdfText(resumePdf);
             } catch (e) {
               return { ok: false, error: e instanceof Error ? e.message : String(e) };
             }
@@ -897,8 +933,7 @@ async function main(): Promise<void> {
           specialtyById: (id) => specialtyOf(currentSettings(config), id),
           generateLetterFn: generateLetter,
           generateDmFn: generateDm,
-          pickTemplateFn: pickTemplate,
-          readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
+          readTemplate: () => readLetterTemplate(),
         }),
         // Настройки читаются на каждый запуск: правка во вкладке «Настройки»
         // действует со следующего поиска без перезапуска панели.
@@ -918,8 +953,7 @@ async function main(): Promise<void> {
             resumeFor: (s) => resumeTextFor(s),
             generateLetterFn: generateLetter,
             generateDmFn: generateDm,
-            pickTemplateFn: pickTemplate,
-            readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
+            readTemplate: () => readLetterTemplate(),
           });
         },
       });
@@ -961,8 +995,7 @@ async function main(): Promise<void> {
         specialtyById: (id) => specialtyOf(currentSettings(config), id),
         generateLetterFn: generateLetter,
         generateDmFn: generateDm,
-        pickTemplateFn: pickTemplate,
-        readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
+        readTemplate: () => readLetterTemplate(),
         log: (line) => console.log(line),
       });
 
@@ -1016,8 +1049,7 @@ async function main(): Promise<void> {
         resumeFor: (s) => resumeTextFor(s),
         generateLetterFn: generateLetter,
         generateDmFn: generateDm,
-        pickTemplateFn: pickTemplate,
-        readTemplate: (name) => readFileSync(`templates/${name}.md`, 'utf8'),
+        readTemplate: () => readLetterTemplate(),
       });
 
       const auto = settings.autoApply.enabled
@@ -1097,7 +1129,7 @@ async function main(): Promise<void> {
     const api = new BotApi(token);
     // Резюме для /cv и для промпта — у специальности по умолчанию: рекрутёру
     // уходит то же самое, о чём модель рассказывает в ответах.
-    const mainSpecialty = (): Specialty => enabledSpecialties(currentSettings(config))[0] ?? DEFAULT_SPECIALTY;
+    const mainSpecialty = (): Specialty => primaryResumeSpecialty(currentSettings(config));
     const deps: HandlerDeps = {
       store,
       queue,
@@ -1163,7 +1195,7 @@ async function main(): Promise<void> {
       await refreshResumes(settings, (line) => { console.error(line); logInterview(line); });
       // Резюме — как у бота: специальность по умолчанию (R15). Модели — блока
       // или те же, что у писем; currentSettings уже поставил выбранную в панели первой.
-      resume = resumeTextFor(enabledSpecialties(currentSettings(config))[0] ?? DEFAULT_SPECIALTY);
+      resume = resumeTextFor(primaryResumeSpecialty(currentSettings(config)));
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       console.error(message);

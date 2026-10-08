@@ -118,6 +118,52 @@ describe('BotApi — разбор ответов Telegram', () => {
     expect(body.toString('utf8')).toContain('filename="a_b__c.pdf"');
   });
 
+  it('текст уходит документом из памяти: имя, подпись и русский текст в теле целиком', async () => {
+    // Тот же путь, что и у sendDocumentByPath (готовый буфер, а не FormData),
+    // но без файла на диске. Content-Length считается по байтам: на кириллице
+    // он вдвое больше числа символов, и расхождение Telegram не прощает.
+    let seen: { headers: Record<string, string>; body: Buffer } | null = null;
+    const api = new BotApi('T', {
+      fetchImpl: async (_u, init) => {
+        seen = {
+          headers: init?.headers as Record<string, string>,
+          body: Buffer.from(init?.body as Uint8Array),
+        };
+        return json({ ok: true, result: { document: { file_id: 'FID' } } });
+      },
+    });
+
+    const r = await api.sendDocumentFromText(
+      7, 'vacancy-197.txt', 'Бизнес анализ процессов банка', 'Собеседование: 06.10; 11:00',
+    );
+
+    expect(r.ok && r.value).toBe('FID');
+    const sent = seen as unknown as { headers: Record<string, string>; body: Buffer };
+    expect(sent.headers['content-type']).toMatch(/^multipart\/form-data; boundary=/);
+    expect(sent.headers['content-length']).toBe(String(sent.body.length));
+    const text = sent.body.toString('utf8');
+    expect(text).toContain('name="chat_id"\r\n\r\n7\r\n');
+    expect(text).toContain('name="caption"\r\n\r\nСобеседование: 06.10; 11:00\r\n');
+    expect(text).toContain('name="document"; filename="vacancy-197.txt"');
+    expect(text).toContain('\r\n\r\nБизнес анализ процессов банка\r\n--');
+  });
+
+  it('отказ Telegram и обрыв сети при отправке текста документом — результат, а не исключение', async () => {
+    // Пинг о собеседовании на этом держится: по отказу он уходит обычным
+    // сообщением. Исключение вместо результата положило бы весь цикл бота.
+    const refused = new BotApi('T', {
+      fetchImpl: async () => json({ ok: false, description: 'Bad Request: wrong caption' }, 400),
+    });
+    const r1 = await refused.sendDocumentFromText(1, 'a.txt', 'x', 'c');
+    expect(r1.ok).toBe(false);
+    if (!r1.ok) expect(r1.failure).toMatchObject({ kind: 'http', message: 'Bad Request: wrong caption' });
+
+    const dropped = new BotApi('T', { fetchImpl: async () => { throw new Error('socket hang up'); } });
+    const r2 = await dropped.sendDocumentFromText(1, 'a.txt', 'x', 'c');
+    expect(r2.ok).toBe(false);
+    if (!r2.ok) expect(r2.failure.kind).toBe('network');
+  });
+
   it('getFile без file_path — отказ, а не пустая строка пути', async () => {
     const api = new BotApi('T', { fetchImpl: async () => json({ ok: true, result: { file_size: 10 } }) });
     const r = await api.getFile('F');

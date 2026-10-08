@@ -5,6 +5,7 @@ import type { BotApi, ApiFailure } from './api.js';
 import type { BotStore } from './state.js';
 import { handleMessage, type BotAction, type HandlerDeps } from './handlers.js';
 import { TEXTS } from './texts.js';
+import { meetingPing, type MeetingPing } from './ping.js';
 import { MAX_FILE_BYTES, isObviouslyUnsupported, sniffFileKind } from './intake.js';
 import { extractFileText } from './extract.js';
 import type { TgBotDocument } from './types.js';
@@ -191,15 +192,6 @@ async function perform(action: BotAction, opts: RunBotOptions): Promise<void> {
     if (!r.ok) log(`не отправилось в чат ${action.chatId}: ${describe(r.failure)}`);
     return;
   }
-  if (action.kind === 'owner') {
-    if (opts.ownerChatId === null) {
-      log(`пинг владельцу некуда слать (нет TG_OWNER_CHAT_ID):\n${action.text}`);
-      return;
-    }
-    const r = await api.sendMessage(opts.ownerChatId, action.text);
-    if (!r.ok) log(`пинг владельцу не ушёл: ${describe(r.failure)}`);
-    return;
-  }
   await sendCv(action.chatId, opts);
   void store;
 }
@@ -246,16 +238,28 @@ async function notifyMeetings(opts: RunBotOptions, warn: (line: string) => void)
     return;
   }
   for (const m of pending) {
-    const row = m.queueId === null ? null : deps.queue.listByStatus('pending').find((r) => r.id === m.queueId);
-    const lines = [
-      `Собеседование: ${m.raw}`,
-      `Рекрутёр: ${m.username === null ? `id ${m.chatId}` : `@${m.username}`}`,
-      m.queueId === null
-        ? 'вакансию он не присылал'
-        : `вакансия #${m.queueId}${row === undefined || row === null ? '' : ` — ${row.vacancy.title}`}`,
-    ];
-    const r = await api.sendMessage(opts.ownerChatId, lines.join('\n'));
-    if (r.ok) store.markMeetingNotified(m.id, Date.now());
-    else log(`пинг о собеседовании не ушёл: ${describe(r.failure)} — повторю`);
+    // Строка по номеру в любом статусе: к собеседованию вакансия часто уже skipped.
+    const row = m.queueId === null ? null : deps.queue.byId(m.queueId);
+    const failure = await sendMeetingPing(api, opts.ownerChatId, meetingPing(m, row), log);
+    if (failure === null) store.markMeetingNotified(m.id, Date.now());
+    else log(`пинг о собеседовании не ушёл: ${describe(failure)} — повторю`);
   }
+}
+
+/**
+ * Пинг уходит одним сообщением: документом с текстом вакансии, а сам пинг —
+ * его подпись. Файл не загрузился — уходит обычное сообщение: договорённость
+ * о собеседовании важнее вложения, и держать её из-за файла нельзя. Возвращает
+ * отказ последней попытки; null — доставлено.
+ */
+async function sendMeetingPing(
+  api: BotApi, chatId: number, ping: MeetingPing, log: (line: string) => void,
+): Promise<ApiFailure | null> {
+  if (ping.file !== null) {
+    const doc = await api.sendDocumentFromText(chatId, ping.file.name, ping.file.content, ping.text);
+    if (doc.ok) return null;
+    log(`файл вакансии к пингу не ушёл: ${describe(doc.failure)} — шлю пинг без файла`);
+  }
+  const msg = await api.sendMessage(chatId, ping.text);
+  return msg.ok ? null : msg.failure;
 }

@@ -8,8 +8,10 @@ export type Status = 'pending' | 'approved' | 'skipped' | 'sent' | 'failed';
 /**
  * Откуда взялось письмо.
  *
- * `hybrid` и `full` — режимы генерации (скелет со вставками / целиком с нуля,
- * см. core/letter.ts#pickMode). `none` — сгенерировать не удалось, письма нет.
+ * `hybrid` — единственный режим генерации: скелет со вставкой {{FIT}}
+ * (core/letter.ts). `full` (письмо с нуля) убран 2026-10-08, но значение
+ * осталось в типе: у старых строк очереди оно лежит в базе. `none` —
+ * сгенерировать не удалось, письма нет.
  * `manual` — человек написал его руками в панели: это не режим генерации, но
  * и не отсутствие письма, и слепить его с остальными значило бы врать в
  * отчётах о том, что модель сделала.
@@ -141,6 +143,18 @@ export class Queue {
       .prepare('SELECT id FROM applications WHERE source = ? AND source_id = ?')
       .get(source, sourceId) as unknown as { id: number } | undefined;
     return row?.id ?? null;
+  }
+
+  /**
+   * Строка по номеру в любом статусе. Пинг бота называет вакансию номером, а к
+   * моменту собеседования строка уже может быть skipped: поиск по pending
+   * оставлял владельцу голое «вакансия #197».
+   */
+  byId(id: number): QueueRow | null {
+    const row = this.db
+      .prepare('SELECT * FROM applications WHERE id = ?')
+      .get(id) as unknown as DbRow | undefined;
+    return row === undefined ? null : this.toQueueRow(row);
   }
 
   has(v: Vacancy): boolean {
