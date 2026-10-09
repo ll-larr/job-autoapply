@@ -300,7 +300,7 @@ describe('lazyTelegram — одна сессия на процесс, по пе�
     const open = async () => {
       const r = results[Math.min(opened++, results.length - 1)];
       return r === 'ok'
-        ? { ok: true as const, client: {} as never, reader: { tag: 'reader' } as never, sender: { tag: 'sender' } as never, close: async () => { closed++; } }
+        ? { ok: true as const, client: {} as never, reader: { tag: 'reader' } as never, sender: { tag: 'sender' } as never, history: { tag: 'history' } as never, close: async () => { closed++; } }
         : { ok: false as const, reason: 'no_proxy' as const, message: 'VPN выключен, Telegram пропущен' };
     };
     return { open, opened: () => opened, closed: () => closed };
@@ -338,7 +338,10 @@ describe('buildAdapters / buildAdapterMap — сборка адаптеров б
     const queue = new Queue(join(mkdtempSync(join(tmpdir(), 'jaa-cli-tg-')), 't.db'));
     const adapters = buildAdapters({
       queue, settings: () => settings,
-      session: { reader: async () => ({ error: 'x' }), sender: async () => ({ error: 'x' }), close: async () => {} },
+      session: {
+        reader: async () => ({ error: 'x' }), sender: async () => ({ error: 'x' }),
+        history: async () => ({ error: 'x' }), close: async () => {},
+      },
     });
     expect(adapters.map((a) => a.name).sort()).toEqual(['careerist', 'hh', 'hrge', 'tg']);
     const config = JSON.parse(readFileSync('config.json', 'utf8')) as { throttle: Record<string, unknown> };

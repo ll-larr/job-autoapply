@@ -55,7 +55,26 @@ const MONEY_WORDS = new RegExp([
 
 // Граница слова \b в JS знает только латиницу: `как ии\b` на кириллице не
 // срабатывал никогда. Вместо неё — «дальше не кириллическая буква» (I4).
+/** Текст про деньги: вопрос о зарплате снимает исключение для HTTP-кодов (см. findInventedNumber). */
+export function mentionsMoney(text: string): boolean {
+  return MONEY_WORDS.test(text);
+}
+
 const ROBOT_MARKERS = /как языковая модель|как ии(?![а-яё])|я бот(?![а-яё])|не могу ответить|уточните вопрос/i;
+
+/**
+ * Первое число текста, которого нет среди разрешённых (резюме, факты, вопрос), —
+ * выдумка. HTTP-коды проходят, пока речь не о деньгах (вопрос или ответ). null —
+ * все числа на месте. Общий для ответов ГигаРекрутёру и секретаря.
+ */
+export function findInventedNumber(text: string, allowed: Set<string>, question?: string): string | null {
+  const httpExempt = !MONEY_WORDS.test(text) && !(question !== undefined && MONEY_WORDS.test(question));
+  for (const n of extractNumbers(text)) {
+    if (allowed.has(n) || (httpExempt && ALWAYS_ALLOWED.has(n))) continue;
+    return n;
+  }
+  return null;
+}
 
 /** null — ответ годен. Строка — причина отбраковки, она же уходит в журнал. */
 export function validateAnswer(
@@ -80,11 +99,8 @@ export function validateAnswer(
   if (leak !== null) return `в ответе ${leak}`;
   const claim = findForbiddenClaim(t);
   if (claim !== null) return `выдуман навык: ${claim}`;
-  const httpExempt = !MONEY_WORDS.test(t) && !(input.question !== undefined && MONEY_WORDS.test(input.question));
-  for (const n of extractNumbers(t)) {
-    if (input.allowed.has(n) || (httpExempt && ALWAYS_ALLOWED.has(n))) continue;
-    return `выдуманное число: ${n}`;
-  }
+  const invented = findInventedNumber(t, input.allowed, input.question);
+  if (invented !== null) return `выдуманное число: ${invented}`;
   return null;
 }
 

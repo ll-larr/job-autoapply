@@ -156,3 +156,64 @@ export function readFacts(path: string = FACTS_PATH): Facts {
   const text = existsSync(path) ? readFileSync(path, 'utf8') : '';
   return { text, numbers: extractNumbers(text) };
 }
+
+/** Темы, о которых рекрутёр спрашивает чаще всего и ответ на которые лежит в data/facts.md. */
+export type FactTopic =
+  | 'salary' | 'start' | 'format' | 'relocation' | 'test'
+  | 'citizenship' | 'city' | 'english' | 'military' | 'education';
+
+export interface FactField {
+  /** Подпись как в файле. */
+  label: string;
+  /** Подпись для поиска: нижний регистр, ё → е, пробелы схлопнуты. */
+  key: string;
+  /** Значение; пустая строка — поле в файле есть, но владелец его не заполнил. */
+  value: string;
+}
+
+/** Подписи полей файла по темам. Поиск — по началу подписи: «Формат (офис, гибрид)» найдётся по «Формат». */
+export const FACT_LABELS: Record<FactTopic, string[]> = {
+  salary: ['Зарплатная вилка'],
+  start: ['Срок выхода'],
+  format: ['Формат'],
+  relocation: ['Готовность к переезду'],
+  test: ['Готовность к тестовому заданию'],
+  citizenship: ['Гражданство'],
+  city: ['Город проживания'],
+  english: ['Уровень английского'],
+  military: ['Отношение к воинской обязанности'],
+  education: ['Вуз', 'Годы учёбы'],
+};
+
+const normalizeLabel = (s: string): string => s.toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
+
+/**
+ * Поля вида «Подпись: значение». Значение продолжается на следующих непустых
+ * строках, пока не встретится новое поле, заголовок «#» или пустая строка:
+ * «Зарплатная вилка» в файле владельца занимает две строки.
+ */
+export function factFields(text: string): FactField[] {
+  const out: FactField[] = [];
+  let current: FactField | null = null;
+  for (const line of text.replace(/\r\n/g, '\n').split('\n')) {
+    if (line.trim() === '' || line.startsWith('#')) { current = null; continue; }
+    const m = /^([А-ЯЁA-Z][^:\n]{1,60}):\s*(.*)$/.exec(line);
+    if (m !== null) {
+      current = { label: m[1]!.trim(), key: normalizeLabel(m[1]!), value: m[2]!.trim() };
+      out.push(current);
+    } else if (current !== null) {
+      current.value = current.value === '' ? line.trim() : `${current.value} ${line.trim()}`;
+    }
+  }
+  return out;
+}
+
+/** Значения по теме: по строке на каждую подпись темы; null — поля нет или оно пустое. */
+export function lookupFact(fields: readonly FactField[], topic: FactTopic): Array<{ label: string; value: string | null }> {
+  return FACT_LABELS[topic].map((label) => {
+    const key = normalizeLabel(label);
+    const field = fields.find((f) => f.key.startsWith(key));
+    const value = field?.value.trim() ?? '';
+    return { label, value: value === '' ? null : value };
+  });
+}

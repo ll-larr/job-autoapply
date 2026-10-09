@@ -3,6 +3,7 @@ import { dirname } from 'node:path';
 import type { SearchQueryConfig } from './config.js';
 import type { Skill, Specialty } from './specialty.js';
 import type { TgChat } from '../telegram/types.js';
+import { isValidTimeZone } from '../bot/tz.js';
 import {
   BA_DEFAULT_QUERIES, DEFAULT_STOP_WORDS, SYSTEM_ANALYST_DEFAULT_QUERIES,
   makeBaSpecialty, makeSystemAnalystSpecialty,
@@ -35,6 +36,63 @@ export interface LlmSettings {
   model: string | null;
 }
 
+/** Секретарь в личке рабочего аккаунта (спека 2026-10-09). Тумблер нужен, чтобы быстро выключить бота, не заходя в Telegram. */
+export interface SecretarySettings {
+  enabled: boolean;
+}
+
+/** Календарь секретаря — локальный, без Google: рабочие окна владельца, слоты, .ics, напоминание. */
+export interface CalendarSettings {
+  /** Предлагать рекрутёру слоты и проверять его время по рабочим окнам. По умолчанию выключено: без настоящих часов бот предлагал бы выдуманное время. */
+  slotsEnabled: boolean;
+  /** Имя IANA, например Europe/Moscow. */
+  timeZone: string;
+  /** ISO-дни недели 1–7, понедельник — 1. */
+  workDays: number[];
+  /** «ЧЧ:ММ». */
+  workStart: string;
+  workEnd: string;
+  slotMinutes: number;
+  bufferMinutes: number;
+  horizonDays: number;
+  minLeadHours: number;
+  /** Файл .ics к пингу о собеседовании. */
+  icsInPing: boolean;
+  /** Второй пинг о том же собеседовании за remindMinutes минут. */
+  remindEnabled: boolean;
+  remindMinutes: number;
+}
+
+/** Дожимы: повторное сообщение молчащему рекрутёру с аккаунта. Выключено по умолчанию — это необратимо. */
+export interface FollowupsSettings {
+  enabled: boolean;
+  afterDays: number;
+  maxAgeDays: number;
+}
+
+/** Ящик откликов hh.ru: чтение и (отдельным тумблером) ответы работодателям. */
+export interface HhInboxSettings {
+  enabled: boolean;
+  replyEnabled: boolean;
+  intervalMinutes: number;
+  maxRepliesPerDay: number;
+}
+
+export const DEFAULT_CALENDAR: CalendarSettings = {
+  slotsEnabled: false,
+  timeZone: 'Europe/Moscow',
+  workDays: [1, 2, 3, 4, 5],
+  workStart: '10:00',
+  workEnd: '19:00',
+  slotMinutes: 60,
+  bufferMinutes: 30,
+  horizonDays: 14,
+  minLeadHours: 18,
+  icsInPing: true,
+  remindEnabled: true,
+  remindMinutes: 30,
+};
+
 export interface Settings {
   version: 1;
   /**
@@ -54,6 +112,10 @@ export interface Settings {
   autoApply: { enabled: boolean; minScore: number | null };
   /** Ключ OpenRouter и модель для писем (правятся в панели). */
   llm: LlmSettings;
+  secretary: SecretarySettings;
+  calendar: CalendarSettings;
+  followups: FollowupsSettings;
+  hhInbox: HhInboxSettings;
 }
 
 export const SETTINGS_PATH = 'data/settings.json';
@@ -227,6 +289,11 @@ export function validateSettings(raw: unknown): Result {
     };
   }
 
+  // Секретарь, календарь, дожимы и ящик hh появились 2026-10-09; файл без них
+  // это не ломает — разделы берутся по умолчанию.
+  const sec = validateSecretarySections(raw);
+  if (!sec.ok) return sec;
+
   return {
     ok: true,
     settings: {
@@ -237,8 +304,101 @@ export function validateSettings(raw: unknown): Result {
       telegram: { chats, firstReadDays: days },
       autoApply: { enabled: aaRaw['enabled'] === true, minScore: aaMin },
       llm: { apiKey: keyRaw === '' ? null : keyRaw, model: modelRaw === '' ? null : modelRaw },
+      secretary: sec.secretary,
+      calendar: sec.calendar,
+      followups: sec.followups,
+      hhInbox: sec.hhInbox,
     },
   };
+}
+
+const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
+const minutesOf = (hhmm: string): number => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3));
+
+/** Целое из диапазона; отсутствие значения — умолчание, а не ошибка. */
+function intIn(v: unknown, def: number, lo: number, hi: number): number | null {
+  const x = v ?? def;
+  return typeof x === 'number' && Number.isInteger(x) && x >= lo && x <= hi ? x : null;
+}
+
+function validateSecretarySections(raw: Record<string, unknown>):
+  | { ok: true; secretary: SecretarySettings; calendar: CalendarSettings; followups: FollowupsSettings; hhInbox: HhInboxSettings }
+  | { ok: false; error: string } {
+  const secRaw = isRecord(raw['secretary']) ? raw['secretary'] : {};
+  const secretary: SecretarySettings = { enabled: secRaw['enabled'] !== false };
+
+  const c = isRecord(raw['calendar']) ? raw['calendar'] : {};
+  const d = DEFAULT_CALENDAR;
+  const timeZone = c['timeZone'] ?? d.timeZone;
+  if (!isValidTimeZone(timeZone)) return { ok: false, error: 'Календарь: часовой пояс — имя IANA, например Europe/Moscow' };
+  const daysRaw = c['workDays'] ?? d.workDays;
+  if (!Array.isArray(daysRaw) || daysRaw.length === 0
+    || !daysRaw.every((x) => typeof x === 'number' && Number.isInteger(x) && x >= 1 && x <= 7)
+    || new Set(daysRaw).size !== daysRaw.length) {
+    return { ok: false, error: 'Календарь: рабочие дни — непустой список без повторов из чисел 1–7 (понедельник — 1)' };
+  }
+  const workDays = [...(daysRaw as number[])].sort((a, b) => a - b);
+  const workStart = c['workStart'] ?? d.workStart;
+  const workEnd = c['workEnd'] ?? d.workEnd;
+  if (typeof workStart !== 'string' || !HHMM.test(workStart) || typeof workEnd !== 'string' || !HHMM.test(workEnd)) {
+    return { ok: false, error: 'Календарь: начало и конец рабочего дня — время вида 10:00' };
+  }
+  const slotMinutes = intIn(c['slotMinutes'], d.slotMinutes, 15, 240);
+  if (slotMinutes === null) return { ok: false, error: 'Календарь: длительность встречи — целое число минут от 15 до 240' };
+  if (minutesOf(workStart) >= minutesOf(workEnd) || minutesOf(workEnd) - minutesOf(workStart) < slotMinutes) {
+    return { ok: false, error: 'Календарь: рабочий день должен быть длиннее одной встречи, начало — раньше конца' };
+  }
+  const bufferMinutes = intIn(c['bufferMinutes'], d.bufferMinutes, 0, 120);
+  if (bufferMinutes === null) return { ok: false, error: 'Календарь: отступ между встречами — целое число минут от 0 до 120' };
+  const horizonDays = intIn(c['horizonDays'], d.horizonDays, 1, 60);
+  if (horizonDays === null) return { ok: false, error: 'Календарь: горизонт — целое число дней от 1 до 60' };
+  const minLeadHours = intIn(c['minLeadHours'], d.minLeadHours, 0, 168);
+  if (minLeadHours === null) return { ok: false, error: 'Календарь: запас до встречи — целое число часов от 0 до 168' };
+  const remindMinutes = intIn(c['remindMinutes'], d.remindMinutes, 5, 1440);
+  if (remindMinutes === null) return { ok: false, error: 'Календарь: напоминание — целое число минут от 5 до 1440' };
+  const calendar: CalendarSettings = {
+    slotsEnabled: c['slotsEnabled'] === true,
+    timeZone, workDays, workStart, workEnd, slotMinutes, bufferMinutes, horizonDays, minLeadHours,
+    icsInPing: c['icsInPing'] !== false,
+    remindEnabled: c['remindEnabled'] !== false,
+    remindMinutes,
+  };
+
+  const f = isRecord(raw['followups']) ? raw['followups'] : {};
+  const afterDays = intIn(f['afterDays'], 4, 1, 30);
+  if (afterDays === null) return { ok: false, error: 'Дожимы: через сколько дней молчания — целое число от 1 до 30' };
+  const maxAgeDays = intIn(f['maxAgeDays'], Math.max(14, afterDays), afterDays, 60);
+  if (maxAgeDays === null) return { ok: false, error: `Дожимы: давность сообщения — целое число дней от ${afterDays} до 60` };
+  const followups: FollowupsSettings = { enabled: f['enabled'] === true, afterDays, maxAgeDays };
+
+  const h = isRecord(raw['hhInbox']) ? raw['hhInbox'] : {};
+  const intervalMinutes = intIn(h['intervalMinutes'], 30, 10, 1440);
+  if (intervalMinutes === null) return { ok: false, error: 'Ящик hh.ru: интервал проверки — целое число минут от 10 до 1440' };
+  const maxRepliesPerDay = intIn(h['maxRepliesPerDay'], 20, 1, 100);
+  if (maxRepliesPerDay === null) return { ok: false, error: 'Ящик hh.ru: ответов в сутки — целое число от 1 до 100' };
+  const hhEnabled = h['enabled'] === true;
+  const replyEnabled = h['replyEnabled'] === true;
+  if (replyEnabled && !hhEnabled) {
+    return { ok: false, error: 'Ответы на hh.ru работают только при включённом чтении ящика' };
+  }
+  const hhInbox: HhInboxSettings = { enabled: hhEnabled, replyEnabled, intervalMinutes, maxRepliesPerDay };
+
+  return { ok: true, secretary, calendar, followups, hhInbox };
+}
+
+/**
+ * Страница, открытая до обновления, не знает новых разделов и при сохранении
+ * прислала бы настройки без них — они вернулись бы к умолчаниям (тумблеры
+ * дожимов и ответов hh молча выключились бы). Недостающие верхние разделы
+ * берутся из текущих настроек.
+ */
+export function mergeMissingSections(current: Settings, raw: unknown): unknown {
+  if (!isRecord(raw)) return raw;
+  const out: Record<string, unknown> = { ...raw };
+  for (const key of ['profile', 'telegram', 'autoApply', 'llm', 'secretary', 'calendar', 'followups', 'hhInbox'] as const) {
+    if (out[key] === undefined) out[key] = current[key];
+  }
+  return out;
 }
 
 /**
@@ -267,6 +427,10 @@ export function seedSettings(
     telegram: { chats: [], firstReadDays: DEFAULT_FIRST_READ_DAYS },
     autoApply: { enabled: false, minScore: null },
     llm: { apiKey: null, model: null },
+    secretary: { enabled: true },
+    calendar: { ...DEFAULT_CALENDAR, workDays: [...DEFAULT_CALENDAR.workDays] },
+    followups: { enabled: false, afterDays: 4, maxAgeDays: 14 },
+    hhInbox: { enabled: false, replyEnabled: false, intervalMinutes: 30, maxRepliesPerDay: 20 },
   };
 }
 

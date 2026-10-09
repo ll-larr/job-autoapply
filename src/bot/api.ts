@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { createProxiedFetch } from '../core/proxy.js';
 import { BUTTONS } from './texts.js';
-import type { TgBotUpdate } from './types.js';
+import type { TgBotUpdate, TgBotUser, TgBusinessConnection } from './types.js';
 
 /**
  * Клиент Bot API на несколько методов. Библиотеку ради них не берём: прокси
@@ -14,7 +14,12 @@ import type { TgBotUpdate } from './types.js';
  */
 
 export interface ApiFailure {
-  kind: 'auth' | 'conflict' | 'flood' | 'network' | 'http';
+  /**
+   * 'business' — 400/403 на вызове с business_connection_id: окно 24 часа
+   * закрыто, права отозваны, соединение выключено. Для секретаря это штатное
+   * «ответить нельзя», а не сбой.
+   */
+  kind: 'auth' | 'conflict' | 'flood' | 'network' | 'http' | 'business';
   message: string;
   /** Только для flood: сколько Telegram просит подождать. */
   retryAfterMs?: number;
@@ -23,6 +28,15 @@ export interface ApiFailure {
 export type ApiResult<T> = { ok: true; value: T } | { ok: false; failure: ApiFailure };
 
 const DEFAULT_TIMEOUT_MS = 45_000;
+
+/**
+ * Что просит бот у Telegram. Секретарские апдейты (Secretary Mode) приходят
+ * отдельными типами: без них до бота не доходит ни одно сообщение из личных
+ * чатов подключённого аккаунта. Удалённые сообщения не нужны.
+ */
+export const ALLOWED_UPDATES = [
+  'message', 'business_connection', 'business_message', 'edited_business_message',
+] as const;
 
 export class BotApi {
   private readonly token: string;
@@ -39,10 +53,13 @@ export class BotApi {
     return `https://api.telegram.org/bot${this.token}/${method}`;
   }
 
-  private failureOf(status: number, description: string, retryAfter: number | undefined): ApiFailure {
+  private failureOf(
+    status: number, description: string, retryAfter: number | undefined, business = false,
+  ): ApiFailure {
     if (status === 401) return { kind: 'auth', message: description };
     if (status === 409) return { kind: 'conflict', message: description };
     if (status === 429) return { kind: 'flood', message: description, retryAfterMs: (retryAfter ?? 5) * 1000 };
+    if (business && (status === 400 || status === 403)) return { kind: 'business', message: description };
     return { kind: 'http', message: description };
   }
 
@@ -61,7 +78,9 @@ export class BotApi {
       };
       if (res.ok && body.ok === true && body.result !== undefined) return { ok: true, value: body.result };
       const description = body.description ?? `HTTP ${res.status}`;
-      return { ok: false, failure: this.failureOf(res.status, description, body.parameters?.retry_after) };
+      const business = typeof payload === 'object' && payload !== null
+        && (payload as Record<string, unknown>)['business_connection_id'] !== undefined;
+      return { ok: false, failure: this.failureOf(res.status, description, body.parameters?.retry_after, business) };
     } catch (e) {
       return { ok: false, failure: { kind: 'network', message: e instanceof Error ? e.message : String(e) } };
     } finally {
@@ -73,14 +92,19 @@ export class BotApi {
   getUpdates(offset: number, timeoutS = 30): Promise<ApiResult<TgBotUpdate[]>> {
     return this.call<TgBotUpdate[]>(
       'getUpdates',
-      { offset, timeout: timeoutS, allowed_updates: ['message'] },
+      { offset, timeout: timeoutS, allowed_updates: ALLOWED_UPDATES },
       (timeoutS + 15) * 1000,
     );
   }
 
-  async sendMessage(chatId: number, text: string, opts: { keyboard?: boolean } = {}): Promise<ApiResult<number>> {
+  async sendMessage(
+    chatId: number, text: string, opts: { keyboard?: boolean; businessConnectionId?: string } = {},
+  ): Promise<ApiResult<number>> {
     const payload: Record<string, unknown> = { chat_id: chatId, text, disable_web_page_preview: true };
-    if (opts.keyboard === true) {
+    // В чате чужого аккаунта клавиатуры быть не может: она осталась бы на экране
+    // у рекрутёра, а он с ботом не разговаривает.
+    if (opts.businessConnectionId !== undefined) payload['business_connection_id'] = opts.businessConnectionId;
+    if (opts.keyboard === true && opts.businessConnectionId === undefined) {
       payload['reply_markup'] = {
         keyboard: [[BUTTONS[0], BUTTONS[1]], [BUTTONS[2], BUTTONS[3]]],
         resize_keyboard: true,
@@ -91,19 +115,20 @@ export class BotApi {
   }
 
   /** Возвращает file_id отправленного документа — его кешируем, чтобы не грузить PDF заново. */
-  async sendDocumentByFileId(chatId: number, fileId: string, caption: string): Promise<ApiResult<string>> {
-    const r = await this.call<{ document?: { file_id: string } }>(
-      'sendDocument',
-      { chat_id: chatId, document: fileId, caption },
-    );
+  async sendDocumentByFileId(
+    chatId: number, fileId: string, caption: string, businessConnectionId?: string,
+  ): Promise<ApiResult<string>> {
+    const payload: Record<string, unknown> = { chat_id: chatId, document: fileId, caption };
+    if (businessConnectionId !== undefined) payload['business_connection_id'] = businessConnectionId;
+    const r = await this.call<{ document?: { file_id: string } }>('sendDocument', payload);
     return r.ok ? { ok: true, value: r.value.document?.file_id ?? fileId } : r;
   }
 
   /** Резюме с диска. Файл читается внутри общей отправки: его отсутствие — отказ, а не исключение. */
   sendDocumentByPath(
-    chatId: number, path: string, filename: string, caption: string,
+    chatId: number, path: string, filename: string, caption: string, businessConnectionId?: string,
   ): Promise<ApiResult<string>> {
-    return this.uploadDocument(chatId, () => readFileSync(path), filename, caption);
+    return this.uploadDocument(chatId, () => readFileSync(path), filename, caption, businessConnectionId);
   }
 
   /** Текст документом, без файла на диске: так владельцу уходит вакансия вместе с пингом. */
@@ -124,6 +149,7 @@ export class BotApi {
    */
   private async uploadDocument(
     chatId: number, readBytes: () => Uint8Array, filename: string, caption: string,
+    businessConnectionId?: string,
   ): Promise<ApiResult<string>> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -135,6 +161,7 @@ export class BotApi {
       const safeName = filename.replace(/["\r\n]/g, '_');
       const head = Buffer.from(
         field('chat_id', String(chatId)) + field('caption', caption)
+        + (businessConnectionId === undefined ? '' : field('business_connection_id', businessConnectionId))
         + `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${safeName}"\r\n`
         + 'Content-Type: application/octet-stream\r\n\r\n',
         'utf8',
@@ -156,7 +183,65 @@ export class BotApi {
       };
       if (res.ok && parsed.ok === true) return { ok: true, value: parsed.result?.document?.file_id ?? '' };
       const description = parsed.description ?? `HTTP ${res.status}`;
-      return { ok: false, failure: this.failureOf(res.status, description, parsed.parameters?.retry_after) };
+      return {
+        ok: false,
+        failure: this.failureOf(res.status, description, parsed.parameters?.retry_after, businessConnectionId !== undefined),
+      };
+    } catch (e) {
+      return { ok: false, failure: { kind: 'network', message: e instanceof Error ? e.message : String(e) } };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Несколько файлов одним альбомом (sendMediaGroup): подпись стоит на последнем,
+   * а уведомление приходит одно. Нужен пингу о собеседовании — текст вакансии и
+   * файл .ics приходят вместе. Файлы уходят одним буфером с Content-Length, как и
+   * одиночный документ (см. uploadDocument): FormData поверх прокси теряет файловую часть.
+   */
+  async sendDocumentsFromText(
+    chatId: number, files: Array<{ name: string; content: string }>, caption: string,
+  ): Promise<ApiResult<number>> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const boundary = `----jaa${randomUUID().replace(/-/g, '')}`;
+      const field = (name: string, value: string): string =>
+        `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`;
+      const media = files.map((_f, i) => ({
+        type: 'document', media: `attach://f${i}`, ...(i === files.length - 1 ? { caption } : {}),
+      }));
+      const chunks: Buffer[] = [
+        Buffer.from(field('chat_id', String(chatId)) + field('media', JSON.stringify(media)), 'utf8'),
+      ];
+      files.forEach((f, i) => {
+        const safeName = f.name.replace(/["\r\n]/g, '_');
+        chunks.push(Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="f${i}"; filename="${safeName}"\r\n`
+          + 'Content-Type: application/octet-stream\r\n\r\n', 'utf8'));
+        chunks.push(Buffer.from(f.content, 'utf8'));
+        chunks.push(Buffer.from('\r\n', 'utf8'));
+      });
+      chunks.push(Buffer.from(`--${boundary}--\r\n`, 'utf8'));
+      const body = Buffer.concat(chunks);
+      const res = await this.fetchImpl(this.url('sendMediaGroup'), {
+        method: 'POST',
+        headers: {
+          'content-type': `multipart/form-data; boundary=${boundary}`,
+          'content-length': String(body.length),
+        },
+        body,
+        signal: controller.signal,
+      });
+      const parsed = await res.json() as {
+        ok?: boolean; result?: unknown[]; description?: string; parameters?: { retry_after?: number };
+      };
+      if (res.ok && parsed.ok === true) return { ok: true, value: parsed.result?.length ?? files.length };
+      return {
+        ok: false,
+        failure: this.failureOf(res.status, parsed.description ?? `HTTP ${res.status}`, parsed.parameters?.retry_after),
+      };
     } catch (e) {
       return { ok: false, failure: { kind: 'network', message: e instanceof Error ? e.message : String(e) } };
     } finally {
@@ -197,5 +282,22 @@ export class BotApi {
 
   getWebhookInfo(): Promise<ApiResult<{ url: string }>> {
     return this.call<{ url: string }>('getWebhookInfo', {});
+  }
+
+  /** Кто мы и можно ли подключать бота к аккаунтам (can_connect_to_business). */
+  getMe(): Promise<ApiResult<TgBotUser & { can_connect_to_business?: boolean }>> {
+    return this.call<TgBotUser & { can_connect_to_business?: boolean }>('getMe', {});
+  }
+
+  /** Подключение секретаря по id: владелец, права, включено ли. Нужно, когда апдейт о подключении бот пропустил. */
+  getBusinessConnection(id: string): Promise<ApiResult<TgBusinessConnection>> {
+    return this.call<TgBusinessConnection>('getBusinessConnection', { business_connection_id: id });
+  }
+
+  /** «печатает…» перед ответом модели. Ошибка не важна: вызывающий её глотает. */
+  async sendChatAction(chatId: number, action: 'typing', businessConnectionId?: string): Promise<ApiResult<true>> {
+    const payload: Record<string, unknown> = { chat_id: chatId, action };
+    if (businessConnectionId !== undefined) payload['business_connection_id'] = businessConnectionId;
+    return this.call<true>('sendChatAction', payload, 10_000);
   }
 }

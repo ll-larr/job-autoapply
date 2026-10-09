@@ -195,11 +195,42 @@ export const DEFAULT_BOT_LIMITS: BotLimits = {
   meetingsPerChatPerDay: 3,
 };
 
+/**
+ * Секретарь (спека 2026-10-09): бот отвечает в личке подключённого аккаунта.
+ * Обязателен только account — username аккаунта без @, к которому владелец
+ * подключил бота; соединения с другими аккаунтами бот игнорирует (решение 2).
+ */
+export interface SecretaryConfig {
+  account: string;
+  /** Пауза тишины в чате, после которой пачка сообщений отдаётся мозгу. */
+  debounceMs: number;
+  /** Но не позже, чем через столько от первого сообщения пачки. */
+  maxDebounceMs: number;
+  /** Сколько последних реплик помнит диалог (только в памяти процесса). */
+  memoryTurns: number;
+  memoryTtlMinutes: number;
+  /** Антипетля: потолок ответов секретаря на один чат за час. */
+  maxRepliesPerChatPerHour: number;
+  /** Сообщения старше этого окна без ответа: Telegram разрешает отвечать в течение 24 часов. */
+  replyWindowHours: number;
+}
+
+export const DEFAULT_SECRETARY: Omit<SecretaryConfig, 'account'> = {
+  debounceMs: 10_000,
+  maxDebounceMs: 45_000,
+  memoryTurns: 8,
+  memoryTtlMinutes: 360,
+  maxRepliesPerChatPerHour: 8,
+  replyWindowHours: 23,
+};
+
 export interface BotConfig {
   profile: { github: string; telegram: string };
   /** Модели для ответов рекрутёру. Не задано — те же, что у писем. */
   models?: string[];
   limits?: Partial<BotLimits>;
+  /** Нет блока — секретарь выключен, бот работает только в своём чате. */
+  secretary?: Partial<SecretaryConfig>;
 }
 
 export interface ResolvedBotConfig {
@@ -224,6 +255,39 @@ export function resolveBotConfig(config: Config): ResolvedBotConfig {
   }
   const models = bot.models !== undefined && bot.models.length > 0 ? bot.models : config.letterModels;
   return { profile: { github, telegram }, models, limits: { ...DEFAULT_BOT_LIMITS, ...bot.limits } };
+}
+
+/**
+ * Блок `bot.secretary` с умолчаниями. null — блока нет (секретарь выключен);
+ * ошибка возвращается значением, а не бросается: кривой блок не должен ронять
+ * бота (решение 37), он стартует без секретаря и пишет причину в лог.
+ */
+export function resolveSecretaryConfig(
+  config: Config,
+): { ok: true; value: SecretaryConfig } | { ok: false; error: string } | null {
+  const raw = config.bot?.secretary;
+  if (raw === undefined || raw === null) return null;
+  const bad = (field: string, want: string): { ok: false; error: string } =>
+    ({ ok: false, error: `config.json: bot.secretary.${field} ${want}` });
+  if (typeof raw.account !== 'string' || raw.account.trim().replace(/^@/, '') === '') {
+    return bad('account', 'обязателен — username аккаунта без @, к которому подключён бот');
+  }
+  const value: SecretaryConfig = { ...DEFAULT_SECRETARY, ...raw, account: raw.account.trim().replace(/^@/, '') };
+  const inRange = (v: unknown, lo: number, hi: number): boolean =>
+    typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi;
+  if (!inRange(value.debounceMs, 0, 120_000)) return bad('debounceMs', 'должен быть числом от 0 до 120000');
+  if (!inRange(value.maxDebounceMs, 0, 600_000) || value.maxDebounceMs < value.debounceMs) {
+    return bad('maxDebounceMs', 'должен быть числом от debounceMs до 600000');
+  }
+  if (!inRange(value.memoryTurns, 0, 30) || !Number.isInteger(value.memoryTurns)) {
+    return bad('memoryTurns', 'должен быть целым числом от 0 до 30');
+  }
+  if (!inRange(value.memoryTtlMinutes, 1, 1440)) return bad('memoryTtlMinutes', 'должен быть числом от 1 до 1440');
+  if (!inRange(value.maxRepliesPerChatPerHour, 1, 60) || !Number.isInteger(value.maxRepliesPerChatPerHour)) {
+    return bad('maxRepliesPerChatPerHour', 'должен быть целым числом от 1 до 60');
+  }
+  if (!inRange(value.replyWindowHours, 1, 23.5)) return bad('replyWindowHours', 'должен быть числом от 1 до 23,5');
+  return { ok: true, value };
 }
 
 export function loadConfig(path = 'config.json'): Config {

@@ -4,10 +4,10 @@ import type { LogLevel } from 'telegram/extensions/Logger.js';
 import { discoverSocksProxy } from '../core/proxy.js';
 import { classifyTgError, describeTgFailure } from './errors.js';
 import { readSession, readTelegramKeys, SESSION_PATH } from './session.js';
-import type { TgChat, TgMessage, TgPeer, TgReader, TgSender } from './types.js';
+import type { TgChat, TgHistory, TgMessage, TgPeer, TgReader, TgSender } from './types.js';
 
 export type OpenResult =
-  | { ok: true; client: TelegramClient; reader: TgReader; sender: TgSender; close(): Promise<void> }
+  | { ok: true; client: TelegramClient; reader: TgReader; sender: TgSender; history: TgHistory; close(): Promise<void> }
   | { ok: false; reason: 'no_keys' | 'no_session' | 'no_proxy' | 'auth'; message: string };
 
 function chatOf(entity: Api.Channel | Api.Chat, id: string): TgChat {
@@ -110,5 +110,19 @@ export async function openTelegram(opts: { sessionPath?: string } = {}): Promise
     },
   };
 
-  return { ok: true, client, reader, sender, close: () => client.destroy() };
+  const history: TgHistory = {
+    async incomingSince(username, sinceMs) {
+      const entity = await client.getEntity(username);
+      const messages = await client.getMessages(entity, { limit: 30 });
+      const incoming = messages.filter((m): m is Api.Message => m instanceof Api.Message && !m.out && m.date * 1000 >= sinceMs);
+      const dates = incoming.map((m) => m.date * 1000);
+      return {
+        count: incoming.length,
+        firstAt: dates.length === 0 ? null : Math.min(...dates),
+        peerId: entity instanceof Api.User ? Number(entity.id.toString()) : null,
+      };
+    },
+  };
+
+  return { ok: true, client, reader, sender, history, close: () => client.destroy() };
 }

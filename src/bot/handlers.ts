@@ -1,5 +1,6 @@
 import type { TgBotDocument, TgBotMessage } from './types.js';
-import type { BotStore } from './state.js';
+import type { BotStore, ChatMode } from './state.js';
+import type { Specialty } from '../core/specialty.js';
 import type { Queue } from '../core/queue.js';
 import type { Settings } from '../core/settings.js';
 import type { BotLimits } from '../core/config.js';
@@ -21,9 +22,10 @@ import { isVacancyPost, countVacancyMarkers } from '../telegram/parse.js';
  */
 
 export type BotAction =
-  | { kind: 'text'; chatId: number; text: string; keyboard?: boolean }
+  /** businessConnectionId — ответ уходит в чат подключённого аккаунта (секретарь), а не в чат с ботом. */
+  | { kind: 'text'; chatId: number; text: string; keyboard?: boolean; businessConnectionId?: string }
   /** Отправить PDF резюме: путь и file_id знает транспорт (bot/run.ts). */
-  | { kind: 'cv'; chatId: number };
+  | { kind: 'cv'; chatId: number; businessConnectionId?: string };
 // Владельцу бот пишет только о назначенном собеседовании (решение 2026-10-05), и
 // этот пинг собирает цикл из bot_meetings (bot/run.ts), а не обработчик.
 
@@ -59,7 +61,7 @@ function commandOf(text: string): Command | null {
   return null;
 }
 
-function dayKey(now: Date): string {
+export function dayKey(now: Date): string {
   const two = (n: number): string => String(n).padStart(2, '0');
   return `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())}`;
 }
@@ -69,7 +71,7 @@ function say(chatId: number, text: string, keyboard?: boolean): BotAction {
 }
 
 /** Первая ссылка, за которой имеет смысл сходить: площадка или онлайн-документ. */
-function firstLink(text: string): string | null {
+export function firstLink(text: string): string | null {
   for (const url of text.match(/https?:\/\/\S+/g) ?? []) {
     const clean = url.replace(/[),.;]+$/, '');
     if (isFetchableLink(clean)) return clean;
@@ -83,7 +85,7 @@ function firstLink(text: string): string | null {
  * команды уходила в «свободный вопрос» и получала отказ «отвечаю только на
  * вопросы по вакансиям» — ровно наоборот тому, чего человек ждал.
  */
-function looksLikeVacancy(text: string): boolean {
+export function looksLikeVacancy(text: string): boolean {
   return firstLink(text) !== null || isVacancyPost(text);
 }
 
@@ -150,7 +152,7 @@ function handleCommand(command: Command, chatId: number, nowMs: number, deps: Ha
 }
 
 async function handleDocument(
-  message: TgBotMessage, mode: 'idle' | 'await_vacancy' | 'await_meet', chatId: number,
+  message: TgBotMessage, mode: ChatMode, chatId: number,
   deps: HandlerDeps, day: string, muted: boolean,
 ): Promise<BotAction[]> {
   const doc = message.document;
@@ -200,22 +202,36 @@ async function handleVacancyText(
  * панели, а пингуется только собеседование. Отсев не меняет ответ рекрутёру:
  * отказ по фильтру — решение владельца, а не повод грубить человеку.
  */
+/**
+ * Вакансия от рекрутёра в очередь (если прошла отсев и не повтор). Общая часть
+ * чата с ботом и лички секретаря: ключ чата — любой, sourceId строится из него
+ * и id сообщения, поэтому личка (отрицательный ключ) с чатом бота не пересекается.
+ * Строка source tg-bot автоодобрением не берётся никогда.
+ */
+export function enqueueBotVacancy(
+  raw: string, messageId: number, chatKey: number, username: string | null, deps: HandlerDeps,
+): { text: string; specialty: Specialty; queueId: number | null } {
+  const settings = deps.settings();
+  const text = raw.slice(0, MAX_VACANCY_CHARS);
+  const titleWords = settings.specialties.filter((s) => s.enabled).flatMap((s) => s.titleWords);
+  const vacancy = buildVacancy({ text, chatId: chatKey, messageId, username, titleWords, now: deps.now() });
+  const { specialty, screen, score, matched } = assessVacancy(vacancy, settings);
+
+  let queueId: number | null = null;
+  const duplicate = vacancy.contentHash !== null && deps.queue.hasContentHash(vacancy.contentHash);
+  if (screen.passed && !duplicate
+    && deps.queue.insertPending(vacancy, score, matched, '', 'none', specialty.id)) {
+    queueId = deps.queue.idOf(vacancy.source, vacancy.sourceId);
+    if (queueId !== null) deps.store.setLastQueueId(chatKey, queueId);
+  }
+  return { text, specialty, queueId };
+}
+
 async function processVacancy(
   raw: string, messageId: number, chatId: number, username: string | null,
   day: string, deps: HandlerDeps,
 ): Promise<BotAction[]> {
-  const settings = deps.settings();
-  const text = raw.slice(0, MAX_VACANCY_CHARS);
-  const titleWords = settings.specialties.filter((s) => s.enabled).flatMap((s) => s.titleWords);
-  const vacancy = buildVacancy({ text, chatId, messageId, username, titleWords, now: deps.now() });
-  const { specialty, screen, score, matched } = assessVacancy(vacancy, settings);
-
-  const duplicate = vacancy.contentHash !== null && deps.queue.hasContentHash(vacancy.contentHash);
-  if (screen.passed && !duplicate
-    && deps.queue.insertPending(vacancy, score, matched, '', 'none', specialty.id)) {
-    const queueId = deps.queue.idOf(vacancy.source, vacancy.sourceId);
-    if (queueId !== null) deps.store.setLastQueueId(chatId, queueId);
-  }
+  const { text, specialty } = enqueueBotVacancy(raw, messageId, chatId, username, deps);
 
   deps.store.setMode(chatId, 'idle', null);
 
@@ -274,7 +290,7 @@ async function handleQuestion(
   return [say(chatId, replyText(reply, chatId, deps))];
 }
 
-function allowModelCall(chatId: number, day: string, deps: HandlerDeps): boolean {
+export function allowModelCall(chatId: number, day: string, deps: HandlerDeps): boolean {
   if (deps.store.modelCalls(day, chatId) >= deps.limits.perChatPerDay) return false;
   return deps.store.modelCalls(day, 0) < deps.limits.perBotPerDay;
 }

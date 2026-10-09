@@ -117,6 +117,11 @@ export function buildDmMessages(input: { vacancy: Vacancy; resume: string; role:
  */
 const MIXED_SCRIPT_WORD = /[A-Za-zА-Яа-яЁё]*(?:[A-Za-z][А-Яа-яЁё]|[А-Яа-яЁё][A-Za-z])[A-Za-zА-Яа-яЁё]*/;
 
+/** Слово из смеси латиницы и кириллицы («Figма») или null. Общая проверка для сообщений и ответов секретаря. */
+export function findMixedScript(text: string): string | null {
+  return MIXED_SCRIPT_WORD.exec(text)?.[0] ?? null;
+}
+
 /** Готовое сообщение целиком: то, что уйдёт рекрутёру. */
 export function isUsableDm(text: string, vacancy: Vacancy): string | null {
   const t = text.trim();
@@ -125,8 +130,8 @@ export function isUsableDm(text: string, vacancy: Vacancy): string | null {
   if (!t.includes(vacancy.url)) return 'нет ссылки на пост';
   const claim = findForbiddenClaim(t);
   if (claim !== null) return `выдуман навык: ${claim}`;
-  const mixed = MIXED_SCRIPT_WORD.exec(t);
-  if (mixed !== null) return `в слове «${mixed[0]}» смешаны латиница и кириллица`;
+  const mixed = findMixedScript(t);
+  if (mixed !== null) return `в слове «${mixed}» смешаны латиница и кириллица`;
   return null;
 }
 

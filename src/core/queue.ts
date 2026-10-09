@@ -223,6 +223,18 @@ export class Queue {
     return { at: row.at, title: (JSON.parse(row.vacancy_json) as { title: string }).title };
   }
 
+  /**
+   * Последняя отправленная строка целиком (спека 2026-10-09, 6.7): рекрутёр
+   * ответил на наше сообщение, и секретарю нужно знать, по какой вакансии мы
+   * писали. null — этому контакту ничего не отправлялось.
+   */
+  lastSentRowTo(contact: string): QueueRow | null {
+    const row = this.db.prepare(`
+      SELECT * FROM applications WHERE contact = ? AND status = 'sent' ORDER BY sent_at DESC, id DESC LIMIT 1
+    `).get(contact.toLowerCase().replace(/^@/, '')) as unknown as DbRow | undefined;
+    return row === undefined ? null : this.toQueueRow(row);
+  }
+
   /** Отправленное после момента — для вкладки «Отправлено». */
   listSentSince(sinceMs: number): QueueRow[] {
     const rows = this.db.prepare(

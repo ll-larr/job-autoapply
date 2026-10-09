@@ -22,6 +22,8 @@
     "letters": "tsx src/cli.ts letters",
     "bot": "tsx src/cli.ts bot",
     "interview": "tsx src/cli.ts interview",
+    "followups": "tsx src/cli.ts followups",
+    "hh:inbox": "tsx src/cli.ts hh-inbox",
     "tg:login": "tsx scripts/tg-login.ts"
   },
   "devDependencies": {

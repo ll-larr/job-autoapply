@@ -50,3 +50,13 @@ export interface TgSender {
   sendText(username: string, text: string): Promise<void>;
   sendFile(username: string, path: string): Promise<void>;
 }
+
+/**
+ * История личной переписки — только чтение (спека 2026-10-09, 6.9). Нужна дожиму:
+ * рекрутёр мог ответить ещё до подключения секретаря, и писать ему «ты молчишь»
+ * нельзя. Прочитанным ничего не помечает.
+ */
+export interface TgHistory {
+  /** Входящие сообщения контакта не раньше sinceMs: сколько, когда первое и id собеседника. */
+  incomingSince(username: string, sinceMs: number): Promise<{ count: number; firstAt: number | null; peerId: number | null }>;
+}

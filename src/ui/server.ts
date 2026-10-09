@@ -10,6 +10,9 @@ import type { Settings } from '../core/settings.js';
 import type { SpecialtySuggestion } from '../core/suggest.js';
 import type { Vacancy } from '../core/vacancy.js';
 import { Sender, clearStop, requestStop, type SendReport } from '../core/sender.js';
+import type { DialogView, FunnelRow } from '../core/dialogs.js';
+import type { FollowupView, FollowupRunReport } from '../core/followups.js';
+import type { HhInboxReport, HhPanelStatus } from '../hh/inbox.js';
 
 /** Сколько времени отменённая вакансия остаётся во вкладке «Отменённые». */
 const SKIPPED_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -72,6 +75,25 @@ interface LettersState {
   result: { found: number; filled: number; failure?: string; stopped?: true } | null;
   error: string | null;
   /** Человек нажал «Остановить написание писем»: дописывается текущее письмо. */
+  stopping: boolean;
+}
+
+/** Состояние работы с дожимами: подготовка текстов или отправка. Та же схема, что у поиска и отправки. */
+interface FollowupState {
+  running: boolean;
+  kind: 'prepare' | 'send' | null;
+  result: unknown;
+  error: string | null;
+  stopping: boolean;
+}
+
+/** Состояние проверки ящика откликов hh.ru: та же схема, что у поиска, — запуск отвечает сразу, панель опрашивает. */
+interface HhState {
+  running: boolean;
+  startedAt: number | null;
+  /** Кто запустил: человек кнопкой или плановый таймер. */
+  origin: 'human' | 'timer' | null;
+  error: string | null;
   stopping: boolean;
 }
 
@@ -138,6 +160,40 @@ export interface PanelDeps {
     dialogs(): Promise<{ ok: true; chats: TgChat[] } | { ok: false; error: string }>;
     resolve(ref: string): Promise<{ ok: true; chat: TgChat } | { ok: false; error: string }>;
   };
+  /**
+   * Вкладка «Диалоги» (спека 2026-10-09, 8.4): диалоги секретаря и воронка.
+   * Только метаданные. Без зависимости ручка отвечает 409.
+   */
+  dialogs?: {
+    snapshot(now: number): { dialogs: DialogView[]; funnel: FunnelRow[]; active: number };
+  };
+  /**
+   * Дожимы (спека 2026-10-09, 6.9): список, подготовка текстов, отправка. Без
+   * зависимости ручки отвечают 409. Отправка необратима и выключена тумблером
+   * в настройках по умолчанию — это проверяет сама `send`, а панель лишь
+   * передаёт её отказ человеку.
+   */
+  followups?: {
+    enabled(): boolean;
+    /** Сколько контактов ждут дожима, но текста у них ещё нет. */
+    waiting(): number;
+    list(): FollowupView[];
+    prepare(): Promise<{ created: number; fromModel: number; fromTemplate: number }>;
+    send(ids: number[] | 'all', stopRequested: () => boolean): Promise<FollowupRunReport>;
+    setText(id: number, text: string): 'ok' | 'not_draft';
+    cancel(id: number): boolean;
+  };
+  /**
+   * Ящик откликов hh.ru (спека 2026-10-09, 6.10): проверка новых ответов и
+   * приглашений. Без зависимости ручки отвечают 409. Плановую проверку
+   * запускает таймер панели (раз в минуту смотрит `due`), ручную — кнопка.
+   */
+  hh?: {
+    status(): HhPanelStatus;
+    /** Пора ли запускать плановую проверку: тумблер включён и прошёл интервал. */
+    due(now: number): boolean;
+    check(stopRequested: () => boolean): Promise<HhInboxReport>;
+  };
 }
 
 /**
@@ -176,6 +232,16 @@ export async function startPanel(
   const canSearch = deps.startSearch !== undefined;
   const letters: LettersState = { running: false, startedAt: null, result: null, error: null, stopping: false };
   const canFillLetters = deps.fillLetters !== undefined;
+  const followups: FollowupState = { running: false, kind: null, result: null, error: null, stopping: false };
+  const hh: HhState = { running: false, startedAt: null, origin: null, error: null, stopping: false };
+  /** Дожимы и hh-ящик делят с отправкой и поиском сессию Telegram и браузерный профиль. */
+  const busyWith = (): string | null => {
+    if (search.running) return 'Идёт поиск — дождись его завершения.';
+    if (send.running) return 'Идёт отправка — дождись её завершения.';
+    if (followups.running) return 'Уже идёт работа с дожимами.';
+    if (hh.running) return 'Идёт проверка откликов hh.ru — она держит тот же браузерный профиль.';
+    return null;
+  };
 
   // Отправка идёт минутами; запуск не ждёт её конца, панель опрашивает статус.
   // Одна точка и для кнопки «Отправить всё», и для автоотклика после поиска:
@@ -213,6 +279,34 @@ export async function startPanel(
     })();
   };
 
+  // Проверка ящика откликов hh.ru: минуты браузерной работы, поэтому запуск не ждёт конца.
+  // Итог проверки пишет сама проверка (Dialogs.kvSet 'hh:lastReport'), панель читает его из status().
+  const startHh = (origin: 'human' | 'timer'): void => {
+    if (deps.hh === undefined) return;
+    hh.running = true;
+    hh.startedAt = Date.now();
+    hh.origin = origin;
+    hh.error = null;
+    hh.stopping = false;
+    void (async () => {
+      try {
+        await deps.hh!.check(() => hh.stopping);
+      } catch (e) {
+        hh.error = e instanceof Error ? e.message : String(e);
+      } finally {
+        hh.running = false;
+        hh.stopping = false;
+      }
+    })();
+  };
+  // Плановая проверка: раз в минуту смотрим, не пора ли. Тумблер и интервал читает `due` из текущих настроек.
+  const hhTimer = deps.hh === undefined
+    ? null
+    : setInterval(() => {
+      if (busyWith() === null && deps.hh!.due(Date.now())) startHh('timer');
+    }, 60_000);
+  hhTimer?.unref();
+
   const server = createServer(async (req, res) => {
     try {
       if (req.method === 'GET' && req.url === '/api/pending') {
@@ -247,6 +341,106 @@ export async function startPanel(
         }
         return json(res, { ok: true });
       }
+      if (req.method === 'GET' && req.url === '/api/dialogs') {
+        if (!deps.dialogs) {
+          return json(res, { error: 'Панель запущена без диалогов — открой её через npm run panel.' }, 409);
+        }
+        return json(res, deps.dialogs.snapshot(Date.now()));
+      }
+      if (req.url !== undefined && req.url.startsWith('/api/hh/')) {
+        const h = deps.hh;
+        if (h === undefined) {
+          return json(res, { error: 'Панель запущена без ящика откликов — открой её через npm run panel.' }, 409);
+        }
+        if (req.method === 'GET' && req.url === '/api/hh/status') {
+          return json(res, {
+            running: hh.running, startedAt: hh.startedAt, origin: hh.origin, error: hh.error, stopping: hh.stopping,
+            ...h.status(),
+          });
+        }
+        if (req.method === 'POST' && req.url === '/api/hh/stop') {
+          if (!hh.running) return json(res, { error: 'Проверка сейчас не идёт — останавливать нечего.' }, 409);
+          hh.stopping = true;
+          return json(res, { ok: true });
+        }
+        if (req.method === 'POST' && req.url === '/api/hh/check') {
+          const busy = busyWith();
+          if (busy !== null) return json(res, { error: busy }, 409);
+          startHh('human');
+          return json(res, { started: true }, 202);
+        }
+      }
+      if (req.url !== undefined && req.url.startsWith('/api/followups')) {
+        const f = deps.followups;
+        if (f === undefined) {
+          return json(res, { error: 'Панель запущена без дожимов — открой её через npm run panel.' }, 409);
+        }
+        if (req.method === 'GET' && req.url === '/api/followups') {
+          return json(res, { enabled: f.enabled(), waiting: f.waiting(), items: f.list() });
+        }
+        if (req.method === 'GET' && req.url === '/api/followups/status') {
+          return json(res, {
+            running: followups.running, kind: followups.kind, result: followups.result,
+            error: followups.error, stopping: followups.stopping,
+          });
+        }
+        if (req.method === 'POST' && req.url === '/api/followups/stop') {
+          if (!followups.running || followups.kind !== 'send') return json(res, { error: 'Дожимы сейчас не отправляются — останавливать нечего.' }, 409);
+          followups.stopping = true;
+          return json(res, { stopping: true }, 202);
+        }
+        if (req.method === 'POST' && req.url === '/api/followups/prepare') {
+          const busy = busyWith();
+          if (busy !== null) return json(res, { error: busy }, 409);
+          followups.running = true; followups.kind = 'prepare'; followups.result = null; followups.error = null; followups.stopping = false;
+          void (async () => {
+            try {
+              followups.result = await f.prepare();
+            } catch (e) {
+              followups.error = e instanceof Error ? e.message : String(e);
+            } finally {
+              followups.running = false;
+            }
+          })();
+          return json(res, { started: true }, 202);
+        }
+        if (req.method === 'POST' && req.url === '/api/followups/send') {
+          if (!f.enabled()) {
+            return json(res, { error: 'Дожимы выключены в настройках («Дожимы»): отправка невозможна.' }, 409);
+          }
+          const busy = busyWith();
+          if (busy !== null) return json(res, { error: busy }, 409);
+          const b = await readJson(req).catch(() => ({} as Record<string, unknown>));
+          const ids = Array.isArray(b['ids']) && b['ids'].every((x) => Number.isInteger(x)) ? b['ids'] as number[] : 'all';
+          followups.running = true; followups.kind = 'send'; followups.result = null; followups.error = null; followups.stopping = false;
+          void (async () => {
+            try {
+              followups.result = await f.send(ids, () => followups.stopping);
+            } catch (e) {
+              followups.error = e instanceof Error ? e.message : String(e);
+            } finally {
+              followups.running = false;
+              followups.stopping = false;
+            }
+          })();
+          return json(res, { started: true }, 202);
+        }
+        if (req.method === 'POST' && req.url === '/api/followups/text') {
+          const b = await readJson(req);
+          const id = Number(b['id']);
+          const text = typeof b['text'] === 'string' ? b['text'].trim() : '';
+          if (!Number.isInteger(id)) return json(res, { error: 'нужен числовой id' }, 400);
+          if (text.length < 1 || text.length > 400) return json(res, { error: 'Текст дожима — от 1 до 400 символов.' }, 400);
+          return f.setText(id, text) === 'ok'
+            ? json(res, { ok: true })
+            : json(res, { error: 'Править можно только черновик.' }, 409);
+        }
+        if (req.method === 'POST' && req.url === '/api/followups/cancel') {
+          const b = await readJson(req);
+          return f.cancel(Number(b['id'])) ? json(res, { ok: true }) : json(res, { error: 'Отменить можно только черновик.' }, 409);
+        }
+      }
+
       if (req.method === 'GET' && req.url === '/api/sent') {
         // Вкладка «Отправлено» (спека 7.4): что ушло за 30 дней и кто одобрил.
         return json(res, queue.listSentSince(Date.now() - 30 * 86_400_000));
@@ -289,6 +483,12 @@ export async function startPanel(
         // хотя сломалась не площадка, а одновременный доступ к профилю.
         if (send.running) {
           return json(res, { error: 'Отправка уже идёт — дождись её завершения, прежде чем запускать поиск.' }, 409);
+        }
+        if (followups.running) {
+          return json(res, { error: 'Идёт работа с дожимами — они делят с поиском сессию Telegram. Дождись их завершения.' }, 409);
+        }
+        if (hh.running) {
+          return json(res, { error: 'Идёт проверка откликов hh.ru — она держит тот же браузерный профиль. Дождись её завершения.' }, 409);
         }
         if (search.running) {
           return json(res, { error: 'Поиск уже идёт.' }, 409);
@@ -454,6 +654,12 @@ export async function startPanel(
         if (send.running) {
           return json(res, { error: 'Отправка уже идёт.' }, 409);
         }
+        if (followups.running) {
+          return json(res, { error: 'Идёт работа с дожимами — они делят с отправкой сессию Telegram. Дождись их завершения.' }, 409);
+        }
+        if (hh.running) {
+          return json(res, { error: 'Идёт проверка откликов hh.ru — она держит тот же браузерный профиль. Дождись её завершения.' }, 409);
+        }
 
         // «Отправить без письма» — только по явному true от панели, которая
         // предупредила человека. Тело может быть пустым (старые вызовы).
@@ -568,6 +774,7 @@ export async function startPanel(
   return {
     port: actualPort,
     close: async () => {
+      if (hhTimer !== null) clearInterval(hhTimer);
       await new Promise<void>((r) => server.close(() => r()));
       // Отпускаем браузерные контексты адаптеров, у кого они есть (сейчас —
       // только HhAdapter.close(), см. src/adapters/hh.ts). Не часть Adapter

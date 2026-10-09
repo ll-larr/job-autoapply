@@ -85,6 +85,18 @@
     #tgPicker label { display: block; font-size: 14px; margin: 2px 0; }
     #autoBanner { margin: 8px 20px; padding: 10px 12px; background: #9b1c1c; color: #fff;
                   border-radius: 4px; font-size: 14px; font-weight: 600; }
+    .tbl { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+    .tbl th { text-align: left; font-weight: 500; color: #666; padding: 4px 8px; border-bottom: 1px solid #ddd; }
+    .tbl td { padding: 4px 8px; border-bottom: 1px solid #f0f0f2; vertical-align: top; }
+    .tbl .num { text-align: right; white-space: nowrap; }
+    .tbl tr.total td { font-weight: 600; background: #fafafb; }
+    .st { display: inline-block; padding: 0 8px; border-radius: 9px; font-size: 12px; background: #e6e6ea; }
+    .st.meeting, .st.invite { background: #d6efd8; color: #155724; }
+    .st.reject { background: #f6d3d3; color: #7a1414; }
+    .st.replied { background: #dbe8f7; color: #1d3f6e; }
+    .days label { margin-right: 10px; font-size: 14px; }
+    .fu-card { border-top: 1px solid #eee; padding: 10px 0; }
+    .fu-card textarea { min-height: 70px; font: 13px/1.4 system-ui, sans-serif; }
     [hidden] { display: none !important; }
   </style>
 </head>
@@ -108,6 +120,7 @@
       <button class="tab" role="tab" id="tab-approved" aria-selected="false" aria-controls="pane-approved">Одобрено<span class="n" id="n-approved">0</span></button>
       <button class="tab" role="tab" id="tab-skipped"  aria-selected="false" aria-controls="pane-skipped">Отменённые<span class="n" id="n-skipped">0</span></button>
       <button class="tab" role="tab" id="tab-sent"     aria-selected="false" aria-controls="pane-sent">Отправлено<span class="n" id="n-sent">0</span></button>
+      <button class="tab" role="tab" id="tab-dialogs"  aria-selected="false" aria-controls="pane-dialogs">Диалоги<span class="n" id="n-dialogs">0</span></button>
       <button class="tab" role="tab" id="tab-settings" aria-selected="false" aria-controls="pane-settings">Настройки</button>
     </nav>
   </header>
@@ -146,6 +159,43 @@
       <span class="hint">Что ушло за последние 30 дней. «Авто» — одобрено автооткликом, без твоего взгляда.</span>
     </div>
     <div id="sentList"></div>
+  </section>
+
+  <section id="pane-dialogs" role="tabpanel" aria-labelledby="tab-dialogs" hidden>
+    <div class="actions">
+      <span class="hint" id="dialogsNote">Только метаданные: кто, когда и чем кончилось. Тексты переписки нигде не хранятся.</span>
+    </div>
+    <div class="settings-block">
+      <strong>Воронка за 8 недель</strong>
+      <span class="hint">отправлено → ответил → собеседование. hr.ge и careerist ответов боту не отдают, у них только «отправлено».</span>
+      <div id="funnel"></div>
+    </div>
+    <div class="settings-block">
+      <strong>Диалоги</strong>
+      <span class="hint">личка рабочего аккаунта и чаты откликов hh.ru за последние 30 дней.</span>
+      <div id="dialogList"></div>
+    </div>
+    <div class="settings-block" id="followupsPane">
+      <strong>Дожимы</strong>
+      <span class="hint" id="fuState"></span>
+      <div class="actions" style="padding-left:0;">
+        <button id="fuPrepare">Подготовить тексты</button>
+        <button id="fuSendAll">Отправить все черновики</button>
+        <button id="fuStop" class="stop-btn" hidden>Остановить</button>
+        <span class="hint" id="fuNote"></span>
+      </div>
+      <div id="fuList"></div>
+    </div>
+    <div class="settings-block" id="hhPane">
+      <strong>Ящик откликов hh.ru</strong>
+      <span class="hint" id="hhState"></span>
+      <div class="actions" style="padding-left:0;">
+        <button id="hhCheck">Проверить сейчас</button>
+        <button id="hhStop" class="stop-btn" hidden>Остановить</button>
+        <span class="hint" id="hhNote"></span>
+      </div>
+      <div id="hhReport"></div>
+    </div>
   </section>
 
   <section id="pane-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
@@ -219,10 +269,55 @@
           (пусто — общий порог minScore из config.json)</label>
       </div>
     </div>
+    <div class="settings-block" id="secretaryBlock">
+      <strong>Секретарь в личке рабочего аккаунта</strong>
+      <span class="hint">бот отвечает рекрутёрам, которые пишут в личку @HIRE_agent. Подключается в Telegram:
+        Настройки → Telegram для бизнеса / Chat Automation → Чат-боты → @lar_autoapply_bot. Тумблер действует сразу, без перезапуска бота.</span>
+      <div style="margin-top:8px;"><label><input type="checkbox" id="secEnabled"> секретарь отвечает</label></div>
+    </div>
+    <div class="settings-block" id="calendarBlock">
+      <strong>Календарь секретаря</strong>
+      <span class="hint">локальный, без Google: рабочие окна минус уже записанные встречи.</span>
+      <div style="margin-top:8px;"><label><input type="checkbox" id="calSlots"> предлагать рекрутёру слоты и проверять названное им время по рабочим окнам</label></div>
+      <div class="llm-row"><label for="calTz">Часовой пояс</label><div><input type="text" id="calTz" size="22" spellcheck="false">
+        <div class="hint">имя IANA, например Europe/Moscow; в нём строятся слоты и называется время рекрутёру.</div></div></div>
+      <div class="llm-row"><label>Рабочие дни</label><div class="days" id="calDays"></div></div>
+      <div class="llm-row"><label for="calStart">Рабочий день</label><div>
+        с <input type="time" id="calStart"> до <input type="time" id="calEnd"></div></div>
+      <div class="llm-row"><label for="calSlot">Встреча, минут</label><div>
+        <input type="number" id="calSlot" min="15" max="240" step="5" style="width:72px;">
+        отступ <input type="number" id="calBuffer" min="0" max="120" step="5" style="width:72px;"> мин</div></div>
+      <div class="llm-row"><label for="calHorizon">Горизонт, дней</label><div>
+        <input type="number" id="calHorizon" min="1" max="60" style="width:72px;">
+        не ближе чем через <input type="number" id="calLead" min="0" max="168" style="width:72px;"> ч (для предложенных слотов)</div></div>
+      <div style="margin-top:8px;"><label><input type="checkbox" id="calIcs"> прикладывать файл .ics к пингу о собеседовании</label></div>
+      <div style="margin-top:4px;"><label><input type="checkbox" id="calRemind"> напоминание за
+        <input type="number" id="calRemindMin" min="5" max="1440" style="width:72px;"> мин до собеседования</label>
+        <div class="hint">это второй пинг о том же собеседовании; выключи, если хочешь только один.</div></div>
+    </div>
+    <div class="settings-block" id="followupsBlock">
+      <strong>Дожимы</strong>
+      <span class="hint">одно повторное сообщение рекрутёру, который молчит. Уходит с аккаунта @HIRE_agent и необратимо.
+        По умолчанию выключено.</span>
+      <div style="margin-top:8px;"><label><input type="checkbox" id="fuEnabled"> разрешить отправку дожимов</label></div>
+      <div style="margin-top:8px;"><label class="hint">Молчит дней
+        <input type="number" id="fuAfter" min="1" max="30" style="width:72px;"></label>
+        <label class="hint">· не старше дней <input type="number" id="fuMaxAge" min="1" max="60" style="width:72px;"></label></div>
+    </div>
+    <div class="settings-block" id="hhInboxBlock">
+      <strong>Ящик откликов hh.ru</strong>
+      <span class="hint">читает новые сообщения работодателей и приглашения в чатах откликов. По умолчанию выключено.</span>
+      <div style="margin-top:8px;"><label><input type="checkbox" id="hhEnabled"> читать ящик откликов</label></div>
+      <div style="margin-top:4px;"><label><input type="checkbox" id="hhReply"> отвечать работодателям</label>
+        <div class="hint">чат открывается без блокировки, работодатель увидит, что сообщения прочитаны; нужна проба: npm run hh:inbox -- --probe-chat.</div></div>
+      <div style="margin-top:8px;"><label class="hint">Проверять раз в
+        <input type="number" id="hhInterval" min="10" max="1440" style="width:72px;"> мин</label>
+        <label class="hint">· ответов в сутки не больше <input type="number" id="hhMaxReplies" min="1" max="100" style="width:72px;"></label></div>
+    </div>
   </section>
 
 <script>
-const TABS = ['pending', 'approved', 'skipped', 'sent', 'settings'];
+const TABS = ['pending', 'approved', 'skipped', 'sent', 'dialogs', 'settings'];
 
 function showTab(name) {
   for (const t of TABS) {
@@ -234,6 +329,7 @@ function showTab(name) {
   // на первую: после «Восстановить» или «Очистить вкладку» человек остаётся
   // там, где работал.
   history.replaceState(null, '', '#' + name);
+  if (name === 'dialogs') loadDialogs();
 }
 
 for (const t of TABS) {
@@ -274,6 +370,285 @@ async function load() {
 
 function setCount(name, n) {
   document.getElementById('n-' + name).textContent = n;
+}
+
+// ----------------------------------------------------------------------------
+// Вкладка «Диалоги» (спека 2026-10-09, 8.3): воронка и список диалогов. Только
+// метаданные — тексты переписки в панель не приходят вовсе.
+// ----------------------------------------------------------------------------
+
+const SOURCE_TITLES = { tg: 'Telegram', hh: 'hh.ru', hrge: 'hr.ge', careerist: 'careerist.ru' };
+const STATUS_TITLES = { meeting: 'собеседование', invite: 'приглашение', reject: 'отказ', replied: 'ответил', waiting: 'ждём' };
+const SILENCE_TITLES = {
+  disabled: 'секретарь выключен', rights: 'нет права отвечать', window: 'окно 24 ч закрыто', limit: 'лимит ответов',
+  muted: 'чат в молчании', loop: 'защита от петли', cannot_reply: 'Telegram не даёт ответить',
+};
+
+function pct(n, of) {
+  return of > 0 ? ` (${Math.round((n / of) * 100)}%)` : '';
+}
+
+function hoursText(h) {
+  if (h === null || h === undefined) return '—';
+  return h < 1 ? 'меньше часа' : h < 48 ? `${h} ч` : `${Math.round(h / 24)} дн.`;
+}
+
+function ago(ms) {
+  if (ms === null || ms === undefined) return '—';
+  const h = ms / 3600000;
+  return hoursText(Math.round(h * 10) / 10);
+}
+
+function renderFunnel(rows) {
+  const box = document.getElementById('funnel');
+  if (rows.length === 0) { box.innerHTML = '<div class="empty">За 8 недель ничего не отправлено.</div>'; return; }
+  const body = rows.map((r) => {
+    const tracked = r.replied !== null;
+    return `<tr class="${r.week === 'total' ? 'total' : ''}">
+      <td>${r.week === 'total' ? '8 недель' : 'с ' + esc(r.week)}</td><td>${esc(SOURCE_TITLES[r.source] ?? r.source)}</td>
+      <td class="num">${r.sent}</td>
+      <td class="num">${tracked ? r.replied + pct(r.replied, r.sent) : '—'}</td>
+      <td class="num">${tracked ? r.meetings + pct(r.meetings, r.sent) : '—'}</td>
+      <td class="num">${tracked ? hoursText(r.medianHours) : '—'}</td></tr>`;
+  }).join('');
+  box.innerHTML = '<table class="tbl"><thead><tr><th>Неделя</th><th>Площадка</th><th class="num">Отправлено</th>'
+    + '<th class="num">Ответили</th><th class="num">Собеседований</th><th class="num">Медиана до ответа</th></tr></thead>'
+    + '<tbody>' + body + '</tbody></table>';
+}
+
+function renderDialogs(rows) {
+  const box = document.getElementById('dialogList');
+  if (rows.length === 0) { box.innerHTML = '<div class="empty">Диалогов пока нет.</div>'; return; }
+  const body = rows.map((d) => {
+    const vac = d.vacancy ? (d.vacancy.url ? `<a href="${esc(d.vacancy.url)}" target="_blank" rel="noopener">${esc(d.vacancy.title)}</a>` : esc(d.vacancy.title)) : '—';
+    const when = new Date(d.updatedAt).toLocaleString('ru-RU');
+    const meet = d.meetingAt ? ' · ' + new Date(d.meetingAt).toLocaleString('ru-RU') : '';
+    return `<tr><td>${d.channel === 'hh' ? 'hh.ru' : 'Telegram'}</td><td>${esc(d.who)}</td><td>${vac}</td>
+      <td class="num">${d.sentAt ? esc(new Date(d.sentAt).toLocaleDateString('ru-RU')) : '—'}</td>
+      <td class="num">${ago(d.repliedAfterMs)}</td>
+      <td class="num">${d.inCount} / ${d.outCount} / ${d.botCount}</td>
+      <td><span class="st ${esc(d.status)}">${esc(STATUS_TITLES[d.status] ?? d.status)}</span>${esc(meet)}</td>
+      <td>${d.silenced ? esc(SILENCE_TITLES[d.silenced] ?? d.silenced) : ''}</td>
+      <td class="num">${esc(when)}</td></tr>`;
+  }).join('');
+  box.innerHTML = '<table class="tbl"><thead><tr><th>Канал</th><th>Кто</th><th>Вакансия</th><th class="num">Написали</th>'
+    + '<th class="num">Ответил через</th><th class="num">Входящих / от аккаунта / от бота</th><th>Статус</th><th>Молчание</th>'
+    + '<th class="num">Активность</th></tr></thead><tbody>' + body + '</tbody></table>';
+}
+
+// ----------------------------------------------------------------------------
+// Дожимы (спека 2026-10-09, 6.9): черновики повторного сообщения молчащим
+// рекрутёрам. Отправка необратима и разрешена только тумблером в настройках;
+// кнопки здесь лишь просят сервер, а отказ сервера показывается как есть.
+// ----------------------------------------------------------------------------
+
+const FU_STATUS = { draft: 'черновик', sent: 'отправлен', cancelled: 'отменён', failed: 'не ушёл' };
+let fuPolling = null;
+let fuEnabled = false;
+
+function fuSetBusy(busy, kind) {
+  document.getElementById('fuPrepare').disabled = busy;
+  document.getElementById('fuSendAll').disabled = busy || !fuEnabled;
+  document.getElementById('fuStop').hidden = !(busy && kind === 'send');
+}
+
+function fuDays(ms) {
+  return ms ? Math.floor((Date.now() - ms) / 86400000) : null;
+}
+
+function renderFollowups(body) {
+  fuEnabled = body.enabled;
+  document.getElementById('fuState').textContent = body.enabled
+    ? `Разрешены. Ждут текста: ${body.waiting}. Один дожим на контакт, лимит общий с Telegram.`
+    : `Выключены в настройках («Дожимы») — отправка недоступна. Ждут текста: ${body.waiting}.`;
+  document.getElementById('fuSendAll').disabled = !body.enabled;
+  const box = document.getElementById('fuList');
+  if (body.items.length === 0) { box.innerHTML = '<div class="empty">Дожимов пока нет.</div>'; return; }
+  box.innerHTML = '';
+  for (const it of body.items) {
+    const days = fuDays(it.firstSentAt);
+    const el = document.createElement('div');
+    el.className = 'fu-card';
+    el.dataset.id = it.id;
+    const head = `<div><b>@${esc(it.contact)}</b> · «${esc(it.title)}»${days === null ? '' : ` · писали ${days} дн. назад`}
+      · <span class="st ${it.status === 'sent' ? 'meeting' : it.status === 'draft' ? '' : 'reject'}">${esc(FU_STATUS[it.status] ?? it.status)}</span>
+      <span class="hint">${esc(it.textMode === 'manual' ? 'текст правлен вручную' : it.textMode === 'model' ? 'текст написала модель' : 'шаблон')}</span></div>`;
+    if (it.status === 'draft') {
+      el.innerHTML = `${head}<textarea></textarea>
+        <div class="actions" style="padding-left:0;">
+          <button data-act="save">Сохранить текст</button>
+          <button data-act="send" ${fuEnabled ? '' : 'disabled'}>Отправить</button>
+          <button data-act="cancel">Не дожимать</button>
+          <span class="hint" data-role="note"></span>
+        </div>`;
+      el.querySelector('textarea').value = it.text;
+    } else {
+      const when = it.sentAt ? new Date(it.sentAt).toLocaleString('ru-RU') : '';
+      el.innerHTML = `${head}<div class="hint"></div>`;
+      el.querySelector('.hint:last-child').textContent = [it.text, it.reason ? `— ${it.reason}` : '', when].filter(Boolean).join(' ');
+    }
+    box.appendChild(el);
+  }
+}
+
+async function loadFollowups() {
+  let res;
+  try { res = await fetch('/api/followups'); } catch { return; }
+  const body = await res.json();
+  if (!res.ok) { document.getElementById('fuState').textContent = body.error; return; }
+  renderFollowups(body);
+}
+
+function pollFollowups() {
+  if (fuPolling) return;
+  fuSetBusy(true, 'send');
+  fuPolling = setInterval(async () => {
+    const st = await fetchJson('/api/followups/status');
+    const note = document.getElementById('fuNote');
+    fuSetBusy(st.running, st.kind);
+    if (st.running) { note.textContent = st.kind === 'prepare' ? 'Пишу тексты…' : 'Отправляю…'; return; }
+    clearInterval(fuPolling);
+    fuPolling = null;
+    if (st.error) note.textContent = 'Не вышло: ' + st.error;
+    else if (st.result && st.result.created !== undefined) note.textContent = `Подготовлено: ${st.result.created}.`;
+    else if (st.result) {
+      const r = st.result;
+      note.textContent = `Отправлено: ${r.sent}, отменено: ${r.cancelled}, не ушло: ${r.failed}`
+        + (r.halted ? `. Остановлено: ${r.reason || r.halted}` : '.');
+    }
+    loadFollowups();
+    loadDialogs();
+  }, 2000);
+}
+
+async function fuStart(url, body) {
+  const note = document.getElementById('fuNote');
+  const res = await post(url, body);
+  const out = await res.json();
+  if (!res.ok) { note.textContent = out.error; return; }
+  note.textContent = '';
+  pollFollowups();
+}
+
+document.getElementById('fuPrepare').onclick = () => fuStart('/api/followups/prepare', {});
+document.getElementById('fuSendAll').onclick = () => {
+  if (!confirm('Отправить все черновики дожимов?\n\nКаждый уйдёт с аккаунта @HIRE_agent и необратим. Перед отправкой проверяется история: тем, кто уже ответил, дожим не уходит.')) return;
+  fuStart('/api/followups/send', {});
+};
+document.getElementById('fuStop').onclick = async () => {
+  const res = await post('/api/followups/stop', {});
+  if (!res.ok) document.getElementById('fuNote').textContent = (await res.json()).error;
+};
+document.getElementById('fuList').onclick = async (e) => {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const card = btn.closest('.fu-card');
+  const id = Number(card.dataset.id);
+  const note = card.querySelector('[data-role="note"]');
+  if (btn.dataset.act === 'save') {
+    const res = await post('/api/followups/text', { id, text: card.querySelector('textarea').value });
+    note.textContent = res.ok ? 'Сохранено.' : (await res.json()).error;
+  } else if (btn.dataset.act === 'cancel') {
+    const res = await post('/api/followups/cancel', { id });
+    if (res.ok) loadFollowups(); else note.textContent = (await res.json()).error;
+  } else if (btn.dataset.act === 'send') {
+    if (!confirm('Отправить этот дожим? Он уйдёт с аккаунта @HIRE_agent и необратим.')) return;
+    await post('/api/followups/text', { id, text: card.querySelector('textarea').value });
+    fuStart('/api/followups/send', { ids: [id] });
+  }
+};
+
+fetchJson('/api/followups/status').then((st) => { if (st.running) pollFollowups(); }).catch(() => {});
+
+// --- ящик откликов hh.ru ---
+
+let hhPolling = null;
+const HH_OUTCOME = {
+  ok: 'проверка прошла',
+  auth_required: 'нужен вход на hh.ru: открой браузер профиля и войди',
+  captcha: 'hh.ru показал капчу — вкладка осталась открытой, пройди её руками',
+  error: 'сбой',
+  profile_busy: 'браузерный профиль занят другим процессом',
+};
+const hhWhen = (at) => (at ? new Date(at).toLocaleString('ru-RU') : '—');
+
+function hhSetBusy(busy) {
+  document.getElementById('hhCheck').disabled = busy;
+  document.getElementById('hhStop').hidden = !busy;
+}
+
+function renderHh(st) {
+  const stateEl = document.getElementById('hhState');
+  const reportEl = document.getElementById('hhReport');
+  hhSetBusy(st.running);
+  const parts = [st.enabled ? `плановая проверка раз в ${st.intervalMinutes} мин` : 'плановая проверка выключена (включается в настройках)'];
+  parts.push(st.replyEnabled
+    ? (st.chatProbeFresh ? 'ответы работодателям включены' : 'ответы включены, но нет свежей пробы чата — не отправляются')
+    : 'ответы работодателям выключены');
+  stateEl.textContent = parts.join(' · ');
+  const r = st.report;
+  if (!r) { reportEl.innerHTML = '<div class="empty">Проверок ещё не было.</div>'; return; }
+  const lines = [`${hhWhen(r.at)} — ${HH_OUTCOME[r.outcome] || r.outcome}`];
+  if (r.outcome === 'ok') {
+    lines.push(`откликов: ${r.topics}, новых ответов: ${r.newReplies}, приглашений: ${r.invites}, отказов: ${r.rejects}`
+      + (r.repliesSent ? `, ответов отправлено: ${r.repliesSent}` : ''));
+  }
+  if (r.error) lines.push('причина: ' + r.error);
+  for (const issue of r.replyIssues || []) lines.push('ответы: ' + issue);
+  reportEl.innerHTML = lines.map((l) => `<div class="hint">${esc(l)}</div>`).join('');
+}
+
+async function loadHh() {
+  let res;
+  try { res = await fetch('/api/hh/status'); } catch { return; }
+  const body = await res.json();
+  if (!res.ok) { document.getElementById('hhState').textContent = body.error; return; }
+  renderHh(body);
+  if (body.running && !hhPolling) pollHh();
+}
+
+function pollHh() {
+  if (hhPolling) return;
+  hhSetBusy(true);
+  hhPolling = setInterval(async () => {
+    const st = await fetchJson('/api/hh/status');
+    renderHh(st);
+    if (st.running) return;
+    clearInterval(hhPolling);
+    hhPolling = null;
+    if (st.error) document.getElementById('hhNote').textContent = 'Не вышло: ' + st.error;
+    loadDialogs();
+  }, 2000);
+}
+
+document.getElementById('hhCheck').onclick = async () => {
+  const note = document.getElementById('hhNote');
+  const res = await post('/api/hh/check', {});
+  const out = await res.json();
+  if (!res.ok) { note.textContent = out.error; return; }
+  note.textContent = 'Проверяю… Окно браузера профиля откроется само.';
+  pollHh();
+};
+document.getElementById('hhStop').onclick = async () => {
+  const res = await post('/api/hh/stop', {});
+  if (!res.ok) document.getElementById('hhNote').textContent = (await res.json()).error;
+};
+
+async function loadDialogs() {
+  const note = document.getElementById('dialogsNote');
+  let res;
+  try {
+    res = await fetch('/api/dialogs');
+  } catch {
+    return;
+  }
+  const body = await res.json();
+  if (!res.ok) { note.textContent = body.error; return; }
+  setCount('dialogs', body.active ?? 0);
+  renderFunnel(body.funnel ?? []);
+  renderDialogs(body.dialogs ?? []);
+  loadFollowups();
+  loadHh();
 }
 
 /**
@@ -913,6 +1288,8 @@ document.getElementById('approveAll').onclick = async () => {
 
 showTab(TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'pending');
 load();
+loadDialogs();
+setInterval(() => { if (!document.getElementById('pane-dialogs').hidden) loadDialogs(); }, 30000);
 fetchJson('/api/search/status').then((st) => {
   if (st.running) pollSearch();
   else if (!st.canSearch) {
@@ -1109,7 +1486,86 @@ function renderSettings(s) {
   document.getElementById('tgChats').innerHTML = '';
   for (const c of tg.chats) addChatRow(c);
   document.getElementById('tgDays').value = tg.firstReadDays;
+  renderSecretarySettings(s);
 }
+
+const WEEKDAYS_SHORT = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+
+function renderSecretarySettings(s) {
+  document.getElementById('secEnabled').checked = (s.secretary ?? { enabled: true }).enabled;
+  const c = s.calendar ?? {};
+  document.getElementById('calSlots').checked = c.slotsEnabled === true;
+  document.getElementById('calTz').value = c.timeZone ?? 'Europe/Moscow';
+  const days = c.workDays ?? [1, 2, 3, 4, 5];
+  document.getElementById('calDays').innerHTML = WEEKDAYS_SHORT.map((d, i) =>
+    `<label><input type="checkbox" data-day="${i + 1}" ${days.includes(i + 1) ? 'checked' : ''}> ${d}</label>`).join('');
+  document.getElementById('calStart').value = c.workStart ?? '10:00';
+  document.getElementById('calEnd').value = c.workEnd ?? '19:00';
+  document.getElementById('calSlot').value = c.slotMinutes ?? 60;
+  document.getElementById('calBuffer').value = c.bufferMinutes ?? 30;
+  document.getElementById('calHorizon').value = c.horizonDays ?? 14;
+  document.getElementById('calLead').value = c.minLeadHours ?? 18;
+  document.getElementById('calIcs').checked = c.icsInPing !== false;
+  document.getElementById('calRemind').checked = c.remindEnabled !== false;
+  document.getElementById('calRemindMin').value = c.remindMinutes ?? 30;
+  const f = s.followups ?? { enabled: false, afterDays: 4, maxAgeDays: 14 };
+  document.getElementById('fuEnabled').checked = f.enabled;
+  document.getElementById('fuAfter').value = f.afterDays;
+  document.getElementById('fuMaxAge').value = f.maxAgeDays;
+  const h = s.hhInbox ?? { enabled: false, replyEnabled: false, intervalMinutes: 30, maxRepliesPerDay: 20 };
+  document.getElementById('hhEnabled').checked = h.enabled;
+  document.getElementById('hhReply').checked = h.replyEnabled;
+  document.getElementById('hhInterval').value = h.intervalMinutes;
+  document.getElementById('hhMaxReplies').value = h.maxRepliesPerDay;
+}
+
+function collectSecretarySettings() {
+  const n = (id) => Number(document.getElementById(id).value);
+  return {
+    secretary: { enabled: document.getElementById('secEnabled').checked },
+    calendar: {
+      slotsEnabled: document.getElementById('calSlots').checked,
+      timeZone: document.getElementById('calTz').value.trim(),
+      workDays: [...document.querySelectorAll('#calDays input:checked')].map((b) => Number(b.dataset.day)),
+      workStart: document.getElementById('calStart').value,
+      workEnd: document.getElementById('calEnd').value,
+      slotMinutes: n('calSlot'),
+      bufferMinutes: n('calBuffer'),
+      horizonDays: n('calHorizon'),
+      minLeadHours: n('calLead'),
+      icsInPing: document.getElementById('calIcs').checked,
+      remindEnabled: document.getElementById('calRemind').checked,
+      remindMinutes: n('calRemindMin'),
+    },
+    followups: { enabled: document.getElementById('fuEnabled').checked, afterDays: n('fuAfter'), maxAgeDays: n('fuMaxAge') },
+    hhInbox: {
+      enabled: document.getElementById('hhEnabled').checked,
+      replyEnabled: document.getElementById('hhReply').checked,
+      intervalMinutes: n('hhInterval'),
+      maxRepliesPerDay: n('hhMaxReplies'),
+    },
+  };
+}
+
+// Дожимы и ответы на hh.ru — необратимые действия: включаются через подтверждение,
+// выключение подтверждения не требует (как автоотклик).
+document.getElementById('fuEnabled').onchange = (e) => {
+  if (!e.target.checked) return;
+  const n = Number(document.getElementById('fuAfter').value) || 4;
+  if (!confirm(
+    'Разрешить дожимы?\n\n'
+    + 'Дожим уйдёт с аккаунта @HIRE_agent молчащему рекрутёру, отменить его нельзя. Один дожим на контакт; '
+    + 'лимит — общий с обычными сообщениями Telegram (40 в сутки). Молчание — ' + n + ' дн. и больше. '
+    + 'Отправляет только кнопка в разделе «Дожимы» вкладки «Диалоги».')) e.target.checked = false;
+};
+document.getElementById('hhReply').onchange = (e) => {
+  if (!e.target.checked) return;
+  if (!confirm(
+    'Разрешить ответы работодателям на hh.ru?\n\n'
+    + 'Чат отклика открывается без блокировки, поэтому работодатель увидит, что сообщения прочитаны. '
+    + 'Ответ уходит от твоего имени и необратим. Перед включением нужна проба чата: npm run hh:inbox -- --probe-chat. '
+    + 'Ответы работают только при включённом чтении ящика.')) e.target.checked = false;
+};
 
 // ----------------------------------------------------------------------------
 // Telegram: чаты, где искать (спека 4.4). Строка чата несёт всё, что нужно
@@ -1219,6 +1675,7 @@ function collectSettings() {
         document.getElementById('llmModelOther').value,
       ),
     },
+    ...collectSecretarySettings(),
   };
 }
 

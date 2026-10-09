@@ -206,7 +206,9 @@ npm run send      # отправить одобренное
 | `npm run status` | что сейчас в очереди |
 | `npm run letters` | дописать письма у строк, где они пустые |
 | `npm run login` | окно логина на hh.ru (или `careerist` аргументом) |
-| `npm run bot` | Telegram-бот-приёмник |
+| `npm run bot` | Telegram-бот-приёмник; с `bot.secretary` в `config.json` отвечает и в личке рабочего аккаунта (секретарь) |
+| `npm run followups` | дожимы молчащим рекрутёрам: список, `-- prepare`, `-- send` (тумблер в настройках, по умолчанию выключен) |
+| `npm run hh:inbox` | проверка ящика откликов hh.ru, только чтение; `-- --probe` / `-- --probe-chat` — разведка чата |
 | `npm run tg:login` | вход в Telegram как пользователь (поиск по каналам) |
 | `npm test` | тесты |
 | `npm run typecheck` | проверка типов |

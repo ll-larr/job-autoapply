@@ -20,7 +20,8 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { Queue, type Status } from './core/queue.js';
 import {
-  loadConfig, resolveBotConfig, resolveGigarecruiterConfig, type Config, type GigarecruiterConfig,
+  loadConfig, resolveBotConfig, resolveSecretaryConfig, resolveGigarecruiterConfig, DEFAULT_SECRETARY,
+  type Config, type GigarecruiterConfig,
 } from './core/config.js';
 import { runInterview, openWindow, log as logInterview } from './core/interview-runner.js';
 import {
@@ -29,7 +30,8 @@ import {
 import type { Vacancy } from './core/vacancy.js';
 import { runSearch, type SearchReport, type SearchQuery } from './pipeline.js';
 import {
-  loadSettings, seedSettings, saveSettings, validateSettings, enabledSpecialties, SETTINGS_PATH, type Settings,
+  loadSettings, seedSettings, saveSettings, validateSettings, mergeMissingSections, enabledSpecialties, SETTINGS_PATH,
+  type Settings,
 } from './core/settings.js';
 import type { Specialty } from './core/specialty.js';
 import { DEFAULT_SPECIALTY } from './core/specialty-defaults.js';
@@ -50,7 +52,21 @@ import type { Adapter } from './adapters/types.js';
 import { extractPdfText, refreshResumeCache, resumeTextFor } from './core/resume.js';
 import { suggestSpecialty } from './core/suggest.js';
 import { autoApproveAfterSearch, type AutoSkipReason } from './core/autoapply.js';
-import { runBot, makeReadFile } from './bot/run.js';
+import { runBot, makeReadFile, performAction, type RunBotOptions } from './bot/run.js';
+import { SecretaryRuntime } from './bot/secretary-run.js';
+import { handleSecretary, type SecretaryDeps } from './bot/secretary.js';
+import {
+  playwrightHhSession, checkHhInbox, probeHhInbox, hhStatus, hhCheckDue, lastHhReport, formatHhReport, formatHhProbe,
+  type HhInboxDeps,
+} from './hh/inbox.js';
+import { sharedProfile, closeSharedProfile } from './browser.js';
+import { generateSecretaryReply } from './bot/secretary-prompt.js';
+import { ChatMemory } from './bot/memory.js';
+import { readFacts } from './core/facts.js';
+import { Dialogs } from './core/dialogs.js';
+import {
+  FollowupStore, generateFollowupText, prepareFollowups, runFollowups, type RunFollowupsDeps,
+} from './core/followups.js';
 import { BotStore } from './bot/state.js';
 import { generateReply } from './bot/reply.js';
 import { fetchLinkText, needsBrowser } from './bot/intake.js';
@@ -60,7 +76,7 @@ import { BotApi } from './bot/api.js';
 import { TelegramAdapter } from './adapters/telegram.js';
 import { openTelegram, type OpenResult } from './telegram/gramjs.js';
 import { classifyTgError, describeTgFailure } from './telegram/errors.js';
-import type { TgReader, TgSender } from './telegram/types.js';
+import type { TgHistory, TgReader, TgSender } from './telegram/types.js';
 
 // 500 — число, которое пользователь выбрал 2026-08-30 сам, разобрав первую
 // живую очередь. С 2026-08-30 оно означает ЦЕЛЬ, а не потолок просмотра:
@@ -409,6 +425,8 @@ export function formatStatusReport(
 export interface TelegramSession {
   reader(): Promise<TgReader | { error: string }>;
   sender(): Promise<TgSender | { error: string }>;
+  /** Чтение личной переписки: дожим сверяется с ней перед отправкой. */
+  history(): Promise<TgHistory | { error: string }>;
   close(): Promise<void>;
 }
 
@@ -430,6 +448,7 @@ export function lazyTelegram(open: () => Promise<OpenResult> = () => openTelegra
   return {
     async reader() { const r = await get(); return r.ok ? r.reader : { error: r.message }; },
     async sender() { const r = await get(); return r.ok ? r.sender : { error: r.message }; },
+    async history() { const r = await get(); return r.ok ? r.history : { error: r.message }; },
     async close() {
       const p = pending;
       pending = null;
@@ -775,6 +794,84 @@ export function gigarecruiterOnSent(
   };
 }
 
+/** Зависимости отправки дожимов — общие для панели и команды `followups`. */
+function followupRunDeps(
+  config: Config, queue: Queue, store: FollowupStore, dialogs: Dialogs, tg: TelegramSession,
+  stopRequested: () => boolean, log: (line: string) => void,
+): RunFollowupsDeps {
+  return {
+    store,
+    queue,
+    settings: () => currentSettings(config),
+    // Нет записи throttle.tg — отказ (fail closed): без лимита дожимы не уходят.
+    throttle: config.throttle['tg'],
+    sender: () => tg.sender(),
+    history: () => tg.history(),
+    dialogs,
+    stopRequested,
+    now: () => Date.now(),
+    sleep: (ms) => new Promise((done) => { setTimeout(done, ms); }),
+    random: Math.random,
+    log,
+  };
+}
+
+/** Мозг ответов hh живёт столько же, сколько процесс: память диалога не теряется между проходами. */
+let hhBrain: HhInboxDeps['brain'];
+
+/**
+ * Зависимости проверки ящика откликов hh.ru — общие для панели и команды `hh-inbox`.
+ * Мозг ответов собирается лениво, по первой надобности: пока ответы выключены,
+ * ни BotStore, ни память диалогов не создаются. Настройки и проба решают, дойдёт ли до него дело.
+ */
+function hhInboxDeps(
+  config: Config, queue: Queue, dialogs: Dialogs, stopRequested: () => boolean, log: (line: string) => void,
+): HhInboxDeps {
+  const lazyBrain: NonNullable<HhInboxDeps['brain']> = (input) => {
+    if (hhBrain === undefined) {
+      const bot = resolveBotConfig(config);
+      const sec = resolveSecretaryConfig(config);
+      const sc = sec !== null && sec.ok ? sec.value : { ...DEFAULT_SECRETARY, account: '' };
+      const mainSpecialty = (): Specialty => primaryResumeSpecialty(currentSettings(config));
+      const deps: SecretaryDeps = {
+        store: new BotStore(DB_PATH),
+        queue,
+        settings: () => currentSettings(config),
+        limits: bot.limits,
+        profile: bot.profile,
+        salaryExpectation: config.salaryExpectation ?? 'готов обсудить на собеседовании',
+        resume: () => resumeTextFor(mainSpecialty()),
+        askModel: (messages) => generateReply(messages, { models: bot.models }),
+        readLink: (url) => (needsBrowser(url) ? readVacancyPage(url) : fetchLinkText(url)),
+        // В чатах hh файлов нет: сюда мозг не дойдёт, input.document всегда null.
+        readFile: async () => { throw new Error('в чатах hh.ru файлы не читаются'); },
+        now: () => new Date(),
+        secretary: sc,
+        memory: new ChatMemory({ turns: sc.memoryTurns, ttlMs: sc.memoryTtlMinutes * 60_000 }),
+        facts: () => readFacts(),
+        dialogs,
+        askSecretary: (messages, check) => generateSecretaryReply(messages, { models: bot.models }, check),
+        typing: async () => {},
+        role: () => mainSpecialty().name,
+      };
+      hhBrain = (i) => handleSecretary(i, deps);
+    }
+    return hhBrain(input);
+  };
+  return {
+    session: playwrightHhSession(sharedProfile),
+    dialogs,
+    queue,
+    settings: () => currentSettings(config),
+    now: () => Date.now(),
+    sleep: (ms) => new Promise((done) => { setTimeout(done, ms); }),
+    random: Math.random,
+    log,
+    brain: lazyBrain,
+    stopRequested,
+  };
+}
+
 async function reportProxy(): Promise<void> {
   const d = await proxyResolver.get();
   const lines = formatProxyReport(d);
@@ -866,10 +963,37 @@ async function main(): Promise<void> {
     // обращению (поиск с чатами, выбор чатов, отправка Telegram-строк).
     const tg = lazyTelegram();
     const adapters = buildAdapters({ queue, settings: () => currentSettings(config), session: tg }, config);
+    const dialogs = new Dialogs(DB_PATH);
+    const followupStore = new FollowupStore(DB_PATH);
     try {
       await startPanel(queue, PANEL_PORT, {
         adapters,
         config,
+        followups: {
+          enabled: () => currentSettings(config).followups.enabled,
+          waiting: () => followupStore.candidates(Date.now(), currentSettings(config).followups).length,
+          list: () => followupStore.list(),
+          prepare: () => prepareFollowups({
+            store: followupStore,
+            settings: () => currentSettings(config),
+            now: () => Date.now(),
+            generate: (title, days) => generateFollowupText(title, days, { models: config.letterModels }),
+          }),
+          send: (ids, stop) => runFollowups(
+            ids,
+            followupRunDeps(config, queue, followupStore, dialogs, tg, () => stop() || isStopRequested(), (line) => console.error(line)),
+          ),
+          setText: (id, text) => (followupStore.setText(id, text) ? 'ok' : 'not_draft'),
+          cancel: (id) => followupStore.cancel(id, 'вручную'),
+        },
+        dialogs: {
+          snapshot: (now) => ({ dialogs: dialogs.list(now), funnel: dialogs.funnel(now), active: dialogs.activeCount(now) }),
+        },
+        hh: {
+          status: () => hhStatus(dialogs, currentSettings(config).hhInbox, Date.now()),
+          due: (now) => hhCheckDue(currentSettings(config).hhInbox, lastHhReport(dialogs)?.at ?? null, now),
+          check: (stop) => checkHhInbox(hhInboxDeps(config, queue, dialogs, () => stop() || isStopRequested(), (line) => console.error(line))),
+        },
         // Отправка из панели — тот же отклик, что и `npm run send` (I2).
         onSent: gigarecruiterOnSent(config),
         telegram: {
@@ -898,7 +1022,8 @@ async function main(): Promise<void> {
         settings: {
           get: () => currentSettings(config),
           save: async (raw) => {
-            const checked = validateSettings(raw);
+            // Страница, открытая до обновления, не знает новых разделов: недостающие берём из текущих.
+            const checked = validateSettings(mergeMissingSections(currentSettings(config), raw));
             if (!checked.ok) return checked;
             // PDF проверяется до записи: сохранённая специальность с битым
             // резюме молча писала бы письма по резюме БА (спека 3.8).
@@ -1155,17 +1280,138 @@ async function main(): Promise<void> {
       stop = true;
     });
     console.log(`бот запущен${owner === null ? ' (TG_OWNER_CHAT_ID не задан — пинги пока некуда слать)' : ''}`);
-    try {
-      await runBot({
+
+    const runOpts: RunBotOptions = {
+      api,
+      store,
+      deps,
+      ownerChatId: owner !== null && Number.isFinite(owner) ? owner : null,
+      log: (line) => console.log(line),
+      resumePdf: () => mainSpecialty().resumePdf,
+      stopRequested: () => stop,
+      // .ics к пингу и напоминание берут настройки на каждый круг: правка в панели действует сразу.
+      calendar: () => currentSettings(config).calendar,
+    };
+
+    // Секретарь (спека 2026-10-09): отвечает в личке подключённого аккаунта.
+    // Кривой блок не роняет бота — он стартует без секретаря и называет причину.
+    const secretaryConfig = resolveSecretaryConfig(config);
+    if (secretaryConfig !== null && !secretaryConfig.ok) {
+      console.error(`секретарь выключен: ${secretaryConfig.error}`);
+    } else if (secretaryConfig !== null) {
+      const sc = secretaryConfig.value;
+      const dialogs = new Dialogs(DB_PATH);
+      const secretaryDeps: SecretaryDeps = {
+        ...deps,
+        secretary: sc,
+        memory: new ChatMemory({ turns: sc.memoryTurns, ttlMs: sc.memoryTtlMinutes * 60_000 }),
+        facts: () => readFacts(),
+        dialogs,
+        askSecretary: (messages, check) => generateSecretaryReply(messages, { models: bot.models }, check),
+        // «печатает…» привязывает к чату сам транспорт секретаря.
+        typing: async () => {},
+        role: () => mainSpecialty().name,
+      };
+      runOpts.secretary = new SecretaryRuntime({
         api,
         store,
-        deps,
-        ownerChatId: owner !== null && Number.isFinite(owner) ? owner : null,
+        deps: secretaryDeps,
+        perform: (action) => performAction(action, runOpts),
         log: (line) => console.log(line),
-        resumePdf: () => mainSpecialty().resumePdf,
-        stopRequested: () => stop,
       });
+    } else {
+      console.log('секретарь выключен: в config.json нет bot.secretary.account');
+    }
+
+    try {
+      await runBot(runOpts);
     } finally {
+      store.close();
+      queue.close();
+    }
+    return;
+  }
+
+  if (cmd === 'hh-inbox') {
+    // Ящик откликов hh.ru (спека 2026-10-09, 6.10). Без флагов — один проход чтения
+    // (ответы работодателям уходят только при включённом тумблере и свежей пробе чата).
+    // --probe — разведка с блокировкой записи; --probe-chat — открывает чат, как человек,
+    // и этим помечает сообщения прочитанными: запускать самому, не по расписанию.
+    const flag = rest.includes('--probe-chat') ? 'chat' : rest.includes('--probe') ? 'read' : null;
+    const config = loadConfig();
+    currentSettings(config);
+    const queue = new Queue(DB_PATH);
+    const dialogs = new Dialogs(DB_PATH);
+    try {
+      const deps = hhInboxDeps(config, queue, dialogs, () => isStopRequested(), (line) => console.error(line));
+      const lines = flag === null
+        ? formatHhReport(await checkHhInbox(deps))
+        : formatHhProbe(await probeHhInbox(deps, flag));
+      for (const line of lines) console.log(line);
+    } finally {
+      await closeSharedProfile();
+      dialogs.close();
+      queue.close();
+    }
+    return;
+  }
+
+  if (cmd === 'followups') {
+    // Дожимы (спека 2026-10-09, 6.9). Без аргументов — только список: кому пора и
+    // какие черновики есть, ничего не отправляется. `prepare` пишет тексты,
+    // `send [--id N]` отправляет черновики и только при включённом тумблере.
+    const config = loadConfig();
+    const settings = currentSettings(config);
+    const queue = new Queue(DB_PATH);
+    const store = new FollowupStore(DB_PATH);
+    const dialogs = new Dialogs(DB_PATH);
+    const tg = lazyTelegram();
+    try {
+      const sub = rest[0];
+      if (sub === undefined) {
+        const waiting = store.candidates(Date.now(), settings.followups);
+        const drafts = store.drafts();
+        console.log(`Дожимы: ${settings.followups.enabled ? 'ВКЛЮЧЕНЫ' : 'выключены (включаются в настройках, без этого send отказывает)'}; `
+          + `молчание от ${settings.followups.afterDays} до ${settings.followups.maxAgeDays} дн.`);
+        console.log(`Ждут текста: ${waiting.length}`);
+        for (const c of waiting) console.log(`  @${c.contact} — «${c.title}», писали ${Math.floor((Date.now() - c.sentAt) / 86_400_000)} дн. назад`);
+        console.log(`Черновики: ${drafts.length}`);
+        for (const d of drafts) console.log(`  #${d.id} @${d.contact} (${d.textMode}): ${d.text}`);
+        return;
+      }
+      if (sub === 'prepare') {
+        const r = await prepareFollowups({
+          store, settings: () => settings, now: () => Date.now(),
+          generate: (title, days) => generateFollowupText(title, days, { models: config.letterModels }),
+        });
+        console.log(`Подготовлено черновиков: ${r.created} (моделью — ${r.fromModel}, по шаблону — ${r.fromTemplate}).`);
+        return;
+      }
+      if (sub === 'send') {
+        const at = rest.indexOf('--id');
+        const id = at === -1 ? NaN : Number(rest[at + 1]);
+        const ids: number[] | 'all' = at === -1 ? 'all' : Number.isInteger(id) ? [id] : [];
+        if (at !== -1 && ids.length === 0) {
+          console.error('После --id нужен номер черновика: npm run followups -- send --id 3');
+          process.exitCode = 1;
+          return;
+        }
+        const count = ids === 'all' ? store.drafts().length : ids.length;
+        console.log(`Сейчас уйдёт ${count} дожим(ов) с аккаунта рабочей сессии Telegram. Остановить — npm run stop.`);
+        clearStop();
+        const report = await runFollowups(ids, followupRunDeps(config, queue, store, dialogs, tg, isStopRequested, (line) => console.log(line)));
+        console.log(`Отправлено: ${report.sent}, отменено: ${report.cancelled}, не ушло: ${report.failed}, пропущено: ${report.skipped}.`);
+        if (report.halted !== null) {
+          console.error(`Остановлено (${report.halted}): ${report.reason ?? ''}`);
+          process.exitCode = 1;
+        }
+        return;
+      }
+      console.error('Использование: npm run followups [-- prepare | -- send [--id N]]');
+      process.exitCode = 1;
+    } finally {
+      await tg.close();
+      dialogs.close();
       store.close();
       queue.close();
     }
@@ -1208,7 +1454,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.error('Команды: search [запрос] [--specialty "название"] | panel | send | bot | interview [--window] | stop | status');
+  console.error('Команды: search [запрос] [--specialty "название"] | panel | send | bot | interview [--window] | followups [prepare | send] | hh-inbox [--probe | --probe-chat] | stop | status');
   process.exitCode = 1;
 }
 

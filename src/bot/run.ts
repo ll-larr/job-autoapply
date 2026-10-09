@@ -4,8 +4,11 @@ import { randomUUID } from 'node:crypto';
 import type { BotApi, ApiFailure } from './api.js';
 import type { BotStore } from './state.js';
 import { handleMessage, type BotAction, type HandlerDeps } from './handlers.js';
-import { TEXTS } from './texts.js';
-import { meetingPing, type MeetingPing } from './ping.js';
+import { TEXTS, SECRETARY_TEXTS } from './texts.js';
+import type { SecretaryRuntime } from './secretary-run.js';
+import { meetingPing, reminderPing, type MeetingPing } from './ping.js';
+import { meetingIcs } from './ics.js';
+import type { CalendarSettings } from '../core/settings.js';
 import { MAX_FILE_BYTES, isObviouslyUnsupported, sniffFileKind } from './intake.js';
 import { extractFileText } from './extract.js';
 import type { TgBotDocument } from './types.js';
@@ -37,6 +40,13 @@ export interface RunBotOptions {
   /** Пауза между кругами (в бою её задаёт long polling, в тестах — 0). */
   sleep?: (ms: number) => Promise<void>;
   stopRequested?: () => boolean;
+  /** Секретарь в личке подключённого аккаунта (спека 2026-10-09). Нет — бот работает только в своём чате. */
+  secretary?: SecretaryRuntime;
+  /**
+   * Настройки календаря на момент вызова. Нет — пинги идут как раньше: без файла
+   * .ics и без напоминаний (так работают прежние тесты и бот без календаря).
+   */
+  calendar?: () => CalendarSettings | null;
 }
 
 const wait = (ms: number): Promise<void> => new Promise((r) => { setTimeout(r, ms); });
@@ -100,6 +110,18 @@ export async function runBot(opts: RunBotOptions): Promise<void> {
     return;
   }
 
+  if (opts.secretary !== undefined) {
+    const me = await api.getMe();
+    if (me.ok && me.value.can_connect_to_business !== true) {
+      log('секретарь: у бота выключен Secretary Mode — включи его у @BotFather (Bot Settings → Business Mode)');
+    }
+    log(`секретарь включён для аккаунта @${opts.secretary.account}`);
+    if (!store.hasConnectionOf(opts.secretary.account)) {
+      log(`секретарь: подключения пока не видел — Telegram → Настройки → Telegram для бизнеса / Chat Automation → Чат-боты → этот бот. `
+        + 'Если уже подключён, бот узнает о нём с первым сообщением.');
+    }
+  }
+
   let offset = Number(store.kvGet('offset') ?? 0);
   let backoff = BACKOFF_START_MS;
   let idleRounds = 0;
@@ -124,11 +146,14 @@ export async function runBot(opts: RunBotOptions): Promise<void> {
 
   for (;;) {
     if (stopRequested()) {
+      // Накопленные сообщения секретаря не выбрасываем: рекрутёр уже их написал.
+      await opts.secretary?.flushDue(true);
       log('остановка по запросу — текущая пачка обработана');
       return;
     }
 
-    const updates = await api.getUpdates(offset);
+    // Секретарь держит long polling недолго, когда ждёт окончания пачки: ответ не должен засидеться.
+    const updates = await api.getUpdates(offset, opts.secretary?.nextWaitS() ?? 30);
     if (!updates.ok) {
       const f = updates.failure;
       if (f.kind === 'auth') {
@@ -160,6 +185,23 @@ export async function runBot(opts: RunBotOptions): Promise<void> {
 
     for (const update of batch) {
       offset = Math.max(offset, update.update_id + 1);
+      if (update.business_connection !== undefined) {
+        opts.secretary?.onConnection(update.business_connection);
+        continue;
+      }
+      const business = update.business_message ?? update.edited_business_message;
+      if (business !== undefined) {
+        if (opts.secretary === undefined) {
+          warnOnce('пришло сообщение секретаря, но секретарь выключен: добавь bot.secretary.account в config.json');
+          continue;
+        }
+        try {
+          await opts.secretary.onMessage(business, update.business_message !== undefined ? 'new' : 'edit');
+        } catch (e) {
+          log(`секретарь: ${e instanceof Error ? e.message : String(e)}`);
+        }
+        continue;
+      }
       const message = update.message;
       if (message === undefined) continue;
       if (opts.ownerChatId === null) {
@@ -179,48 +221,70 @@ export async function runBot(opts: RunBotOptions): Promise<void> {
     // последнее сообщение, но не потеряем его.
     store.kvSet('offset', String(offset));
 
+    try {
+      await opts.secretary?.flushDue();
+    } catch (e) {
+      log(`секретарь: ${e instanceof Error ? e.message : String(e)}`);
+    }
     await notifyMeetings(opts, warnOnce);
+    await notifyReminders(opts);
 
     if (opts.stopAfterIdleRounds !== undefined && idleRounds >= opts.stopAfterIdleRounds) return;
   }
 }
 
-async function perform(action: BotAction, opts: RunBotOptions): Promise<void> {
-  const { api, store, log } = opts;
+/**
+ * Одно действие в Telegram. Отказ возвращается, а не только пишется в лог:
+ * секретарь отличает «окно 24 часа закрыто» (штатно) от сбоя сети (повтор).
+ * businessConnectionId — ответ уходит в чат подключённого аккаунта, без клавиатуры.
+ */
+export async function performAction(action: BotAction, opts: RunBotOptions): Promise<ApiFailure | null> {
+  const business = action.businessConnectionId;
   if (action.kind === 'text') {
-    const r = await api.sendMessage(action.chatId, action.text, { keyboard: action.keyboard === true });
-    if (!r.ok) log(`не отправилось в чат ${action.chatId}: ${describe(r.failure)}`);
-    return;
+    const r = await opts.api.sendMessage(
+      action.chatId, action.text,
+      business === undefined ? { keyboard: action.keyboard === true } : { businessConnectionId: business },
+    );
+    return r.ok ? null : r.failure;
   }
-  await sendCv(action.chatId, opts);
-  void store;
+  return sendCv(action.chatId, opts, business);
+}
+
+async function perform(action: BotAction, opts: RunBotOptions): Promise<void> {
+  const failure = await performAction(action, opts);
+  if (failure !== null) opts.log(`не отправилось в чат ${action.chatId}: ${describe(failure)}`);
 }
 
 /**
  * Резюме отправляется один раз файлом, дальше — по file_id, который Telegram
  * вернул. Ключ кеша содержит mtime PDF: обновил резюме — уйдёт новое.
  */
-async function sendCv(chatId: number, opts: RunBotOptions): Promise<void> {
+async function sendCv(chatId: number, opts: RunBotOptions, business?: string): Promise<ApiFailure | null> {
   const { api, store, log } = opts;
   const path = opts.resumePdf?.() ?? null;
-  if (path === null || !existsSync(path)) {
-    await api.sendMessage(chatId, TEXTS.cvMissing(opts.deps.profile.telegram));
-    return;
-  }
+  // В личке секретаря «напишите кандидату напрямую — @аккаунт» бессмысленно: рекрутёр уже в этом чате.
+  const missing = business === undefined ? TEXTS.cvMissing(opts.deps.profile.telegram) : SECRETARY_TEXTS.cvMissing;
+  const say = async (text: string): Promise<ApiFailure | null> => {
+    const r = await api.sendMessage(chatId, text, business === undefined ? {} : { businessConnectionId: business });
+    return r.ok ? null : r.failure;
+  };
+  if (path === null || !existsSync(path)) return say(missing);
   const key = `cv:${Math.round(statSync(path).mtimeMs)}`;
   const cached = store.kvGet(key);
   if (cached !== null) {
-    const byId = await api.sendDocumentByFileId(chatId, cached, TEXTS.cvCaption);
-    if (byId.ok) return;
+    const byId = await api.sendDocumentByFileId(chatId, cached, TEXTS.cvCaption, business);
+    if (byId.ok) return null;
+    if (byId.failure.kind === 'business') return byId.failure;
     log(`file_id резюме не сработал (${describe(byId.failure)}) — шлю файлом`);
   }
-  const sent = await api.sendDocumentByPath(chatId, path, basename(path), TEXTS.cvCaption);
+  const sent = await api.sendDocumentByPath(chatId, path, basename(path), TEXTS.cvCaption, business);
   if (!sent.ok) {
+    if (sent.failure.kind === 'business') return sent.failure;
     log(`резюме не отправилось: ${describe(sent.failure)}`);
-    await api.sendMessage(chatId, TEXTS.cvMissing(opts.deps.profile.telegram));
-    return;
+    return say(missing);
   }
   if (sent.value !== '') store.kvSet(key, sent.value);
+  return null;
 }
 
 /**
@@ -240,9 +304,43 @@ async function notifyMeetings(opts: RunBotOptions, warn: (line: string) => void)
   for (const m of pending) {
     // Строка по номеру в любом статусе: к собеседованию вакансия часто уже skipped.
     const row = m.queueId === null ? null : deps.queue.byId(m.queueId);
-    const failure = await sendMeetingPing(api, opts.ownerChatId, meetingPing(m, row), log);
+    const previous = m.replacesId == null ? null : store.meetingById(m.replacesId);
+    const ping = meetingPing(m, row, { account: opts.secretary?.account ?? null, previous });
+    const cal = opts.calendar?.() ?? null;
+    if (cal !== null && cal.icsInPing) {
+      ping.ics = meetingIcs(m, row, {
+        slotMinutes: cal.slotMinutes,
+        remindMinutes: cal.remindEnabled ? cal.remindMinutes : null,
+        account: opts.secretary?.account ?? null,
+        now: deps.now().getTime(),
+      });
+    }
+    const failure = await sendMeetingPing(api, opts.ownerChatId, ping, log);
     if (failure === null) store.markMeetingNotified(m.id, Date.now());
     else log(`пинг о собеседовании не ушёл: ${describe(failure)} — повторю`);
+  }
+}
+
+/**
+ * Напоминания о собеседованиях (спека 6.8). Если встречу записали меньше чем за
+ * remindMinutes+10 минут до её начала, основной пинг пришёл только что, и
+ * напоминание было бы вторым подряд: запись просто помечается. Не ушло —
+ * повторяется на следующем круге, пока встреча не наступила.
+ */
+async function notifyReminders(opts: RunBotOptions): Promise<void> {
+  const cal = opts.calendar?.() ?? null;
+  if (cal === null || !cal.remindEnabled || opts.ownerChatId === null) return;
+  const { api, store, deps, log } = opts;
+  const now = deps.now().getTime();
+  for (const m of store.dueReminders(now, cal.remindMinutes)) {
+    if (m.meetAt - m.createdAt < (cal.remindMinutes + 10) * 60_000) {
+      store.markReminded(m.id, m.createdAt);
+      continue;
+    }
+    const row = m.queueId === null ? null : deps.queue.byId(m.queueId);
+    const msg = await api.sendMessage(opts.ownerChatId, reminderPing(m, row, now, { account: opts.secretary?.account ?? null }));
+    if (msg.ok) store.markReminded(m.id, now);
+    else log(`напоминание о собеседовании не ушло: ${describe(msg.failure)} — повторю`);
   }
 }
 
@@ -255,6 +353,19 @@ async function notifyMeetings(opts: RunBotOptions, warn: (line: string) => void)
 async function sendMeetingPing(
   api: BotApi, chatId: number, ping: MeetingPing, log: (line: string) => void,
 ): Promise<ApiFailure | null> {
+  // Вакансия и календарь приходят одним альбомом — одно уведомление. Не вышло —
+  // прежний путь: договорённость важнее вложений.
+  if (ping.ics != null && ping.file !== null) {
+    const album = await api.sendDocumentsFromText(chatId, [ping.file, ping.ics], ping.text);
+    if (album.ok) return null;
+    log(`альбом с вакансией и .ics к пингу не ушёл: ${describe(album.failure)} — шлю по одному`);
+  } else if (ping.ics != null) {
+    const doc = await api.sendDocumentFromText(chatId, ping.ics.name, ping.ics.content, ping.text);
+    if (doc.ok) return null;
+    log(`.ics к пингу не ушёл: ${describe(doc.failure)} — шлю пинг без файла`);
+    const msg = await api.sendMessage(chatId, ping.text);
+    return msg.ok ? null : msg.failure;
+  }
   if (ping.file !== null) {
     const doc = await api.sendDocumentFromText(chatId, ping.file.name, ping.file.content, ping.text);
     if (doc.ok) return null;
