@@ -150,19 +150,47 @@ export async function selectResume(page: Page, title: string): Promise<'already'
   return 'not_found';
 }
 
-/** Кладёт письмо в поле формы. false — поля так и не появилось. */
-export async function fillModalLetter(page: Page, letter: string): Promise<boolean> {
+/**
+ * Сколько раз пробуем раскрыть поле письма и сколько ждём его после каждого клика.
+ * Снято живьём 2026-10-09 при заблокированной записи (форма вакансии 133032777, и тот же
+ * сбой был на настоящем отклике 138262755): форма видна, но первый клик по
+ * переключателю она глотает, поле не появляется, а второй клик срабатывает сразу.
+ * Одна попытка с ожиданием 5 секунд сдавалась, письмо шло запасным путём в чат, и
+ * отклик значился «No cover letter».
+ */
+const LETTER_OPEN_ATTEMPTS = 3;
+const LETTER_OPEN_WAIT_MS = 2500;
+
+/**
+ * Кладёт письмо в поле формы. false — поля так и не появилось, письмо уйдёт запасным
+ * путём. Не бросает: форма, у которой переключатель письма перерисовывается без конца
+ * (снято живьём 2026-10-09: «element was detached from the DOM», клик висел 30 секунд),
+ * не должна ронять всю заявку из-за второстепенного поля.
+ */
+export async function fillModalLetter(
+  page: Page,
+  letter: string,
+  timing: { attempts: number; waitMs: number } = { attempts: LETTER_OPEN_ATTEMPTS, waitMs: LETTER_OPEN_WAIT_MS },
+): Promise<boolean> {
   const input = page.locator(LETTER_INPUT).first();
-  if (!(await input.isVisible().catch(() => false))) {
+  for (let attempt = 0; attempt < timing.attempts; attempt++) {
+    // Поле могло открыться само (медленная отрисовка после прошлого клика): второй
+    // клик по переключателю тогда мог бы его скрыть.
+    if (await input.isVisible().catch(() => false)) break;
     const toggle = page.locator(LETTER_TOGGLE).first();
-    if ((await toggle.count()) === 0) return false;
-    await toggle.click();
-    try {
-      await input.waitFor({ state: 'visible', timeout: 5000 });
-    } catch {
-      return false;
+    if ((await toggle.count()) === 0) {
+      // Переключателя нет вовсе. На первой попытке это «письма в этой форме нет»;
+      // позже — переключатель сменился полем, дадим ему показаться.
+      if (attempt === 0) return false;
+      await input.waitFor({ state: 'visible', timeout: timing.waitMs }).catch(() => {});
+      break;
     }
+    // Клик ограничен тем же временем, что и ожидание поля: стандартные 30 секунд на
+    // «стабильный» элемент здесь не нужны, неудавшийся клик — просто неудавшаяся попытка.
+    await toggle.click({ timeout: timing.waitMs }).catch(() => {});
+    if (await input.waitFor({ state: 'visible', timeout: timing.waitMs }).then(() => true, () => false)) break;
   }
+  if (!(await input.isVisible().catch(() => false))) return false;
   await input.fill(letter);
   return (await input.inputValue().catch(() => '')) === letter;
 }

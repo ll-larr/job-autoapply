@@ -798,6 +798,92 @@ describe('окно отклика — разбор снятой разметки
       await context.close();
     }
   });
+
+  /**
+   * Переключатель письма, как его ведёт живая форма (2026-10-09, вакансии
+   * 133032777 и 138262755): `swallow` первых кликов страница игнорирует, потом
+   * поле появляется через `delayMs`. Счётчик кликов лежит в window.__clicks.
+   */
+  function letterToggleHtml(swallow: number, delayMs = 0): string {
+    return `<body><div id="form"><div data-qa="vacancy-response-letter-toggle">Covering letter Add</div></div>
+<script>
+  window.__clicks = 0;
+  document.querySelector('[data-qa="vacancy-response-letter-toggle"]').addEventListener('click', () => {
+    window.__clicks++;
+    if (window.__clicks <= ${swallow}) return;
+    setTimeout(() => {
+      const t = document.createElement('textarea');
+      t.setAttribute('data-qa', 'vacancy-response-popup-form-letter-input');
+      document.getElementById('form').appendChild(t);
+    }, ${delayMs});
+  });
+</script></body>`;
+  }
+
+  it('fillModalLetter: первый клик по переключателю проглочен — второй раскрывает поле', async () => {
+    const { context, page } = await pageWithContent(letterToggleHtml(1));
+    try {
+      expect(await fillModalLetter(page, 'Письмо после второго клика')).toBe(true);
+      expect(await page.locator('[data-qa="vacancy-response-popup-form-letter-input"]').inputValue()).toBe('Письмо после второго клика');
+      expect(await page.evaluate('window.__clicks')).toBe(2);
+    } finally {
+      await context.close();
+    }
+  }, 20_000);
+
+  it('fillModalLetter: поле появилось с задержкой после клика — второго клика нет, чтобы не скрыть его', async () => {
+    const { context, page } = await pageWithContent(letterToggleHtml(0, 1200));
+    try {
+      expect(await fillModalLetter(page, 'Письмо')).toBe(true);
+      expect(await page.evaluate('window.__clicks')).toBe(1);
+    } finally {
+      await context.close();
+    }
+  }, 20_000);
+
+  it('fillModalLetter: поле так и не раскрылось — false после всех попыток, не вечное ожидание', async () => {
+    const { context, page } = await pageWithContent(letterToggleHtml(99));
+    try {
+      expect(await fillModalLetter(page, 'Письмо', { attempts: 3, waitMs: 300 })).toBe(false);
+      expect(await page.evaluate('window.__clicks')).toBe(3);
+    } finally {
+      await context.close();
+    }
+  }, 20_000);
+
+  it('fillModalLetter: переключатель перерисовывается без конца — клик не виснет на 30 с и не бросает, итог false', async () => {
+    // Живой случай 2026-10-09: «element was detached from the DOM, retrying», click() ждал
+    // стабильный элемент весь стандартный таймаут и бросал, роняя заявку из-за письма.
+    const { context, page } = await pageWithContent(`<body><div id="form"></div>
+<script>
+  const make = () => {
+    const d = document.createElement('div');
+    d.setAttribute('data-qa', 'vacancy-response-letter-toggle');
+    d.textContent = 'Covering letter Add';
+    return d;
+  };
+  document.getElementById('form').appendChild(make());
+  setInterval(() => { const f = document.getElementById('form'); f.replaceChildren(make()); }, 5);
+</script></body>`);
+    try {
+      const started = Date.now();
+      expect(await fillModalLetter(page, 'Письмо', { attempts: 2, waitMs: 400 })).toBe(false);
+      expect(Date.now() - started).toBeLessThan(8000);
+    } finally {
+      await context.close();
+    }
+  }, 20_000);
+
+  it('fillModalLetter: в форме нет ни поля, ни переключателя — false сразу', async () => {
+    const { context, page } = await pageWithContent('<body><form></form></body>');
+    try {
+      const started = Date.now();
+      expect(await fillModalLetter(page, 'Письмо')).toBe(false);
+      expect(Date.now() - started).toBeLessThan(1500);
+    } finally {
+      await context.close();
+    }
+  });
 });
 
 /**
