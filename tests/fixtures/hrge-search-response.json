@@ -1,0 +1,190 @@
+{
+  "success": true,
+  "data": {
+    "announcements": {
+      "items": [
+        {
+          "announcementId": 490990,
+          "customerId": 20871,
+          "customerName": "ჩემი წიგნი",
+          "isAnonymous": false,
+          "isVerified": false,
+          "customerUrl": "www.facebook.com/Chemitsigni/",
+          "isWithLogo": true,
+          "logoFilename": "https://d1hedpmorgly0j.cloudfront.net/announcementfiles/490990/7b8ba0c8-23f8-4590-a396-6844acafb9ff.png",
+          "title": "გაყიდვების ამბასადორი",
+          "publishDate": "2026-08-27T16:20:44.143",
+          "renewalDate": null,
+          "deadlineDate": "2026-09-25T23:59:00",
+          "locations": [
+            "თბილისი"
+          ],
+          "extendedLocations": [
+            {
+              "announcementId": 490990,
+              "announcementExtendedLocationParts": [
+                {
+                  "id": "64f52ac94e1e50078bf4246a",
+                  "parentId": "64f52ac94e1e50078bf42469",
+                  "status": 1,
+                  "type": 6,
+                  "name": "თბილისი",
+                  "visible": true
+                }
+              ],
+              "isWithHiddenLocation": true,
+              "isWithInCompleteLocation": true
+            }
+          ],
+          "isSalaryAvailable": true,
+          "isContactPhoneAvailable": false,
+          "employmentForm": 0,
+          "applicationMethod": 2,
+          "module": null,
+          "listingSection": -1,
+          "isPreview": false,
+          "detailsProviderWebsite": {
+            "providerWebsiteId": 1,
+            "indexNumber": 2,
+            "name": "HR.ge",
+            "displayName": "hr.ge",
+            "isExternal": false,
+            "url": "https://www.hr.ge",
+            "logoFileName": "hr.png",
+            "isActive": true,
+            "launchYear": 2006,
+            "isMain": true,
+            "createDate": "2017-12-20T19:06:21.38",
+            "isCategorized": false,
+            "isAnnouncementProvider": true,
+            "isCvProvider": true,
+            "isCvBoxProvider": true,
+            "isRegistrable": true,
+            "isPreferred": false,
+            "occupationCategories": null,
+            "id": 1
+          },
+          "publishStatus": 3,
+          "frameType": null,
+          "isWithFrame": false,
+          "baubleType": null,
+          "isWithBauble": false,
+          "decorationType": null,
+          "isWithDecoration": false,
+          "status": "აქტიური",
+          "isPriority": true,
+          "isFavorite": false,
+          "isBeenApplied": false,
+          "isInvited": false,
+          "isSuitableForStudent": false,
+          "isWorkFromHome": false,
+          "distributionChannelId": 1,
+          "isEventSpecific": false,
+          "eventId": 0,
+          "isWithBranding": false,
+          "announcementBrandingListColor": "",
+          "brandingAnnouncementTileTypeId": null,
+          "hasCustomerUrl": true
+        },
+        {
+          "announcementId": 490863,
+          "customerId": 58388,
+          "customerName": "დათ ლოჯისტიკის სერვის ჯგუფი",
+          "isAnonymous": false,
+          "isVerified": false,
+          "customerUrl": null,
+          "isWithLogo": false,
+          "logoFilename": null,
+          "title": "ინგლისურენოვანი გაყიდვების აგენტი",
+          "publishDate": "2026-08-27T15:18:06.27",
+          "renewalDate": null,
+          "deadlineDate": "2026-09-25T23:59:00",
+          "locations": [
+            "თბილისი"
+          ],
+          "extendedLocations": [
+            {
+              "announcementId": 490863,
+              "announcementExtendedLocationParts": [
+                {
+                  "id": "64f52ac94e1e50078bf4246a",
+                  "parentId": "64f52ac94e1e50078bf42469",
+                  "status": 1,
+                  "type": 6,
+                  "name": "თბილისი",
+                  "visible": true
+                }
+              ],
+              "isWithHiddenLocation": true,
+              "isWithInCompleteLocation": true
+            }
+          ],
+          "isSalaryAvailable": false,
+          "isContactPhoneAvailable": false,
+          "employmentForm": 0,
+          "applicationMethod": 2,
+          "module": null,
+          "listingSection": -1,
+          "isPreview": false,
+          "detailsProviderWebsite": {
+            "providerWebsiteId": 1,
+            "indexNumber": 2,
+            "name": "HR.ge",
+            "displayName": "hr.ge",
+            "isExternal": false,
+            "url": "https://www.hr.ge",
+            "logoFileName": "hr.png",
+            "isActive": true,
+            "launchYear": 2006,
+            "isMain": true,
+            "createDate": "2017-12-20T19:06:21.38",
+            "isCategorized": false,
+            "isAnnouncementProvider": true,
+            "isCvProvider": true,
+            "isCvBoxProvider": true,
+            "isRegistrable": true,
+            "isPreferred": false,
+            "occupationCategories": null,
+            "id": 1
+          },
+          "publishStatus": 3,
+          "frameType": null,
+          "isWithFrame": false,
+          "baubleType": null,
+          "isWithBauble": false,
+          "decorationType": null,
+          "isWithDecoration": false,
+          "status": "აქტიური",
+          "isPriority": true,
+          "isFavorite": false,
+          "isBeenApplied": false,
+          "isInvited": false,
+          "isSuitableForStudent": false,
+          "isWorkFromHome": false,
+          "distributionChannelId": 1,
+          "isEventSpecific": false,
+          "eventId": 0,
+          "isWithBranding": false,
+          "announcementBrandingListColor": "",
+          "brandingAnnouncementTileTypeId": null,
+          "hasCustomerUrl": false
+        }
+      ],
+      "totalCount": 3271
+    },
+    "metaData": {
+      "seoData": {
+        "title": "HR.ge: ვაკანსიები, CV-ების ბაზა",
+        "description": "დასაქმების ყველაზე დიდი საიტი საქართველოში - ეძებთ სამსახურს? ნახეთ ვაკანსიები | შექმენით CV | გამოიწერეთ ვაკანსიები ელ. ფოსტაზე | კომპანიებისთვის: განათავსეთ ვაკანსიები | მოძებნეთ კანდიდატების CV-ები/რეზიუმეები ონლაინ ბაზაში\n",
+        "keywords": "ვაკანსიები, ახალი ვაკანსიები, დასაქმება, დასაქმების სააგენტო, სამუშაო, სამსახური, სამუშაო ადგილები, ტრენინგები, ტენდერები, კარიერა, დისტანციური სამუშაო, ჰიბრიდული სამუშაო, ონლაინ სამუშაო, სპეციალობით ვაკანსიები, ინდუსტრიის ვაკანსიები, პროფესიული ვაკანსიები, სამუშაო საქართველოში, HR.ge  ვაკანსიები, vakansiebi, axali vakansiebi, dasakmeba, dasakmebis saagento, samushao, samsaxuri, samushao adgilebi, treningebi, tenderebi, kariera, distanciuri samushao, hibriiduli samushao, online samushao, specialobit vakansiebi, industriis vakansiebi, profesiuli vakansiebi, samushao saqartveloshi, HR.ge vakansiebi,vacancies, new vacancies, employment, recruitment agency, jobs, job opportunities, trainings, tenders, career, remote jobs, hybrid jobs, online jobs, vacancies by specialty, vacancies by industry, professional vacancies, jobs in Georgia, HR.ge jobs"
+      },
+      "openGraphData": {
+        "type": "website",
+        "title": "HR.ge: ვაკანსიები, CV-ების ბაზა",
+        "description": "დასაქმების ყველაზე დიდი საიტი საქართველოში - ეძებთ სამსახურს? ნახეთ ვაკანსიები | შექმენით CV | გამოიწერეთ ვაკანსიები ელ. ფოსტაზე | კომპანიებისთვის: განათავსეთ ვაკანსიები | მოძებნეთ კანდიდატების CV-ები/რეზიუმეები ონლაინ ბაზაში\n",
+        "image": "https://media.hr.ge/social-media/hr.png",
+        "isAvailable": true
+      }
+    }
+  }
+}

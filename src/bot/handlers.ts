@@ -1,0 +1,314 @@
+import type { TgBotDocument, TgBotMessage } from './types.js';
+import type { BotStore, ChatMode } from './state.js';
+import type { Specialty } from '../core/specialty.js';
+import type { Queue } from '../core/queue.js';
+import type { Settings } from '../core/settings.js';
+import type { BotLimits } from '../core/config.js';
+import type { ChatMessage } from '../core/openrouter.js';
+import type { ReplyResult } from './reply.js';
+import { TEXTS, BUTTONS } from './texts.js';
+import {
+  buildVacancy, assessVacancy, isFetchableLink, MAX_VACANCY_CHARS, MIN_VACANCY_CHARS,
+} from './intake.js';
+import { buildVacancyMessages, buildQuestionMessages } from './reply.js';
+import { parseMeetTime } from './meet.js';
+import { isVacancyPost, countVacancyMarkers } from '../telegram/parse.js';
+
+/**
+ * Вся логика бота: что ответить на сообщение и что записать. Функция не
+ * касается ни сети, ни файлов — всё внешнее приходит зависимостями, поэтому
+ * каждый сценарий (лимиты, страйки, режимы) проверяется тестом без единого
+ * запроса наружу.
+ */
+
+export type BotAction =
+  /** businessConnectionId — ответ уходит в чат подключённого аккаунта (секретарь), а не в чат с ботом. */
+  | { kind: 'text'; chatId: number; text: string; keyboard?: boolean; businessConnectionId?: string }
+  /** Отправить PDF резюме: путь и file_id знает транспорт (bot/run.ts). */
+  | { kind: 'cv'; chatId: number; businessConnectionId?: string };
+// Владельцу бот пишет только о назначенном собеседовании (решение 2026-10-05), и
+// этот пинг собирает цикл из bot_meetings (bot/run.ts), а не обработчик.
+
+export interface HandlerDeps {
+  store: BotStore;
+  queue: Queue;
+  settings: () => Settings;
+  limits: BotLimits;
+  profile: { github: string; telegram: string };
+  salaryExpectation: string;
+  resume: () => string;
+  askModel: (messages: ChatMessage[]) => Promise<ReplyResult>;
+  readLink: (url: string) => Promise<string | null>;
+  readFile: (doc: TgBotDocument) => Promise<
+    { ok: true; text: string } | { ok: false; reason: 'type' | 'size' | 'unreadable' }
+  >;
+  now: () => Date;
+}
+
+/** Сколько живёт режим ожидания вакансии или даты (спека 2026-09-20, 4). */
+export const MODE_TTL_MS = 30 * 60 * 1000;
+
+type Command = 'start' | 'cv' | 'profile' | 'add_vacancy' | 'set_meet';
+
+/** Команда и текст кнопки — один и тот же вход, поэтому и обработчик один. */
+function commandOf(text: string): Command | null {
+  const t = text.trim();
+  if (t === '/start') return 'start';
+  if (t === '/cv' || t === BUTTONS[0]) return 'cv';
+  if (t === '/profile' || t === BUTTONS[1]) return 'profile';
+  if (t === '/add_vacancy' || t === BUTTONS[2]) return 'add_vacancy';
+  if (t === '/set_meet' || t === BUTTONS[3]) return 'set_meet';
+  return null;
+}
+
+export function dayKey(now: Date): string {
+  const two = (n: number): string => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())}`;
+}
+
+function say(chatId: number, text: string, keyboard?: boolean): BotAction {
+  return keyboard === true ? { kind: 'text', chatId, text, keyboard: true } : { kind: 'text', chatId, text };
+}
+
+/** Первая ссылка, за которой имеет смысл сходить: площадка или онлайн-документ. */
+export function firstLink(text: string): string | null {
+  for (const url of text.match(/https?:\/\/\S+/g) ?? []) {
+    const clean = url.replace(/[),.;]+$/, '');
+    if (isFetchableLink(clean)) return clean;
+  }
+  return null;
+}
+
+/**
+ * Сообщение и есть вакансия, даже без /add_vacancy: рекрутёр кидает ссылку
+ * или текст, не читая инструкций. Живой прогон 2026-09-20: ссылка на hh без
+ * команды уходила в «свободный вопрос» и получала отказ «отвечаю только на
+ * вопросы по вакансиям» — ровно наоборот тому, чего человек ждал.
+ */
+export function looksLikeVacancy(text: string): boolean {
+  return firstLink(text) !== null || isVacancyPost(text);
+}
+
+function isNonText(m: TgBotMessage): boolean {
+  return m.photo !== undefined || m.voice !== undefined || m.video !== undefined
+    || m.sticker !== undefined || m.audio !== undefined;
+}
+
+export async function handleMessage(message: TgBotMessage, deps: HandlerDeps): Promise<BotAction[]> {
+  const chatId = message.chat.id;
+  const username = message.from?.username ?? null;
+  const now = deps.now();
+  const nowMs = now.getTime();
+  const day = dayKey(now);
+
+  const text = message.text ?? message.caption ?? '';
+  const command = commandOf(text);
+
+  const previous = deps.store.chat(chatId);
+  // Троттлинг считается по ПРОШЛОМУ сообщению, до записи нового времени.
+  // Кнопки и команды под него не попадают (решение владельца 2026-09-25): они
+  // не зовут модель, а человек у клавиатуры жмёт их быстрее раза в 1,5 с —
+  // раньше каждое второе и третье нажатие молча пропадало.
+  if (command === null && previous !== null && nowMs - previous.lastMsgAt < deps.limits.minIntervalMs) {
+    return [];
+  }
+
+  const mode = deps.store.modeAt(chatId, nowMs);
+  // Команда не сдвигает окно троттлинга: иначе ссылка, вставленная сразу после
+  // кнопки «Прикрепить вакансию», пришла бы быстрее лимита и потерялась.
+  deps.store.touch(chatId, username, command === null ? nowMs : (previous?.lastMsgAt ?? 0));
+  const muted = previous?.mutedUntil !== undefined && previous.mutedUntil !== null
+    && previous.mutedUntil > nowMs;
+
+  // Команды бесплатны — работают и в молчании, и при исчерпанном лимите модели.
+  if (command !== null) return handleCommand(command, chatId, nowMs, deps);
+
+  if (message.document !== undefined) return handleDocument(message, mode, chatId, deps, day, muted);
+  if (isNonText(message) || text.trim() === '') return [say(chatId, TEXTS.notText)];
+
+  if (mode === 'await_meet') return handleMeetAnswer(text, chatId, now, day, deps);
+  if (muted) return [say(chatId, TEXTS.limit(deps.profile.telegram))];
+  if (mode === 'await_vacancy' || looksLikeVacancy(text)) {
+    return handleVacancyText(text, message.message_id, chatId, username, day, deps);
+  }
+  return handleQuestion(text, chatId, day, deps);
+}
+
+function handleCommand(command: Command, chatId: number, nowMs: number, deps: HandlerDeps): BotAction[] {
+  switch (command) {
+    case 'start':
+      return [say(chatId, TEXTS.start, true)];
+    case 'cv':
+      return [{ kind: 'cv', chatId }];
+    case 'profile':
+      return [say(chatId, TEXTS.profile(deps.profile.github, deps.profile.telegram))];
+    case 'add_vacancy':
+      deps.store.setMode(chatId, 'await_vacancy', nowMs + MODE_TTL_MS);
+      return [say(chatId, TEXTS.askVacancy)];
+    case 'set_meet':
+      deps.store.setMode(chatId, 'await_meet', nowMs + MODE_TTL_MS);
+      return [say(chatId, TEXTS.askMeet)];
+  }
+}
+
+async function handleDocument(
+  message: TgBotMessage, mode: ChatMode, chatId: number,
+  deps: HandlerDeps, day: string, muted: boolean,
+): Promise<BotAction[]> {
+  const doc = message.document;
+  if (doc === undefined) return [];
+  if (mode !== 'await_vacancy') return [say(chatId, TEXTS.askVacancy)];
+  if (muted) return [say(chatId, TEXTS.limit(deps.profile.telegram))];
+
+  const read = await deps.readFile(doc);
+  if (!read.ok) {
+    // Модель не зовётся: тип файла и размер видно без неё.
+    if (read.reason === 'unreadable') return [say(chatId, TEXTS.unreadableFile)];
+    return [say(chatId, TEXTS.badFile)];
+  }
+  return processVacancy(read.text, message.message_id, chatId, message.from?.username ?? null, day, deps);
+}
+
+async function handleVacancyText(
+  text: string, messageId: number, chatId: number, username: string | null,
+  day: string, deps: HandlerDeps,
+): Promise<BotAction[]> {
+  const link = firstLink(text);
+  if (link !== null) {
+    const fetched = await deps.readLink(link);
+    // Не вышло — режим сохраняется: человек просто пришлёт текст следующим
+    // сообщением, и оно всё ещё будет считаться вакансией.
+    if (fetched === null) return [say(chatId, TEXTS.askVacancy)];
+    // Прочиталось, но на вакансию не похоже — значит площадка отдала шапку
+    // сайта или страницу логина. Кормить этим модель нельзя: она ответит
+    // «не по теме», и виноватым будет выглядеть рекрутёр.
+    if (!isVacancyPost(fetched)) return [say(chatId, TEXTS.askVacancy)];
+    return processVacancy(`${text}\n\n${fetched}`, messageId, chatId, username, day, deps);
+  }
+  // Живой прогон 2026-09-20: после «Прикрепить вакансию» пришла фраза в 29
+  // символов («Бизнес анализ процессов банка») и легла в очередь строкой со
+  // скором 0. Это название темы, а не вакансия. Судим по признакам, а не по
+  // длине: короткая настоящая вакансия («Ищем БА, BPMN, SQL, удалёнка, 250к»)
+  // проходить должна.
+  if (countVacancyMarkers(text) === 0 && text.trim().length < MIN_VACANCY_CHARS) {
+    return [say(chatId, TEXTS.askVacancy)];
+  }
+  return processVacancy(text, messageId, chatId, username, day, deps);
+}
+
+/**
+ * Вакансия пришла: строка в очередь (если прошла отсев и не повтор) и ответ
+ * рекрутёру от модели. Владельцу о вакансии не пишем — она лежит в очереди
+ * панели, а пингуется только собеседование. Отсев не меняет ответ рекрутёру:
+ * отказ по фильтру — решение владельца, а не повод грубить человеку.
+ */
+/**
+ * Вакансия от рекрутёра в очередь (если прошла отсев и не повтор). Общая часть
+ * чата с ботом и лички секретаря: ключ чата — любой, sourceId строится из него
+ * и id сообщения, поэтому личка (отрицательный ключ) с чатом бота не пересекается.
+ * Строка source tg-bot автоодобрением не берётся никогда.
+ */
+export function enqueueBotVacancy(
+  raw: string, messageId: number, chatKey: number, username: string | null, deps: HandlerDeps,
+): { text: string; specialty: Specialty; queueId: number | null } {
+  const settings = deps.settings();
+  const text = raw.slice(0, MAX_VACANCY_CHARS);
+  const titleWords = settings.specialties.filter((s) => s.enabled).flatMap((s) => s.titleWords);
+  const vacancy = buildVacancy({ text, chatId: chatKey, messageId, username, titleWords, now: deps.now() });
+  const { specialty, screen, score, matched } = assessVacancy(vacancy, settings);
+
+  let queueId: number | null = null;
+  const duplicate = vacancy.contentHash !== null && deps.queue.hasContentHash(vacancy.contentHash);
+  if (screen.passed && !duplicate
+    && deps.queue.insertPending(vacancy, score, matched, '', 'none', specialty.id)) {
+    queueId = deps.queue.idOf(vacancy.source, vacancy.sourceId);
+    if (queueId !== null) deps.store.setLastQueueId(chatKey, queueId);
+  }
+  return { text, specialty, queueId };
+}
+
+async function processVacancy(
+  raw: string, messageId: number, chatId: number, username: string | null,
+  day: string, deps: HandlerDeps,
+): Promise<BotAction[]> {
+  const { text, specialty } = enqueueBotVacancy(raw, messageId, chatId, username, deps);
+
+  deps.store.setMode(chatId, 'idle', null);
+
+  const allowed = allowModelCall(chatId, day, deps);
+  if (!allowed) return [say(chatId, TEXTS.limit(deps.profile.telegram))];
+  deps.store.countModelCall(day, chatId);
+  deps.store.countModelCall(day, 0);
+  const reply = await deps.askModel(buildVacancyMessages({
+    text, resume: deps.resume(), role: specialty.name,
+  }));
+  return [say(chatId, replyText(reply, chatId, deps))];
+}
+
+function handleMeetAnswer(
+  text: string, chatId: number, now: Date, day: string, deps: HandlerDeps,
+): BotAction[] {
+  const parsed = parseMeetTime(text, now);
+  // Режим не снимается: человек написал так, что мы не поняли, а не передумал
+  // встречаться. Что именно не так — дата, время или прошедший срок — решает
+  // разбор, и переспрос называет причину.
+  if (!parsed.ok) {
+    const reply = parsed.reason === 'no-time' ? TEXTS.meetNoTime
+      : parsed.reason === 'past' ? TEXTS.meetPast
+        : TEXTS.meetBadFormat;
+    return [say(chatId, reply)];
+  }
+
+  if (deps.store.meetingsToday(chatId, day) >= deps.limits.meetingsPerChatPerDay) {
+    return [say(chatId, TEXTS.limit(deps.profile.telegram))];
+  }
+
+  const chat = deps.store.chat(chatId);
+  deps.store.saveMeeting({
+    chatId,
+    username: chat?.username ?? null,
+    queueId: chat?.lastQueueId ?? null,
+    meetAt: parsed.at.getTime(),
+    raw: text.trim(),
+    createdAt: now.getTime(),
+  });
+  deps.store.setMode(chatId, 'idle', null);
+  // Пинг владельцу собирает сам цикл из bot_meetings: запись сделана до
+  // отправки, поэтому сбой сети не теряет договорённость.
+  return [say(chatId, TEXTS.meetSaved(parsed.pretty))];
+}
+
+async function handleQuestion(
+  text: string, chatId: number, day: string, deps: HandlerDeps,
+): Promise<BotAction[]> {
+  if (!allowModelCall(chatId, day, deps)) return [say(chatId, TEXTS.limit(deps.profile.telegram))];
+  deps.store.countModelCall(day, chatId);
+  deps.store.countModelCall(day, 0);
+  const reply = await deps.askModel(buildQuestionMessages({
+    question: text, resume: deps.resume(), salaryExpectation: deps.salaryExpectation,
+  }));
+  return [say(chatId, replyText(reply, chatId, deps))];
+}
+
+export function allowModelCall(chatId: number, day: string, deps: HandlerDeps): boolean {
+  if (deps.store.modelCalls(day, chatId) >= deps.limits.perChatPerDay) return false;
+  return deps.store.modelCalls(day, 0) < deps.limits.perBotPerDay;
+}
+
+/**
+ * Исход вызова модели в текст рекрутёру. Оффтоп и брак фильтра отвечаются
+ * одинаково (решение владельца 2026-09-20) и оба дают страйк: снаружи это одно
+ * и то же, а срабатывает фильтр чаще всего на попытке вытянуть лишнее.
+ */
+function replyText(reply: ReplyResult, chatId: number, deps: HandlerDeps): string {
+  if (reply.kind === 'text') {
+    deps.store.resetStrikes(chatId);
+    return reply.text;
+  }
+  if (reply.kind === 'failure') return TEXTS.modelFailure;
+  const strikes = deps.store.addStrike(chatId);
+  if (strikes >= deps.limits.strikesBeforeMute) {
+    deps.store.mute(chatId, deps.now().getTime() + deps.limits.muteHours * 3600_000);
+  }
+  return TEXTS.offTopic;
+}

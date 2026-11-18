@@ -1,0 +1,219 @@
+import { readFileSync, existsSync } from 'node:fs';
+
+/**
+ * Факты, которых нет в резюме: пробелы в занятости, зарплатная вилка,
+ * гражданство, срок выхода. Их нельзя выдумывать (спека 2026-09-25, 5), а
+ * значит нужен список того, что владелец разрешил говорить.
+ *
+ * Белый список чисел — главная защита от округлений: модель охотно правит
+ * «85,5%» на «около 90%» и сдвигает годы. Число, которого нет ни в резюме,
+ * ни в фактах, ни в самом вопросе, отбраковывает ответ целиком.
+ */
+
+export const FACTS_PATH = 'data/facts.md';
+
+export interface Facts {
+  text: string;
+  numbers: Set<string>;
+}
+
+const NUMBER_RE = /\d+(?:[.,]\d+)?/g;
+// Даты должны быть реальными: месяц 01-12, год 1900-2099, день 01-31
+const DATE_DDMMYYYY_RE = /\b(?:0?[1-9]|[12]\d|3[01])\.(?:0?[1-9]|1[0-2])\.(?:19|20)\d{2}\b/g;
+const DATE_MMYYYY_RE = /\b(?:0?[1-9]|1[0-2])\.(?:19|20)\d{2}\b/g;
+
+/**
+ * Сумма с разрядами через пробел: «180 000», «3 000 000», в том числе через
+ * неразрывный и узкий неразрывный пробел (H1). Первая группа — до трёх цифр и
+ * не хвост длинного числа: год «2024» с последующим «200» не склеивается.
+ */
+const GROUPED_RE = /(?<![\d.,])\d{1,3}(?:[ \u00A0\u202F]\d{3})+(?:[.,]\d+)?(?!\d)/g;
+
+/**
+ * Разряды через точку или запятую: «400.000», «200,000», «3.000.000» (FU-6).
+ * Только ровно «000» в каждой группе: «85,500» и «87,5» остаются дробями. Без
+ * этого «400.000» канонизировалось в 400 — всегда разрешённый HTTP-код.
+ */
+const DOTTED_GROUPS_RE = /(?<![\d.,])\d{1,3}(?:[.,]000)+(?!\d)/g;
+
+/** Знаки промежутка: пробел, табуляция, неразрывный, узкий неразрывный, тонкий и цифровой (G3). */
+const GAP_CHARS = String.raw` \t\u00A0\u202F\u2009\u2007`;
+/**
+ * Пробел между числом и единицей: до двух знаков промежутка (обычный,
+ * неразрывный, узкий неразрывный, тонкий, цифровой пробел или табуляция — G3)
+ * и в той же строке (FU-6, FU-13).
+ */
+const GAP = `[${GAP_CHARS}]{0,2}`;
+/** Валюта после «к»/«k»: знак или слово. */
+const CURRENCY = String.raw`₽|\$|€|руб|р\.|rub|usd|eur`;
+
+// Граница слова \b в JS знает только латиницу, поэтому конец единицы —
+// «дальше не буква» (как у маркеров автомата в interview.ts, I4).
+//
+// «к»/«k» вплотную к цифрам и не перед буквой или цифрой — всегда тысячи:
+// «200к–260к», «200к/мес», «500k gross», «80к в месяц» (FU-13). Отделённое
+// пробелом «к» — ещё и предлог («2024 к концу года», «с 5 к 10»), поэтому
+// единица оно только перед концом текста, знаком препинания, валютой (FU-6),
+// «/» или «+» — «400 к/мес», «400 к + бонусы» (G3).
+const THOUSANDS = String.raw`тысяч(?:[аиеу]|ей|ам|ами|ах)?(?![а-яё])|тыс(?![а-яё])\.?|т\.${GAP}р(?:уб)?\.?(?![а-яё])|тр(?![а-яё])\.?|(?<=\d)[кk](?![а-яёa-z\d])|(?<=[${GAP_CHARS}])[кk](?=$|[.,;:!?)\]»"'…]|${GAP}(?:${CURRENCY}|[/+]))`;
+const MILLIONS = String.raw`миллион(?:[аеуы]|ов|ом|ам|ами|ах)?(?![а-яё])|млн(?![а-яё])\.?`;
+const NUM = String.raw`\d+(?:[.,]\d+)?`;
+/** Число или диапазон («180–260», «от 180 до 260») и следом единица тысяч или миллионов. */
+const UNIT_RE = new RegExp(
+  String.raw`(?<![\d.,])(${NUM})(?:${GAP}(?:[-‐‑‒–—−]|до)${GAP}(${NUM}))?${GAP}(?:(${THOUSANDS})|${MILLIONS})`,
+  'gi',
+);
+
+/** Текстово отсекает ведущие нули, оставляя хотя бы один. */
+function canonicalizeInteger(s: string): string {
+  return s.replace(/^0+(?=\d)/, '') || '0';
+}
+
+/** Текстово нормализует число: ведущие нули из целой части, хвостовые из дробной. */
+function canonicalizeNumber(s: string): string {
+  const normalized = s.replace(',', '.');
+  const parts = normalized.split('.');
+  if (parts.length === 1) {
+    // Целое число: отсечь ведущие нули
+    return canonicalizeInteger(parts[0]!);
+  }
+  // Дробное: отсечь ведущие из целой, хвостовые из дробной
+  const integer = canonicalizeInteger(parts[0]!);
+  const frac = parts[1]!.replace(/0+$/, '');
+  if (frac === '') {
+    return integer;
+  }
+  return integer + '.' + frac;
+}
+
+/**
+ * Умножает каноническое число на 10^zeros переносом точки, без Number():
+ * «1.5» и 6 → «1500000», «0.25» и 3 → «250», «1.23456» и 3 → «1234.56».
+ */
+function scaleUp(canonical: string, zeros: number): string {
+  const [integer, frac = ''] = canonical.split('.');
+  const padded = frac.padEnd(zeros, '0');
+  return canonicalizeNumber(`${integer!}${padded.slice(0, zeros)}.${padded.slice(zeros)}`);
+}
+
+/**
+ * Числа текста в канонической форме. Дробная часть — точка, плюс отсечены
+ * ведущие и хвостовые нули (85,50 → 85.5, 07.2025 → 7 и 2025 отдельно).
+ *
+ * Почему нужна каноника: резюме пишется '07–12.2025' (диапазон месяцев, месяц
+ * отдельно), ответ модели — '07.2025' (дата месяца, вместе). Без канонизации
+ * первое даёт {07, 12.2025}, второе {07.2025, 12.2025}, и модель отбраковывается
+ * за «выдуманное число» хотя ответ правдив. Дата разбивается на компоненты
+ * (ДД.ММ.ГГГГ → 12, 10, 2025) чтобы как резюме так и ответ давали одно и то же.
+ *
+ * Суммы сравниваются по величине (H1). «400 000» — одно число 400000, а не 400
+ * и 0: иначе выдуманная зарплата проходила бы, собранная из кусков. Число или
+ * диапазон с единицей даёт и сырое значение, и полное: «180–260 тысяч» →
+ * 180, 260, 180000, 260000; «3 млн» → 3 и 3000000. Так правдивое «180 000»
+ * совпадает с «180 тысяч» из фактов, а «500 тысяч» при вилке 180–260 — нет.
+ *
+ * Канонизация текстовая, не через Number(), чтобы не потерять точность в длинных
+ * последовательностях цифр (123456789012345678 != Number(123456789012345678)).
+ */
+export function extractNumbers(text: string): Set<string> {
+  const out = new Set<string>();
+
+  // Первый проход: разряды склеиваются в одно число прямо в тексте — дальше
+  // его видят и проход единиц («1 500 тысяч»), и общий, но не по частям.
+  let remaining = text
+    .replace(GROUPED_RE, (m) => m.replace(/[ \u00A0\u202F]/g, ''))
+    .replace(DOTTED_GROUPS_RE, (m) => m.replace(/[.,]/g, ''));
+
+  // Второй проход: даты в точках разбираем на компоненты в каноничной форме
+  for (const re of [DATE_DDMMYYYY_RE, DATE_MMYYYY_RE]) {
+    remaining = remaining.replace(re, (m) => {
+      for (const part of m.split('.')) out.add(canonicalizeInteger(part));
+      return ' ';
+    });
+  }
+
+  // Третий проход: число или диапазон с единицей — сырое и полное значения
+  remaining = remaining.replace(UNIT_RE, (_m, a: string, b: string | undefined, thousands: string | undefined) => {
+    const zeros = thousands !== undefined ? 3 : 6;
+    for (const v of b === undefined ? [a] : [a, b]) {
+      const c = canonicalizeNumber(v);
+      out.add(c);
+      out.add(scaleUp(c, zeros));
+    }
+    return ' ';
+  });
+
+  // Последний проход: остальные числа в канонической форме
+  for (const m of remaining.matchAll(NUMBER_RE)) {
+    out.add(canonicalizeNumber(m[0]));
+  }
+
+  return out;
+}
+
+/** Нет файла — не ошибка: значит фактов пока нет, отвечаем только по резюме. */
+export function readFacts(path: string = FACTS_PATH): Facts {
+  const text = existsSync(path) ? readFileSync(path, 'utf8') : '';
+  return { text, numbers: extractNumbers(text) };
+}
+
+/** Темы, о которых рекрутёр спрашивает чаще всего и ответ на которые лежит в data/facts.md. */
+export type FactTopic =
+  | 'salary' | 'start' | 'format' | 'relocation' | 'test'
+  | 'citizenship' | 'city' | 'english' | 'military' | 'education';
+
+export interface FactField {
+  /** Подпись как в файле. */
+  label: string;
+  /** Подпись для поиска: нижний регистр, ё → е, пробелы схлопнуты. */
+  key: string;
+  /** Значение; пустая строка — поле в файле есть, но владелец его не заполнил. */
+  value: string;
+}
+
+/** Подписи полей файла по темам. Поиск — по началу подписи: «Формат (офис, гибрид)» найдётся по «Формат». */
+export const FACT_LABELS: Record<FactTopic, string[]> = {
+  salary: ['Зарплатная вилка'],
+  start: ['Срок выхода'],
+  format: ['Формат'],
+  relocation: ['Готовность к переезду'],
+  test: ['Готовность к тестовому заданию'],
+  citizenship: ['Гражданство'],
+  city: ['Город проживания'],
+  english: ['Уровень английского'],
+  military: ['Отношение к воинской обязанности'],
+  education: ['Вуз', 'Годы учёбы'],
+};
+
+const normalizeLabel = (s: string): string => s.toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
+
+/**
+ * Поля вида «Подпись: значение». Значение продолжается на следующих непустых
+ * строках, пока не встретится новое поле, заголовок «#» или пустая строка:
+ * «Зарплатная вилка» в файле владельца занимает две строки.
+ */
+export function factFields(text: string): FactField[] {
+  const out: FactField[] = [];
+  let current: FactField | null = null;
+  for (const line of text.replace(/\r\n/g, '\n').split('\n')) {
+    if (line.trim() === '' || line.startsWith('#')) { current = null; continue; }
+    const m = /^([А-ЯЁA-Z][^:\n]{1,60}):\s*(.*)$/.exec(line);
+    if (m !== null) {
+      current = { label: m[1]!.trim(), key: normalizeLabel(m[1]!), value: m[2]!.trim() };
+      out.push(current);
+    } else if (current !== null) {
+      current.value = current.value === '' ? line.trim() : `${current.value} ${line.trim()}`;
+    }
+  }
+  return out;
+}
+
+/** Значения по теме: по строке на каждую подпись темы; null — поля нет или оно пустое. */
+export function lookupFact(fields: readonly FactField[], topic: FactTopic): Array<{ label: string; value: string | null }> {
+  return FACT_LABELS[topic].map((label) => {
+    const key = normalizeLabel(label);
+    const field = fields.find((f) => f.key.startsWith(key));
+    const value = field?.value.trim() ?? '';
+    return { label, value: value === '' ? null : value };
+  });
+}

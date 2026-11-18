@@ -1,0 +1,15 @@
+{
+  "url": "https://api.p.hr.ge/public-portal/tenant/1/api/v3/announcement-search",
+  "method": "POST",
+  "headers": {
+    "sec-ch-ua-platform": "\"Windows\"",
+    "referer": "https://www.hr.ge/",
+    "accept-language": "ka-GE",
+    "sec-ch-ua": "\"Chromium\";v=\"151\", \"Not=A?Brand\";v=\"99\"",
+    "sec-ch-ua-mobile": "?0",
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+    "accept": "application/json, text/plain, */*",
+    "content-type": "application/json"
+  },
+  "body": "{\"Query\":\"analyst\",\"CategoryIds\":[],\"WorkExperience\":{\"from\":null,\"to\":null},\"WithoutWorkExperience\":false,\"AnyExperience\":false,\"OnlySelectedSalary\":false,\"Start\":0,\"Limit\":100,\"IsWorkFromHome\":false}"
+}

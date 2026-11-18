@@ -1,0 +1,53 @@
+{
+  "minScore": 40,
+  "letterModels": [
+    "google/gemma-4-31b-it:free",
+    "deepseek/deepseek-v4-flash",
+    "openrouter/free"
+  ],
+  "throttle": {
+    "hh": {
+      "maxPerDay": 100,
+      "minDelayMs": 30000,
+      "maxDelayMs": 30000
+    },
+    "hrge": {
+      "maxPerDay": 100,
+      "minDelayMs": 30000,
+      "maxDelayMs": 30000
+    },
+    "careerist": {
+      "minDelayMs": 3000,
+      "maxDelayMs": 3000
+    },
+    "tg": {
+      "maxPerDay": 40,
+      "minDelayMs": 60000,
+      "maxDelayMs": 180000
+    }
+  },
+  "maxConsecutiveFailures": 3,
+  "salaryExpectation": "по договорённости",
+  "bot": {
+    "profile": {
+      "github": "https://github.com/your-username",
+      "telegram": "@your_telegram"
+    },
+    "secretary": {
+      "account": "your_work_account"
+    }
+  },
+  "gigarecruiter": {
+    "username": "Giga_recruiter_bot",
+    "windowMinutes": 120,
+    "idleMinutes": 10,
+    "pollHours": 4,
+    "replyDelaySec": [40, 120],
+    "maxReplyLength": 1500,
+    "maxRepliesPerSession": 12,
+    "maxInterviewsPerWindow": 6,
+    "vpnService": "HappService",
+    "vpnApp": "C:\\Program Files\\Happ\\Happ.exe",
+    "sessionPath": "data/telegram-interview.session"
+  }
+}

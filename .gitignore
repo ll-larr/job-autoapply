@@ -1,0 +1,13 @@
+node_modules/
+.runtime/
+dist/
+.env
+*.db
+*.sqlite
+browser-profile/
+.playwright-profile/
+data/
+.claude/worktrees/
+resume.md
+resume.pdf
+CV *.md
