@@ -280,6 +280,32 @@
         </div>
       </div>
     </div>
+    <div class="settings-block" id="captchaBlock">
+      <strong>Капча hh.ru</strong>
+      <span class="hint">картинка капчи уходит в сервис распознавания, ответ программа вписывает сама.
+        Не решилось — пищит и ждёт, пока решишь в окне браузера. Риск для аккаунта hh.ru — на тебе.</span>
+      <div class="llm-row">
+        <label for="captchaEnabled">Решать автоматически</label>
+        <div><input type="checkbox" id="captchaEnabled"></div>
+      </div>
+      <div class="llm-row">
+        <label for="captchaProvider">Сервис</label>
+        <div>
+          <select id="captchaProvider">
+            <option value="rucaptcha">ruCaptcha (rucaptcha.com, оплата в рублях)</option>
+            <option value="2captcha">2captcha (2captcha.com)</option>
+          </select>
+        </div>
+      </div>
+      <div class="llm-row">
+        <label for="captchaKey">Ключ сервиса (API-ключ)</label>
+        <div>
+          <input type="password" id="captchaKey" placeholder="32 символа из личного кабинета" autocomplete="off" spellcheck="false">
+          <div class="hint">в личном кабинете сервиса, раздел API. Одна капча стоит доли копейки.
+            Хранится в data/settings.json на этом компьютере.</div>
+        </div>
+      </div>
+    </div>
     <div class="settings-block" id="hhLoginBlock">
       <strong>Вход на hh.ru</strong>
       <span class="hint">нужен, чтобы программа могла откликаться на вакансии от твоего имени. Достаточно войти один раз — вход запоминается на этом компьютере.</span>
@@ -1004,9 +1030,14 @@ async function pollSearch() {
       if (r.duplicates) parts.push(`уже было ${r.duplicates}`);
       if (r.belowThreshold) parts.push(`ниже порога ${r.belowThreshold}`);
       if (r.noCoreMatch) parts.push(`не по профилю ${r.noCoreMatch}`);
+      // Заголовок — отдельной строкой: это самый частый «тихий» отсев, когда
+      // «Слова заголовка» специальности не совпадают с тем, что ищется.
+      if (r.rejectedTitle) parts.push(`заголовок не совпал со «Словами заголовка» ${r.rejectedTitle}`);
       const rejected = (r.rejectedExperience ?? 0) + (r.rejectedGrade ?? 0)
-        + (r.rejectedStopword ?? 0) + (r.rejectedTitle ?? 0) + (r.rejectedInternship ?? 0);
+        + (r.rejectedStopword ?? 0) + (r.rejectedInternship ?? 0);
       if (rejected) parts.push(`отсеяно фильтрами ${rejected}`);
+      if (r.noDescription) parts.push(`без описания (капча?) ${r.noDescription}`);
+      for (const e of r.adapterErrors ?? []) parts.push(`${e.adapter}: ${e.message}`);
       const hits = Object.entries(r.stopwordHits ?? {}).map(([w, n]) => `${w} ${n}`).join(', ');
       if (hits) parts.push(`стоп-слова: ${hits}`);
       if (r.tgNoContact) parts.push(`tg без контакта ${r.tgNoContact}`);
@@ -1594,6 +1625,10 @@ function renderSettings(s) {
   document.getElementById('autoBanner').hidden = !auto.enabled;
   document.getElementById('profileName').value = (s.profile ?? {}).name ?? '';
   renderLlm(s.llm ?? { apiKey: null, model: null });
+  const cap = s.captcha ?? { enabled: false, apiKey: null, provider: 'rucaptcha' };
+  document.getElementById('captchaEnabled').checked = cap.enabled === true;
+  document.getElementById('captchaProvider').value = cap.provider ?? 'rucaptcha';
+  document.getElementById('captchaKey').value = cap.apiKey ?? '';
   const tg = s.telegram ?? { chats: [], firstReadDays: 14 };
   document.getElementById('tgChats').innerHTML = '';
   for (const c of tg.chats) addChatRow(c);
@@ -1786,6 +1821,11 @@ function collectSettings() {
         document.getElementById('llmModel').value,
         document.getElementById('llmModelOther').value,
       ),
+    },
+    captcha: {
+      enabled: document.getElementById('captchaEnabled').checked,
+      apiKey: document.getElementById('captchaKey').value.trim() || null,
+      provider: document.getElementById('captchaProvider').value,
     },
     ...collectSecretarySettings(),
   };

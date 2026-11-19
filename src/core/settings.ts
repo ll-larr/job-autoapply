@@ -3,6 +3,7 @@ import { dirname } from 'node:path';
 import type { SearchQueryConfig } from './config.js';
 import type { Skill, Specialty } from './specialty.js';
 import type { TgChat } from '../telegram/types.js';
+import type { CaptchaProvider } from './captcha-solver.js';
 import { isValidTimeZone } from '../bot/tz.js';
 import {
   BA_DEFAULT_QUERIES, DEFAULT_STOP_WORDS, SYSTEM_ANALYST_DEFAULT_QUERIES,
@@ -34,6 +35,16 @@ export interface LlmSettings {
    * модель пробуется первой, остальные остаются запасными (core/llm.ts).
    */
   model: string | null;
+}
+
+/**
+ * Автоматическое решение капчи hh.ru через сервис распознавания
+ * (core/captcha-solver.ts). Нет раздела — капчу решает человек в окне браузера.
+ */
+export interface CaptchaSettings {
+  enabled: boolean;
+  apiKey: string | null;
+  provider: CaptchaProvider;
 }
 
 /** Секретарь в личке рабочего аккаунта (спека 2026-10-09). Тумблер нужен, чтобы быстро выключить бота, не заходя в Telegram. */
@@ -112,6 +123,8 @@ export interface Settings {
   autoApply: { enabled: boolean; minScore: number | null };
   /** Ключ OpenRouter и модель для писем (правятся в панели). */
   llm: LlmSettings;
+  /** Необязателен: файлы до 2026-11-19 его не содержат. */
+  captcha?: CaptchaSettings;
   secretary: SecretarySettings;
   calendar: CalendarSettings;
   followups: FollowupsSettings;
@@ -289,6 +302,19 @@ export function validateSettings(raw: unknown): Result {
     };
   }
 
+  // Решатель капчи появился 2026-11-19; без раздела — человек в окне браузера.
+  const capRaw = isRecord(raw['captcha']) ? raw['captcha'] : null;
+  let captcha: CaptchaSettings | undefined;
+  if (capRaw !== null) {
+    const capKey = typeof capRaw['apiKey'] === 'string' ? capRaw['apiKey'].trim() : '';
+    const provider = capRaw['provider'] ?? 'rucaptcha';
+    if (provider !== 'rucaptcha' && provider !== '2captcha') {
+      return { ok: false, error: 'Капча: сервис — rucaptcha или 2captcha' };
+    }
+    if (/\s/.test(capKey)) return { ok: false, error: 'Капча: ключ сервиса без пробелов' };
+    captcha = { enabled: capRaw['enabled'] === true, apiKey: capKey === '' ? null : capKey, provider };
+  }
+
   // Секретарь, календарь, дожимы и ящик hh появились 2026-10-09; файл без них
   // это не ломает — разделы берутся по умолчанию.
   const sec = validateSecretarySections(raw);
@@ -304,6 +330,7 @@ export function validateSettings(raw: unknown): Result {
       telegram: { chats, firstReadDays: days },
       autoApply: { enabled: aaRaw['enabled'] === true, minScore: aaMin },
       llm: { apiKey: keyRaw === '' ? null : keyRaw, model: modelRaw === '' ? null : modelRaw },
+      ...(captcha === undefined ? {} : { captcha }),
       secretary: sec.secretary,
       calendar: sec.calendar,
       followups: sec.followups,
@@ -395,8 +422,8 @@ function validateSecretarySections(raw: Record<string, unknown>):
 export function mergeMissingSections(current: Settings, raw: unknown): unknown {
   if (!isRecord(raw)) return raw;
   const out: Record<string, unknown> = { ...raw };
-  for (const key of ['profile', 'telegram', 'autoApply', 'llm', 'secretary', 'calendar', 'followups', 'hhInbox'] as const) {
-    if (out[key] === undefined) out[key] = current[key];
+  for (const key of ['profile', 'telegram', 'autoApply', 'llm', 'captcha', 'secretary', 'calendar', 'followups', 'hhInbox'] as const) {
+    if (out[key] === undefined && current[key] !== undefined) out[key] = current[key];
   }
   return out;
 }

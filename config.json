@@ -7,9 +7,10 @@
   ],
   "throttle": {
     "hh": {
+      "maxPerHour": 20,
       "maxPerDay": 100,
-      "minDelayMs": 30000,
-      "maxDelayMs": 30000
+      "minDelayMs": 75000,
+      "maxDelayMs": 180000
     },
     "hrge": {
       "maxPerDay": 100,
@@ -24,6 +25,16 @@
       "maxPerDay": 40,
       "minDelayMs": 60000,
       "maxDelayMs": 180000
+    }
+  },
+  "searchPacing": {
+    "hh": {
+      "pageDelayMs": [4000, 9000],
+      "vacancyDelayMs": [5000, 12000],
+      "breakEvery": 20,
+      "breakMs": [60000, 150000],
+      "captchaWaitMs": 600000,
+      "afterCaptchaMs": [60000, 120000]
     }
   },
   "maxConsecutiveFailures": 3,

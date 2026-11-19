@@ -39,6 +39,8 @@ import { Sender, requestStop, clearStop, isStopRequested } from './core/sender.j
 import type { SendReport } from './core/sender.js';
 import { startPanel } from './ui/server.js';
 import { HhAdapter } from './adapters/hh.js';
+import { resolveSearchPacing } from './core/pacing.js';
+import { makeCaptchaSolver, type CaptchaSolver } from './core/captcha-solver.js';
 import { HrGeAdapter } from './adapters/hrge.js';
 import { CareeristAdapter } from './adapters/careerist.js';
 import { generateLetter, readLetterTemplate } from './core/letter.js';
@@ -278,6 +280,9 @@ export function formatSearchReport(
   lines.push(`Отсеяно (стоп-слова):   ${report.rejectedStopword}${hits === '' ? '' : ` (${hits})`}`);
   lines.push(`Отсеяно (заголовок):    ${report.rejectedTitle}`);
   lines.push(`Отсеяно (стажировка):    ${report.rejectedInternship}`);
+  if (report.noDescription) {
+    lines.push(`Без описания (пропущены): ${report.noDescription} — капча или недогрузка страницы, найдутся в следующий раз`);
+  }
   if (report.tgNotVacancy + report.tgNoContact + report.textDuplicates > 0) {
     lines.push(
       `Telegram: не вакансия ${report.tgNotVacancy}, без контакта ${report.tgNoContact}, репостов ${report.textDuplicates}`,
@@ -461,7 +466,24 @@ export interface TelegramWiring {
  * работодателя; без него (тесты) анкета честно отклоняется. tg — проводка
  * Telegram, без неё площадки Telegram в наборе нет.
  */
-export function buildAdapters(tg?: TelegramWiring, config?: Config): Adapter[] {
+export function buildAdapters(
+  tg?: TelegramWiring,
+  config?: Config,
+  searchPacing: Config['searchPacing'] = config?.searchPacing,
+): Adapter[] {
+  // Темп обхода hh.ru и ожидание капчи (core/pacing.ts). Нет записи в
+  // config.json — умолчания с паузами.
+  const pacing = resolveSearchPacing(searchPacing?.['hh'], 'searchPacing.hh');
+  // Автоматическое решение капчи (core/captcha-solver.ts): ключ из панели
+  // («Настройки» → «Капча»), иначе RUCAPTCHA_KEY из окружения. Читается в
+  // момент капчи — ключ, вписанный в панели, действует без перезапуска.
+  const captchaSolver = (): CaptchaSolver | null => {
+    const fromEnv = process.env['RUCAPTCHA_KEY']?.trim();
+    return makeCaptchaSolver(
+      tg?.settings().captcha
+        ?? (fromEnv ? { enabled: true, apiKey: fromEnv, provider: 'rucaptcha' } : undefined),
+    );
+  };
   // careerist.ru пока умеет только искать: отклик там требует регистрации, и
   // её adapter.apply честно объявляет `auth_required` (см. adapters/careerist.ts).
   // В очередь вакансии попадают наравне с остальными, а отправка обходит их
@@ -470,8 +492,10 @@ export function buildAdapters(tg?: TelegramWiring, config?: Config): Adapter[] {
   // так решил владелец 2026-09-19. Без конфига (тесты) ответчика нет, и такая
   // вакансия получает честный отказ, а не отправку наугад.
   const hh = config === undefined
-    ? new HhAdapter()
+    ? new HhAdapter({ pacing, captchaSolver })
     : new HhAdapter({
+      pacing,
+      captchaSolver,
       answerTest: (questions, vacancy) => answerQuestions(
         questions,
         // Анкета видит резюме основной специальности из настроек: у hh нет ctx со
@@ -1162,7 +1186,7 @@ async function main(): Promise<void> {
       const keyFound = hasApiKey();
       // Один набор адаптеров на поиск и на последующую автоотправку: у hh это
       // один и тот же браузерный профиль, второй его не откроет.
-      const adapters = buildAdapters({ queue, settings: () => settings, session: tg });
+      const adapters = buildAdapters({ queue, settings: () => settings, session: tg }, undefined, config.searchPacing);
 
       const { report, emptyLetters, letterFailure, autoApproved, autoSkipped } = await runSearchCommand({
         queue,

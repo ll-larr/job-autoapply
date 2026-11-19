@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { isWorkSession, SESSION_PATH } from '../telegram/session.js';
+import { resolveSearchPacing } from './pacing.js';
 
 export interface ThrottleRule {
   /**
@@ -57,6 +58,13 @@ export interface Config {
    */
   searchQueries?: SearchQueryConfig[];
   throttle: Record<string, ThrottleRule | undefined>;
+  /**
+   * Темп ПОИСКА по площадке и ожидание капчи (core/pacing.ts): паузы между
+   * страницами выдачи и вакансиями, перекур раз в N вакансий, сколько ждать,
+   * пока человек решит капчу. Нет записи — DEFAULT_SEARCH_PACING. Пока
+   * читается только для hh.
+   */
+  searchPacing?: Record<string, unknown>;
   /**
    * Сколько отказов подряд по одной площадке считать поломкой и останавливать
    * отправку. По умолчанию 3. Это предохранитель на случай, когда адаптер не
@@ -321,6 +329,14 @@ export function loadConfig(path = 'config.json'): Config {
         throw new Error(`loadConfig: searchQueries[${i}].constraints.juniorOnly должен быть boolean`);
       }
     }
+  }
+  if (parsed.searchPacing !== undefined) {
+    if (parsed.searchPacing === null || typeof parsed.searchPacing !== 'object' || Array.isArray(parsed.searchPacing)) {
+      throw new Error('loadConfig: searchPacing должен быть объектом { площадка: настройки }');
+    }
+    // Проверяем сразу при загрузке: кривые паузы должны ронять запуск, а не
+    // всплывать посреди поиска.
+    for (const [site, raw] of Object.entries(parsed.searchPacing)) resolveSearchPacing(raw, `searchPacing.${site}`);
   }
   for (const [site, rule] of Object.entries(parsed.throttle ?? {})) {
     if (!rule) continue;

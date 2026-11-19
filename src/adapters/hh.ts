@@ -4,9 +4,14 @@ import type { BrowserContext, Frame, Locator, Page } from 'playwright';
 import { normalizeVacancy, type ExperienceLevel, type Vacancy } from '../core/vacancy.js';
 import { parseExperienceFromText } from '../core/screening.js';
 import type { Adapter, ApplyResult, SearchFilters } from './types.js';
-import { isAboveJuniorTitle, isExperienceWithin, isSeniorTitle } from '../core/screening.js';
+import { hasTitleWord, isAboveJuniorTitle, isExperienceWithin, isSeniorTitle } from '../core/screening.js';
 import { DEFAULT_EXPERIENCE_YEARS } from '../core/specialty-defaults.js';
 import { isLoggedIn, sharedProfile } from '../browser.js';
+import { isStopRequested } from '../core/sender.js';
+import {
+  DEFAULT_SEARCH_PACING, NO_PACING, pickDelay, sleepUnlessAborted, type MsRange, type SearchPacing,
+} from '../core/pacing.js';
+import type { CaptchaSolution, CaptchaSolver } from '../core/captcha-solver.js';
 import type { QuestionOption, TestAnswer, TestQuestion } from '../core/questions.js';
 
 /**
@@ -439,6 +444,154 @@ export async function detectCaptcha(page: Page): Promise<boolean> {
 }
 
 /**
+ * Ждёт, пока человек решит капчу в открытом окне браузера.
+ *
+ * Капчу программа НЕ решает и не отправляет на сторонние сервисы распознавания:
+ * это обход защиты hh.ru от роботов, за который аккаунт банят надёжнее, чем за
+ * саму капчу. Вместо этого прогон встаёт на паузу, пищит в терминал и ждёт.
+ *
+ * true — капчи больше нет (дважды подряд не видна: сразу после ввода страница
+ * перезагружается, и одиночное «не видно» может оказаться переходом).
+ * false — время вышло, вкладку закрыли или нажат стоп.
+ */
+export async function waitCaptchaSolved(
+  page: Page,
+  timeoutMs: number,
+  shouldStop: () => boolean = () => false,
+  pollMs = 2_000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  let clearChecks = 0;
+  while (Date.now() < deadline) {
+    if (shouldStop() || page.isClosed()) return false;
+    await page.waitForTimeout(pollMs).catch(() => {});
+    if (page.isClosed()) return false;
+    clearChecks = (await detectCaptcha(page)) ? 0 : clearChecks + 1;
+    if (clearChecks >= 2) return true;
+  }
+  return false;
+}
+
+/** Картинка капчи и поле ответа (окно «Complete the CAPTCHA», см. CAPTCHA_PHRASE). */
+const CAPTCHA_IMAGE = 'img[src*="captcha" i]';
+const CAPTCHA_ANSWER_INPUT = 'input:not([type]), input[type="text"], input[type="tel"], input[type="search"]';
+/**
+ * Кнопка ответа — только по надписи. Любая кнопка подряд опасна: окно капчи
+ * встаёт поверх формы отклика, и «первой кнопкой» могла бы оказаться
+ * «Откликнуться». Не нашлась — Enter в поле ответа.
+ */
+const CAPTCHA_SUBMIT_TEXT = /^\s*(отправить|продолжить|подтвердить|готово|ок|ok|submit|send|continue|confirm|verify)\s*$/i;
+
+async function firstVisible(loc: Locator, limit = 5): Promise<Locator | null> {
+  const n = Math.min(await loc.count().catch(() => 0), limit);
+  for (let i = 0; i < n; i++) {
+    if (await loc.nth(i).isVisible().catch(() => false)) return loc.nth(i);
+  }
+  return null;
+}
+
+/**
+ * Первая видимая кнопка с подходящей надписью. У <input type="submit">
+ * надпись в value, а не в тексте, поэтому сверяем сами, а не hasText.
+ */
+async function firstVisibleLabelled(loc: Locator, label: RegExp, limit = 10): Promise<Locator | null> {
+  const n = Math.min(await loc.count().catch(() => 0), limit);
+  for (let i = 0; i < n; i++) {
+    const el = loc.nth(i);
+    if (!(await el.isVisible().catch(() => false))) continue;
+    const text = await el.evaluate((e) => (e instanceof HTMLInputElement ? e.value : e.textContent ?? '')).catch(() => '');
+    if (label.test(text)) return el;
+  }
+  return null;
+}
+
+export interface AutoSolveResult {
+  solved: boolean;
+  attempts: number;
+  reason?: string;
+}
+
+/**
+ * Решает капчу-картинку на странице через сервис распознавания: снимок
+ * картинки → ответ сервиса → поле ответа → «Отправить» → проверка, что окно
+ * пропало. Неверный ответ — жалоба сервису (деньги вернут) и новая попытка с
+ * новой картинкой.
+ *
+ * Снимок делается с самого элемента, а не повторной загрузкой src: повторный
+ * запрос выдал бы НОВУЮ капчу, и ответ не подошёл бы к показанной.
+ *
+ * Ошибка сервиса (нет денег, неверный ключ) обрывает попытки сразу: от
+ * повтора она не пройдёт.
+ */
+export async function solveCaptchaAuto(
+  page: Page,
+  solver: CaptchaSolver,
+  opts: { attempts?: number; settleMs?: number; pollMs?: number } = {},
+): Promise<AutoSolveResult> {
+  const attempts = opts.attempts ?? 3;
+  const settleMs = opts.settleMs ?? 10_000;
+  const pollMs = opts.pollMs ?? 1_000;
+  let lastReason = 'капча не ушла';
+  for (let i = 1; i <= attempts; i++) {
+    if (page.isClosed()) return { solved: false, attempts: i - 1, reason: 'вкладку закрыли' };
+    if (!(await detectCaptcha(page))) return { solved: true, attempts: i - 1 };
+
+    // Адрес картинки обычно содержит «captcha»; нет — картинка внутри окна
+    // с фразой капчи.
+    const img = await firstVisible(page.locator(CAPTCHA_IMAGE))
+      ?? await firstVisible(page.locator('[role="dialog"]').filter({ hasText: CAPTCHA_PHRASE }).locator('img'));
+    if (img === null) {
+      return { solved: false, attempts: i - 1, reason: 'капча не картинкой с текстом — такой тип автоматически не решается' };
+    }
+    // Картинка могла ещё не догрузиться — снимок пустого места сервис не решит.
+    await img.evaluate((el) => new Promise<void>((resolve) => {
+      const im = el as HTMLImageElement;
+      if (im.complete && im.naturalWidth > 0) { resolve(); return; }
+      im.addEventListener('load', () => resolve(), { once: true });
+      setTimeout(resolve, 5_000);
+    })).catch(() => {});
+
+    // Поле ответа и кнопка — в ближайшем общем предке картинки (окно или форма).
+    const box = img.locator('xpath=ancestor::*[.//input][1]');
+    const input = await firstVisible(box.locator(CAPTCHA_ANSWER_INPUT));
+    if (input === null) return { solved: false, attempts: i - 1, reason: 'не нашлось поле для ответа на капчу' };
+
+    let png: Buffer;
+    try {
+      png = await img.screenshot({ type: 'png' });
+    } catch (err) {
+      return { solved: false, attempts: i - 1, reason: `не снять картинку капчи: ${err instanceof Error ? err.message : String(err)}` };
+    }
+
+    let solution: CaptchaSolution;
+    try {
+      solution = await solver.solveImage(png);
+    } catch (err) {
+      return { solved: false, attempts: i, reason: err instanceof Error ? err.message : String(err) };
+    }
+
+    await input.fill(solution.text).catch(() => {});
+    const submit = await firstVisibleLabelled(box.locator('button, [role="button"], input[type="submit"]'), CAPTCHA_SUBMIT_TEXT);
+    if (submit !== null) await submit.click().catch(() => {});
+    else await input.press('Enter').catch(() => {});
+
+    if (await waitCaptchaSolved(page, settleMs, () => false, pollMs)) return { solved: true, attempts: i };
+    await solution.reportIncorrect();
+    lastReason = `ответ «${solution.text}» не подошёл`;
+  }
+  return { solved: false, attempts, reason: `${lastReason} (${attempts} попыток)` };
+}
+
+/** Громко зовёт человека решить капчу: сообщение и звуковой сигнал терминала. */
+function callHumanForCaptcha(where: string, waitMs: number): void {
+  const minutes = Math.max(1, Math.round(waitMs / 60_000));
+  process.stderr.write('\x07');
+  console.error(
+    `[hh] КАПЧА (${where}). Реши её в открытом окне браузера — жду до ${minutes} мин, потом продолжу сам.`,
+  );
+}
+
+/**
  * Чем кончилась отправка формы: маркер успеха, капча или тишина до таймаута.
  * Капчу видно сразу, и ждать из-за неё полный таймаут подтверждения (15 с на
  * каждую заявку) незачем.
@@ -585,6 +738,21 @@ export interface HhAdapterOptions {
    * data/hh-debug (data/ в git не попадает).
    */
   debugDir?: string;
+  /**
+   * Темп поиска и ожидание капчи (core/pacing.ts). По умолчанию — боевые паузы,
+   * а при подменённом контексте (context/openContext: тесты, офлайн-фикстуры) —
+   * без пауз и без ожидания капчи, как было до 2026-11-19.
+   */
+  pacing?: SearchPacing;
+  random?: () => number;
+  /** Нажат ли стоп отправки. По умолчанию — флаг data/STOP (core/sender.ts). */
+  stopRequested?: () => boolean;
+  /**
+   * Чем решать капчу автоматически (core/captcha-solver.ts). Зовётся в момент
+   * капчи, чтобы ключ, вписанный в панели, действовал без перезапуска. null —
+   * автоматики нет, ждём человека.
+   */
+  captchaSolver?: () => CaptchaSolver | null;
 }
 
 const DEFAULT_DEBUG_DIR = 'data/hh-debug';
@@ -639,8 +807,18 @@ export interface HhSearchStats {
   rejectedExperience: number;
   /** Из read: отсеяно по грейду заголовка до открытия страницы вакансии. */
   rejectedGrade: number;
+  /** Из read: заголовок без «Слов заголовка» специальности — страница не открывалась. */
+  rejectedTitle: number;
   /** Из read: пропущено, потому что id уже встречался в этом прогоне под другой формулировкой (см. SearchFilters.seenThisRun). */
   duplicatesSkipped: number;
+  /**
+   * Страница вакансии открылась без описания. Раньше такая вакансия уходила
+   * дальше с пустым текстом и молча отсеивалась как «ниже порога» — хотя
+   * дело не в ней, а в капче или недогруженной странице.
+   */
+  noDescription: number;
+  /** Поиск по hh.ru прерван капчей, которую не решили за отведённое время. */
+  captchaStopped: boolean;
 }
 
 export class HhAdapter implements Adapter {
@@ -651,6 +829,10 @@ export class HhAdapter implements Adapter {
   private readonly openContextFn: () => Promise<BrowserContext>;
   private readonly answerTest: HhAdapterOptions['answerTest'];
   private readonly debugDir: string;
+  private readonly pacing: SearchPacing;
+  private readonly random: () => number;
+  private readonly stopRequested: () => boolean;
+  private readonly captchaSolver: () => CaptchaSolver | null;
   /** См. HhSearchStats. undefined до первого успешного search(). */
   lastSearchStats: HhSearchStats | undefined;
 
@@ -659,6 +841,11 @@ export class HhAdapter implements Adapter {
     this.openContextFn = opts.openContext ?? sharedProfile;
     this.answerTest = opts.answerTest;
     this.debugDir = opts.debugDir ?? DEFAULT_DEBUG_DIR;
+    const injected = opts.context !== undefined || opts.openContext !== undefined;
+    this.pacing = opts.pacing ?? (injected ? NO_PACING : DEFAULT_SEARCH_PACING);
+    this.random = opts.random ?? Math.random;
+    this.stopRequested = opts.stopRequested ?? isStopRequested;
+    this.captchaSolver = opts.captchaSolver ?? (() => null);
     if (opts.context) this.setContext(opts.context);
   }
 
@@ -696,6 +883,7 @@ export class HhAdapter implements Adapter {
   async search(filters: SearchFilters): Promise<Vacancy[]> {
     const context = await this.getContext();
     const page = await context.newPage();
+    let keepPageOpen = false;
     try {
       // Листаем страницы выдачи, пока не наберём нужное число карточек.
       // Одна страница отдаёт максимум ITEMS_PER_PAGE, поэтому --limit больше
@@ -713,18 +901,40 @@ export class HhAdapter implements Adapter {
       const skip = filters.skip ?? 0;
       const collected: HhSearchItem[] = [];
       const seenIds = new Set<string>();
+      const signal = filters.signal;
+      let captchaStopped = false;
+      let noDescription = 0;
+      // Капча посреди поиска: ждём человека; не дождались — сдаёмся, отдавая
+      // уже прочитанное (см. handleSearchCaptcha).
+      const ensureNoCaptcha = async (url: string, where: string): Promise<boolean> => {
+        if (!(await detectCaptcha(page))) return true;
+        if (await this.handleSearchCaptcha(page, url, where, signal)) return true;
+        captchaStopped = true;
+        keepPageOpen = !signal?.aborted;
+        return false;
+      };
+      // Ждём либо карточки выдачи, либо капчу — что раньше. Одни карточки
+      // заставили бы сидеть весь таймаут навигации на каждой капче.
+      const waitSearchPage = (): Promise<void> => page.locator(SEARCH_TITLE_LINK).first()
+        .or(page.locator(CAPTCHA_MARKUP).first())
+        .waitFor({ state: 'attached', timeout: this.timeouts.navigationMs })
+        .catch(() => {});
 
       for (let pageNo = 0; collected.length < skip + budget; pageNo++) {
-        if (filters.signal?.aborted) break;
+        if (signal?.aborted) break;
+        // Пауза между страницами выдачи: подряд без пауз — главный повод для
+        // капчи (core/pacing.ts).
+        if (pageNo > 0) await this.pause(this.pacing.pageDelayMs, signal);
+        if (signal?.aborted) break;
         const url = buildSearchUrl(filters.query, pageNo);
         // waitUntil:'load'/'networkidle' никогда не наступают на hh.ru —
         // страница держит фоновые запросы (реклама, опросы, аналитика)
         // неопределённо долго (см. scripts/capture-hh.ts). Ждём
         // domcontentloaded, а затем — конкретный элемент, который нужен.
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: this.timeouts.navigationMs });
-        await page.locator(SEARCH_TITLE_LINK).first()
-          .waitFor({ state: 'attached', timeout: this.timeouts.navigationMs })
-          .catch(() => {});
+        await waitSearchPage();
+        if (!(await ensureNoCaptcha(url, `страница выдачи ${pageNo + 1}`))) break;
+        await waitSearchPage();
 
         const pageItems = await parseSearchPage(page);
         if (pageItems.length === 0) break;
@@ -773,26 +983,58 @@ export class HhAdapter implements Adapter {
       // предыдущей порцией — второй раз в статистику не попадает.
       const window = collected.slice(skip);
       const years = filters.experienceYears ?? DEFAULT_EXPERIENCE_YEARS;
+      const titleWords = filters.titleWords ?? [];
+      let rejectedTitle = 0;
       for (const it of window) {
         if (!isExperienceWithin(it.experience ?? null, years)) { rejectedExperience++; continue; }
         if (isSeniorTitle(it.title) || (years < 1 && isAboveJuniorTitle(it.title))) {
           rejectedGrade++;
           continue;
         }
+        // Тот же гейт заголовка, что в core/screening.ts, но до открытия
+        // страницы: hh.ru ищет фразу по всему тексту и отдаёт «Маркетологов».
+        if (titleWords.length > 0 && !hasTitleWord(it.title, titleWords)) { rejectedTitle++; continue; }
         if (filters.seenThisRun?.has(`${this.name}:${it.sourceId}`)) { duplicatesSkipped++; continue; }
         wanted.push(it);
       }
 
       const out: Vacancy[] = [];
+      let opened = 0;
       for (const item of wanted) {
         // «Остановить поиск»: отдаём прочитанное и выходим, а не дочитываем
         // порцию — каждая вакансия здесь это навигация по сайту.
-        if (filters.signal?.aborted) break;
+        if (signal?.aborted || captchaStopped) break;
+        // Человеческий темп: пауза перед каждой вакансией (после страницы
+        // выдачи — тоже) и длинный перекур раз в breakEvery вакансий.
+        const { breakEvery } = this.pacing;
+        if (breakEvery > 0 && opened > 0 && opened % breakEvery === 0) {
+          const ms = pickDelay(this.pacing.breakMs, this.random);
+          if (ms > 0) console.error(`[hh] прочитано ${opened} вакансий — пауза ${Math.round(ms / 1000)} с, чтобы не словить капчу`);
+          await sleepUnlessAborted(ms, signal);
+        } else {
+          await this.pause(this.pacing.vacancyDelayMs, signal);
+        }
+        if (signal?.aborted) break;
+        opened++;
         // Скорер считает по title+description — карточка выдачи описания
         // не несёт, поэтому дочитка страницы вакансии не опциональна: без
         // неё вакансия почти всегда наберёт околонулевой балл и отсеется.
         await page.goto(item.url, { waitUntil: 'domcontentloaded', timeout: this.timeouts.navigationMs });
-        const description = await readVacancyDescription(page, this.timeouts.descriptionMs);
+        if (!(await ensureNoCaptcha(item.url, `вакансия ${item.sourceId}`))) break;
+        let description = await readVacancyDescription(page, this.timeouts.descriptionMs);
+        if (description === '') {
+          // Капча могла встать уже после domcontentloaded.
+          if (!(await ensureNoCaptcha(item.url, `вакансия ${item.sourceId}`))) break;
+          description = await readVacancyDescription(page, this.timeouts.descriptionMs);
+        }
+        if (description === '') {
+          // Без описания скорер дал бы околонулевой балл, и годная вакансия
+          // молча ушла бы в «ниже порога». Не отдаём её конвейеру вовсе: в
+          // БД она не попадёт и найдётся следующим поиском.
+          noDescription++;
+          console.error(`[hh] вакансия ${item.sourceId}: описание не прочиталось — пропущена, попадётся в следующий поиск (${item.url})`);
+          continue;
+        }
         // Структурный маркер с карточки выдачи — основной источник. Он есть
         // на всех 50 карточках снятой фикстуры, но если разметка когда-нибудь
         // изменится и маркер пропадёт, не роняем гейт опыта молча — пробуем
@@ -822,11 +1064,91 @@ export class HhAdapter implements Adapter {
           experience,
         }));
       }
-      this.lastSearchStats = { read: window.length, rejectedExperience, rejectedGrade, duplicatesSkipped };
+      this.lastSearchStats = {
+        read: window.length, rejectedExperience, rejectedGrade, rejectedTitle, duplicatesSkipped, noDescription, captchaStopped,
+      };
       return out;
     } finally {
-      await page.close();
+      // Вкладку с нерешённой капчей не закрываем: человек может решить её и
+      // позже, а закрытая вкладка унесла бы окно капчи.
+      if (!keepPageOpen) await page.close();
     }
+  }
+
+  /**
+   * Капча посреди отклика: зовём человека и ждём (pacing.captchaWaitMs).
+   * true — решена, можно продолжать с того же места. Стоп отправки прерывает
+   * ожидание сразу.
+   */
+  private async awaitHumanCaptcha(page: Page, where: string): Promise<boolean> {
+    const solved = await this.passCaptcha(page, where, this.stopRequested);
+    if (solved) console.error('[hh] Капча пройдена — продолжаю отклик.');
+    return solved;
+  }
+
+  /**
+   * Пройти капчу: сначала автоматически (сервис распознавания, если ключ
+   * задан), не вышло — ждать человека в окне браузера (pacing.captchaWaitMs).
+   */
+  private async passCaptcha(page: Page, where: string, shouldStop: () => boolean): Promise<boolean> {
+    if (await this.tryAutoSolve(page, where)) return true;
+    const waitMs = this.pacing.captchaWaitMs;
+    if (waitMs <= 0 || shouldStop()) return false;
+    callHumanForCaptcha(where, waitMs);
+    return waitCaptchaSolved(page, waitMs, shouldStop);
+  }
+
+  private async tryAutoSolve(page: Page, where: string): Promise<boolean> {
+    let solver: CaptchaSolver | null = null;
+    try {
+      solver = this.captchaSolver();
+    } catch (err) {
+      console.error(`[hh] решатель капчи не собрался: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (solver === null) return false;
+    console.error(`[hh] КАПЧА (${where}) — решаю автоматически через сервис распознавания…`);
+    const r = await solveCaptchaAuto(page, solver);
+    if (r.solved) {
+      console.error(`[hh] Капча решена автоматически (попыток: ${r.attempts}).`);
+      return true;
+    }
+    console.error(`[hh] Автоматически капча не решилась: ${r.reason}`);
+    // HTML окна — чтобы поддержать незнакомый тип капчи по настоящей разметке.
+    try {
+      mkdirSync(this.debugDir, { recursive: true });
+      const name = `captcha-${new Date().toISOString().replace(/[:.]/g, '-')}.html`;
+      writeFileSync(join(this.debugDir, name), await page.content(), 'utf8');
+      console.error(`[hh] разметка капчи сохранена: ${join(this.debugDir, name)}`);
+    } catch { /* диагностика не должна мешать */ }
+    return false;
+  }
+
+  private async pause(range: MsRange, signal?: AbortSignal): Promise<void> {
+    await sleepUnlessAborted(pickDelay(range, this.random), signal);
+  }
+
+  /**
+   * Страница показала капчу во время поиска. Поиск только читает, поэтому
+   * после решения страницу безопасно открыть заново. true — можно читать дальше.
+   */
+  private async handleSearchCaptcha(page: Page, url: string, where: string, signal?: AbortSignal): Promise<boolean> {
+    const stop = (): boolean => signal?.aborted === true;
+    // Капча может встать снова сразу после решённой — даём ещё один круг,
+    // дальше считаем, что сайт всерьёз насторожился, и останавливаемся.
+    for (let round = 1; round <= 2; round++) {
+      if (!(await this.passCaptcha(page, round === 1 ? where : `${where}, повторно`, stop))) {
+        console.error('[hh] Капча не пройдена — поиск по hh.ru остановлен, найденное до неё сохранено.');
+        return false;
+      }
+      const ms = pickDelay(this.pacing.afterCaptchaMs, this.random);
+      console.error(`[hh] Капча пройдена. Пауза ${Math.round(ms / 1000)} с и продолжаю.`);
+      await sleepUnlessAborted(ms, signal);
+      if (stop()) return false;
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: this.timeouts.navigationMs });
+      if (!(await detectCaptcha(page))) return true;
+    }
+    console.error('[hh] Капча появляется снова и снова — поиск по hh.ru остановлен.');
+    return false;
   }
 
   /**
@@ -919,9 +1241,14 @@ export class HhAdapter implements Adapter {
     }
     await submit.click();
 
-    const outcome = await waitSubmitOutcome(page, this.timeouts.submitMs);
-    // Капча — не отказ: страницу не трогаем, пока человек её не решит.
-    if (outcome === 'captcha') return { status: 'captcha' };
+    let outcome = await waitSubmitOutcome(page, this.timeouts.submitMs);
+    // Капча — не отказ: страницу не трогаем, пока человек её не решит. Решил —
+    // ждём исхода заново; повторно форму не отправляем (задвоение отклика).
+    if (outcome === 'captcha') {
+      if (!(await this.awaitHumanCaptcha(page, 'после отправки формы'))) return { status: 'captcha' };
+      outcome = await waitSubmitOutcome(page, this.timeouts.submitMs);
+      if (outcome === 'captcha') return { status: 'captcha' };
+    }
     let ok = outcome === 'success';
     let detail: string | undefined;
     if (!ok) {
@@ -963,13 +1290,20 @@ export class HhAdapter implements Adapter {
         writeFileSync(join(this.debugDir, `${vacancy.sourceId}-captcha.html`), await page.content(), 'utf8');
       } catch { /* диагностика не должна мешать остановке */ }
       console.error(
-        `[hh] КАПЧА на вакансии ${vacancy.sourceId} (${where}). Вкладка оставлена открытой: реши капчу `
-        + 'руками в окне браузера и запусти отправку снова. Обход капчи не реализуется.',
+        `[hh] КАПЧА на вакансии ${vacancy.sourceId} (${where}) не решена. Вкладка оставлена открытой: реши капчу `
+        + 'руками в окне браузера и запусти отправку снова.',
       );
       return { status: 'captcha' };
     };
     try {
       await page.goto(vacancy.url, { waitUntil: 'domcontentloaded', timeout: this.timeouts.navigationMs });
+      // Капча до любых кликов: решили — просто открываем вакансию заново.
+      if (await detectCaptcha(page)) {
+        if (!(await this.awaitHumanCaptcha(page, 'при открытии вакансии'))) {
+          return await stopOnCaptcha('при открытии страницы');
+        }
+        await page.goto(vacancy.url, { waitUntil: 'domcontentloaded', timeout: this.timeouts.navigationMs });
+      }
 
       // Потерянная сессия — используем уже проверенный isLoggedIn() из
       // browser.ts, а не изобретаем свой сигнал.
@@ -1006,8 +1340,15 @@ export class HhAdapter implements Adapter {
       // Ждём форму, маркер успеха или капчу — что появится первым. Капча без
       // формы не редкость (живьём 2026-10-02), и сидеть из-за неё весь таймаут
       // на каждой заявке незачем.
-      const afterClick = await this.waitAfterApplyClick(page);
-      if (afterClick === 'captcha') return await stopOnCaptcha('после клика «Откликнуться»');
+      let afterClick = await this.waitAfterApplyClick(page);
+      if (afterClick === 'captcha') {
+        // Решили — ждём форму или успех заново, кнопку второй раз не жмём.
+        if (!(await this.awaitHumanCaptcha(page, 'после клика «Откликнуться»'))) {
+          return await stopOnCaptcha('после клика «Откликнуться»');
+        }
+        afterClick = await this.waitAfterApplyClick(page);
+        if (afterClick === 'captcha') return await stopOnCaptcha('после клика «Откликнуться»');
+      }
 
       let letterInForm = false;
       let detail: string | undefined;
@@ -1024,8 +1365,14 @@ export class HhAdapter implements Adapter {
         submitted = form.status === 'sent';
         detail = form.detail;
       } else {
-        const outcome = await waitSubmitOutcome(page, this.timeouts.submitMs);
-        if (outcome === 'captcha') return await stopOnCaptcha('после клика «Откликнуться»');
+        let outcome = await waitSubmitOutcome(page, this.timeouts.submitMs);
+        if (outcome === 'captcha') {
+          if (!(await this.awaitHumanCaptcha(page, 'после клика «Откликнуться»'))) {
+            return await stopOnCaptcha('после клика «Откликнуться»');
+          }
+          outcome = await waitSubmitOutcome(page, this.timeouts.submitMs);
+          if (outcome === 'captcha') return await stopOnCaptcha('после клика «Откликнуться»');
+        }
         submitted = outcome === 'success';
         if (!submitted) detail = await describeUnconfirmed(page, vacancy.sourceId, this.debugDir);
       }

@@ -32,6 +32,8 @@ interface AdapterSearchStats {
   read: number;
   rejectedExperience?: number;
   rejectedGrade?: number;
+  /** hh.ru: отсеяно по «Словам заголовка» до открытия страницы вакансии. */
+  rejectedTitle?: number;
   duplicatesSkipped?: number;
   /** Telegram (adapters/telegram.ts): пост не похож на вакансию. */
   notVacancy?: number;
@@ -39,6 +41,10 @@ interface AdapterSearchStats {
   noContact?: number;
   /** Telegram: чаты, которые не прочитались, и почему. */
   skippedChats?: Array<{ title: string; why: string }>;
+  /** hh.ru: страница вакансии без описания — вакансия пропущена. */
+  noDescription?: number;
+  /** hh.ru: поиск прерван нерешённой капчей. */
+  captchaStopped?: boolean;
 }
 
 interface AdapterWithSearchStats {
@@ -113,6 +119,11 @@ export interface SearchReport {
   tgSkippedChats: Array<{ title: string; why: string }>;
   /** Репосты: тот же текст, что у уже виденного поста (спека 4.7). */
   textDuplicates: number;
+  /**
+   * hh.ru: страница вакансии открылась без описания (капча, недогрузка), и
+   * вакансия пропущена, а не засчитана «ниже порога». Найдётся следующим поиском.
+   */
+  noDescription?: number;
   adapterErrors: Array<{ adapter: string; message: string }>;
   /**
    * Почему прогон остановился. Нужно панели: «нашли 12 из 20» само по себе
@@ -342,6 +353,7 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
       vacancies = await task.adapter.search({
         query: task.qc.query,
         experienceYears: (task.qc.specialty ?? DEFAULT_SPECIALTY).experienceYears,
+        titleWords: (task.qc.specialty ?? DEFAULT_SPECIALTY).titleWords,
         maxResults: budget,
         skip: task.skip,
         seenThisRun,
@@ -369,10 +381,22 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
       report.found += stats.read;
       report.rejectedExperience += stats.rejectedExperience ?? 0;
       report.rejectedGrade += stats.rejectedGrade ?? 0;
+      report.rejectedTitle += stats.rejectedTitle ?? 0;
       report.duplicates += stats.duplicatesSkipped ?? 0;
       report.tgNotVacancy += stats.notVacancy ?? 0;
       report.tgNoContact += stats.noContact ?? 0;
       report.tgSkippedChats.push(...(stats.skippedChats ?? []));
+      if (stats.noDescription) report.noDescription = (report.noDescription ?? 0) + stats.noDescription;
+      if (stats.captchaStopped === true) {
+        // Капчу не решили: каждая следующая формулировка на этой площадке
+        // упёрлась бы в неё же и снова ждала бы человека. Выбывает площадка
+        // целиком, остальные работают.
+        report.adapterErrors.push({
+          adapter: task.adapter.name,
+          message: 'капча не решена — поиск по площадке остановлен, найденное до неё сохранено',
+        });
+        for (const t of tasks) if (t.adapter === task.adapter) t.done = true;
+      }
     } else {
       report.found += vacancies.length;
     }
