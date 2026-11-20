@@ -505,7 +505,7 @@ describe('панель — состояние прокси', () => {
 describe('панель — настройки', () => {
   let stored: Settings;
   let settingsPanel: { port: number; close(): Promise<void> };
-  const suggestCalls: string[] = [];
+  const suggestCalls: Array<{ name: string; resumePdf: string | null }> = [];
 
   beforeEach(async () => {
     stored = seedSettings(undefined, null);
@@ -517,11 +517,17 @@ describe('панель — настройки', () => {
           if (r.ok) stored = r.settings;
           return r;
         },
-        suggest: async (name) => {
-          suggestCalls.push(name);
+        suggest: async (name, resumePdf) => {
+          suggestCalls.push({ name, resumePdf });
           return name === 'сбой'
             ? { ok: false, error: 'VPN выключен' }
-            : { ok: true, suggestion: { titleWords: ['x'], skills: [{ name: 'A', synonyms: ['a'], weight: 10, core: true }] } };
+            : {
+              ok: true,
+              suggestion: {
+                name: name === '' ? 'Аналитик' : name, queries: ['аналитик'], titleWords: ['x'],
+                skills: [{ name: 'A', synonyms: ['a'], weight: 10, core: true }], experienceYears: 3, salaryFrom: null,
+              },
+            };
         },
       },
     });
@@ -561,11 +567,36 @@ describe('панель — настройки', () => {
     expect((await fail.json() as { error: string }).error).toBe('VPN выключен');
   });
 
-  it('suggest без названия — 400, модель не зовётся', async () => {
+  it('suggest без названия и без резюме — 400, модель не зовётся', async () => {
     const before = suggestCalls.length;
     const res = await post(url('/api/settings/suggest'), { name: '  ' });
     expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toMatch(/резюме/);
     expect(suggestCalls.length).toBe(before);
+  });
+
+  it('suggest без названия, но с резюме — модель предлагает должность', async () => {
+    const res = await post(url('/api/settings/suggest'), { name: ' ', resumePdf: ' C:/cv.pdf ' });
+    expect(res.status).toBe(200);
+    expect(suggestCalls.at(-1)).toEqual({ name: '', resumePdf: 'C:/cv.pdf' });
+    const body = await res.json() as { suggestion: { name: string; experienceYears: number } };
+    expect(body.suggestion.name).toBe('Аналитик');
+    expect(body.suggestion.experienceYears).toBe(3);
+  });
+
+  it('POST /api/settings сохраняет фильтр специальности', async () => {
+    const next = structuredClone(stored);
+    next.specialties[0]!.filters = {
+      ...next.specialties[0]!.filters, salaryFrom: 150000, employment: ['FULL', 'FULL'], workFormat: ['REMOTE'],
+    };
+    const res = await post(url('/api/settings'), next);
+    expect(res.status).toBe(200);
+    expect(stored.specialties[0]!.filters).toMatchObject({ salaryFrom: 150000, employment: ['FULL'], workFormat: ['REMOTE'] });
+    const bad = structuredClone(stored);
+    bad.specialties[0]!.filters.salaryTo = 100000;
+    const badRes = await post(url('/api/settings'), bad);
+    expect(badRes.status).toBe(400);
+    expect((await badRes.json() as { error: string }).error).toBe('«Бизнес-аналитик»: зарплата «до» меньше «от»');
   });
 });
 

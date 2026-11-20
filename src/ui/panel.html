@@ -56,35 +56,8 @@
     button { padding: 6px 14px; cursor: pointer; }
     .empty { padding: 40px 20px; color: #666; }
 
-    .spec { background: #fff; margin: 16px 20px; padding: 16px; border: 1px solid #ddd; border-radius: 8px; }
-    .spec .row { display: grid; grid-template-columns: 170px 1fr; gap: 8px; align-items: start; margin-bottom: 8px; }
-    .spec .row > label { font-size: 13px; color: #555; padding-top: 5px; }
-    .spec input[type=text], .spec input[type=number] {
-      font: inherit; font-size: 14px; padding: 4px 6px; border: 1px solid #ccc; border-radius: 4px;
-    }
-    .spec input[data-f="titleWords"] { width: 100%; box-sizing: border-box; }
-    .resume-pick { display: flex; gap: 8px; align-items: center; }
-    .resume-pick input[data-f="resumePdf"] { flex: 1; min-width: 0; box-sizing: border-box; }
-    .resume-browse { white-space: nowrap; }
-    .resume-note { display: block; margin-top: 4px; }
-    .resume-note.good { color: #1e6b2f; }
-    .resume-note.bad { color: #9b1c1c; }
-    .spec input[data-f="experienceYears"] { width: 72px; justify-self: start; }
-    .spec textarea { min-height: 60px; font: 13px/1.4 system-ui, sans-serif; }
-    .skills { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 6px; }
-    .skills th { text-align: left; font-weight: 500; color: #666; padding: 4px; }
-    .skills td { padding: 3px 4px; vertical-align: top; }
-    .skills input[data-k="synonyms"] { width: 100%; box-sizing: border-box; }
-    .skills input[data-k="weight"] { width: 64px; }
     .settings-block { background: #fff; margin: 16px 20px; padding: 16px; border: 1px solid #ddd; border-radius: 8px; }
     .settings-block textarea { min-height: 110px; margin-top: 6px; font: 13px/1.4 system-ui, sans-serif; }
-    .llm-row { display: grid; grid-template-columns: 170px 1fr; gap: 8px; align-items: start; margin-top: 10px; }
-    .llm-row > label { font-size: 13px; color: #555; padding-top: 5px; }
-    .llm-row input[type=password], .llm-row input[type=text], .llm-row select {
-      font: inherit; font-size: 14px; padding: 4px 6px; border: 1px solid #ccc; border-radius: 4px;
-    }
-    .llm-row input[type=password], .llm-row input[type=text] { width: 320px; }
-    .llm-row .hint { display: block; margin-top: 4px; }
     .contact-warn { margin: 6px 0; padding: 6px 10px; background: #fff3cd; border: 1px solid #e0c068;
                     border-radius: 4px; font-size: 13px; color: #5a4500; }
     .tg-chat { display: flex; gap: 8px; align-items: center; font-size: 14px; margin: 4px 0; }
@@ -139,6 +112,392 @@
     #tour .tour-skip { background: none; border: none; color: #666; padding: 6px 4px; text-decoration: underline; }
     #tour .tour-card.center { left: 50% !important; top: 50% !important; transform: translate(-50%, -50%); width: 440px; }
 
+
+    /* =====================================================================
+       Вкладка «Настройки» (редизайн 2026-11-19): светлая «лавандовая» тема
+       по макету фильтра вакансий hh.ru. Каждый селектор начинается с
+       #pane-settings — остальные вкладки выглядят ровно как раньше.
+       ===================================================================== */
+    #pane-settings {
+      --acc: #5b45d6; --acc-h: #4c37c4; --acc-soft: #ece8ff; --acc-line: #b9adf5; --acc-ink: #3b2a9e;
+      --ring: 0 0 0 4px rgba(91, 69, 214, .15);
+      --line: #e2e2ea; --field: #dcdce6; --ink: #1f1f2b; --ink-2: #3a3a48; --mute: #6b6b7b;
+      --card-shadow: 0 1px 2px rgba(24, 20, 60, .04), 0 8px 28px rgba(24, 20, 60, .06);
+      background: #f5f5fa; color: var(--ink);
+      min-height: calc(100vh - var(--hdr-h, 120px));
+      display: flex; flex-direction: column;
+    }
+    #pane-settings *, #pane-settings *::before, #pane-settings *::after { box-sizing: border-box; }
+    #pane-settings .ic { display: block; flex: none; }
+    #pane-settings [data-icon] { display: inline-flex; }
+
+    #pane-settings .st-shell {
+      flex: 1; width: 100%; max-width: 1200px; margin: 0 auto; padding: 28px 28px 36px;
+      display: grid; grid-template-columns: 236px minmax(0, 1fr); gap: 28px; align-items: start;
+    }
+
+    /* Меню разделов */
+    #pane-settings .st-nav {
+      position: sticky; top: calc(var(--hdr-h, 120px) + 28px);
+      display: flex; flex-direction: column; gap: 2px;
+      background: #fff; border-radius: 20px; padding: 10px; box-shadow: var(--card-shadow);
+    }
+    #pane-settings .st-nav-item {
+      display: flex; align-items: center; justify-content: flex-start; gap: 12px; width: 100%; height: 46px; padding: 0 14px;
+      border: 0; border-radius: 12px; background: transparent; color: var(--ink-2);
+      font: 600 15px/1.2 system-ui, sans-serif; text-align: left; cursor: pointer;
+      transition: background .15s, color .15s;
+    }
+    #pane-settings .st-nav-item .ic { color: #8a8a9a; transition: color .15s; }
+    #pane-settings .st-nav-item:hover { background: #f3f2fa; }
+    #pane-settings .st-nav-item[aria-selected="true"] { background: var(--acc-soft); color: var(--acc-ink); font-weight: 700; }
+    #pane-settings .st-nav-item[aria-selected="true"] .ic { color: var(--acc); }
+    #pane-settings .st-nav-item:focus-visible { outline: none; box-shadow: var(--ring); }
+
+    /* Раздел и его заголовок */
+    #pane-settings .st-main { min-width: 0; }
+    #pane-settings .st-sec { min-width: 0; display: flex; flex-direction: column; gap: 20px; }
+    #pane-settings .st-head h2 { margin: 0; font-size: 28px; line-height: 1.2; font-weight: 700; letter-spacing: -.01em; }
+    #pane-settings .st-head p { margin: 6px 0 0; color: var(--mute); font-size: 15px; max-width: 72ch; }
+
+    /* Карточки */
+    #pane-settings .st-card, #pane-settings .spec {
+      margin: 0; padding: 28px; border: 0; border-radius: 20px; background: #fff; box-shadow: var(--card-shadow);
+    }
+    #pane-settings .st-card-head { display: flex; gap: 16px; align-items: flex-start; margin-bottom: 18px; }
+    #pane-settings .st-card-head h3 { margin: 0; font-size: 18px; line-height: 1.3; font-weight: 700; }
+    #pane-settings .st-card-head p { margin: 4px 0 0; color: var(--mute); font-size: 14px; line-height: 1.5; max-width: 76ch; }
+    #pane-settings .st-ic {
+      flex: none; width: 44px; height: 44px; border-radius: 12px;
+      background: var(--acc-soft); color: var(--acc); display: grid; place-items: center;
+    }
+    #pane-settings .st-ic-warn { background: #fff1e0; color: #c2410c; }
+
+    /* Строки формы: слева подпись, справа контрол */
+    #pane-settings .st-row, #pane-settings .f-row {
+      display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 8px 24px; align-items: start; padding: 10px 0;
+    }
+    #pane-settings .st-row > label, #pane-settings .st-row > .st-label {
+      font-weight: 700; font-size: 15px; color: var(--ink-2); padding-top: 11px;
+    }
+    #pane-settings .st-row-switch { align-items: center; }
+    #pane-settings .st-row-switch > .st-label { padding-top: 0; }
+    #pane-settings .st-divided { margin-top: 10px; padding-top: 20px; border-top: 1px solid #efeff5; }
+    #pane-settings .f-label {
+      display: flex; align-items: center; gap: 12px; min-height: 44px;
+      font-weight: 700; font-size: 15px; color: var(--ink-2);
+    }
+    #pane-settings .f-label .ic { color: #3a3a48; }
+    #pane-settings .f-ctl { min-width: 0; }
+    #pane-settings .st-hint, #pane-settings .f-hint { margin: 8px 0 0; font-size: 13px; line-height: 1.5; color: var(--mute); }
+    #pane-settings .st-note:empty { display: none; }
+    #pane-settings .st-note { display: block; margin-top: 10px; }
+    #pane-settings .st-inline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--ink-2); font-size: 15px; }
+    #pane-settings .st-switches { display: flex; flex-direction: column; gap: 14px; }
+    #pane-settings .st-login { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    #pane-settings .st-gap { margin-top: 8px; }
+
+    /* Поля ввода */
+    #pane-settings input[type=text], #pane-settings input[type=password], #pane-settings input[type=number],
+    #pane-settings input[type=time], #pane-settings select, #pane-settings textarea {
+      font: 15px/1.4 system-ui, sans-serif; color: var(--ink); background-color: #fff;
+      height: 44px; padding: 0 14px; border: 1px solid var(--field); border-radius: 12px; max-width: 100%;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    #pane-settings textarea {
+      display: block; width: 100%; height: auto; min-height: 120px; padding: 11px 14px; resize: vertical; line-height: 1.5;
+    }
+    #pane-settings input:hover, #pane-settings select:hover, #pane-settings textarea:hover { border-color: #c6c6d4; }
+    #pane-settings input:focus, #pane-settings select:focus, #pane-settings textarea:focus {
+      outline: none; border-color: var(--acc); box-shadow: var(--ring);
+    }
+    /* #737382 на белом — 4.6:1 (WCAG AA): у «От»/«До» зарплаты плейсхолдер — единственная видимая подпись. */
+    #pane-settings input::placeholder, #pane-settings textarea::placeholder { color: #737382; }
+    #pane-settings select {
+      appearance: none; -webkit-appearance: none; padding-right: 42px; cursor: pointer;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236b6b7b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 14px center; background-size: 16px;
+    }
+    #pane-settings input[type=checkbox] { accent-color: var(--acc); width: 18px; height: 18px; margin: 0; cursor: pointer; }
+    #pane-settings .w-full { width: 100%; }
+    #pane-settings .w-md { width: min(440px, 100%); }
+    #pane-settings .w-num { width: 104px; }
+    #pane-settings .st-inline .w-md { flex: 0 1 440px; min-width: 0; }
+
+    /* Кнопки */
+    #pane-settings button {
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      height: 40px; padding: 0 16px; border: 1px solid var(--field); border-radius: 12px;
+      background: #fff; color: var(--ink-2); font: 600 14px/1 system-ui, sans-serif; white-space: nowrap; cursor: pointer;
+      transition: background .15s, border-color .15s, color .15s, box-shadow .15s;
+    }
+    #pane-settings button:hover:not(:disabled) { background: #f6f5fb; border-color: #c9c9d6; }
+    #pane-settings button:focus-visible { outline: none; border-color: var(--acc); box-shadow: var(--ring); }
+    #pane-settings button:disabled { opacity: .5; cursor: default; }
+    #pane-settings button.primary { background: var(--acc); border-color: var(--acc); color: #fff; }
+    #pane-settings button.primary:hover:not(:disabled) { background: var(--acc-h); border-color: var(--acc-h); }
+
+    /* Тумблер: настоящий checkbox поверх нарисованной дорожки — клики и
+       клавиатура работают как у обычной галочки. */
+    #pane-settings .switch {
+      position: relative; display: inline-flex; align-items: center; gap: 12px;
+      font-size: 15px; font-weight: 500; color: var(--ink-2); cursor: pointer; user-select: none;
+    }
+    #pane-settings .switch input {
+      position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+      width: 44px; height: 26px; margin: 0; opacity: 0; z-index: 1;
+    }
+    #pane-settings .switch-ui {
+      position: relative; flex: none; width: 44px; height: 26px; border-radius: 13px;
+      background: #d5d5e0; transition: background .2s, box-shadow .15s;
+    }
+    #pane-settings .switch-ui::after {
+      content: ''; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%;
+      background: #fff; box-shadow: 0 1px 3px rgba(20, 20, 40, .25); transition: transform .2s;
+    }
+    #pane-settings .switch:hover .switch-ui { background: #c8c8d6; }
+    #pane-settings .switch input:checked + .switch-ui { background: var(--acc); }
+    #pane-settings .switch input:checked + .switch-ui::after { transform: translateX(18px); }
+    #pane-settings .switch input:focus-visible + .switch-ui { box-shadow: var(--ring); }
+
+    /* Переключатель фильтров */
+    #pane-settings .spec-switch { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    #pane-settings #specPills { display: contents; }
+    #pane-settings .spec-pill {
+      height: 40px; max-width: 300px; padding: 0 18px; border-radius: 999px;
+      border: 1px solid var(--line); background: #fff; color: var(--ink-2); font-weight: 600;
+    }
+    #pane-settings .spec-pill .nm { overflow: hidden; text-overflow: ellipsis; }
+    #pane-settings .spec-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: #b5b5c3; flex: none; }
+    #pane-settings .spec-pill.empty .nm { font-style: italic; font-weight: 500; }
+    #pane-settings .spec-pill[aria-current="true"],
+    #pane-settings .spec-pill[aria-current="true"]:hover:not(:disabled) {
+      background: var(--acc); border-color: var(--acc); color: #fff; box-shadow: 0 4px 14px rgba(91, 69, 214, .28);
+    }
+    #pane-settings .spec-pill[aria-current="true"] .dot { background: rgba(255, 255, 255, .55); }
+    #pane-settings #addSpec {
+      height: 40px; border-radius: 999px; border: 1.5px dashed var(--acc-line); background: transparent; color: var(--acc);
+    }
+    #pane-settings #addSpec:hover:not(:disabled) { background: var(--acc-soft); border-color: var(--acc); }
+
+    /* Карточка фильтра */
+    #pane-settings .spec-head { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+    #pane-settings .spec-badge {
+      flex: none; width: 64px; height: 64px; border-radius: 16px;
+      background: var(--acc-soft); color: var(--acc); display: grid; place-items: center;
+    }
+    #pane-settings .spec-title { flex: 1; min-width: 220px; }
+    #pane-settings .spec-title h3 { margin: 0; font-size: 24px; line-height: 1.25; font-weight: 800; letter-spacing: -.01em; }
+    #pane-settings .spec-title p { margin: 4px 0 0; color: var(--mute); font-size: 15px; }
+    #pane-settings .spec-tools { display: flex; align-items: center; gap: 12px; }
+    #pane-settings .spec-tools .switch { font-weight: 600; }
+    #pane-settings .del-spec { border-color: transparent; background: transparent; color: #b42318; padding: 0 12px; }
+    #pane-settings .del-spec:hover:not(:disabled) { background: #fdecec; border-color: transparent; }
+
+    /* Полоса ИИ: резюме и «Заполнить с ИИ» */
+    #pane-settings .resume-row {
+      display: grid; grid-template-columns: 176px minmax(0, 1fr) auto; gap: 8px 24px; align-items: start;
+      margin: 24px 0 12px; padding: 18px 20px; border: 1px solid #e9e4ff; border-radius: 14px; background: #f7f5ff;
+    }
+    #pane-settings .resume-pick { display: flex; gap: 8px; }
+    #pane-settings .resume-pick input { flex: 1; min-width: 0; text-overflow: ellipsis; }
+    #pane-settings .resume-browse { height: 44px; }
+    #pane-settings .resume-hint { margin: 8px 0 0; font-size: 13px; line-height: 1.5; color: var(--mute); }
+    #pane-settings .resume-note, #pane-settings .suggest-note { display: block; margin-top: 6px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+    #pane-settings .resume-note:empty, #pane-settings .suggest-note:empty { display: none; }
+    #pane-settings .good { color: #1e6b2f; }
+    #pane-settings .bad { color: #b42318; }
+    #pane-settings .suggest {
+      height: 44px; padding: 0 18px; border: 1.5px solid var(--acc); background: #fff; color: var(--acc); font-weight: 700;
+    }
+    #pane-settings .suggest:hover:not(:disabled) { background: var(--acc); border-color: var(--acc); color: #fff; }
+    #pane-settings .suggest:disabled { opacity: .75; }
+    #pane-settings .suggest.busy .ic { animation: st-pulse 1s ease-in-out infinite; }
+    @keyframes st-pulse { 50% { opacity: .3; transform: scale(.85); } }
+
+    /* Зарплата */
+    #pane-settings .salary { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    #pane-settings .in-suffix { position: relative; display: block; flex: 0 1 180px; min-width: 120px; }
+    #pane-settings .in-suffix input { width: 100%; padding-right: 36px; }
+    #pane-settings .in-suffix > span {
+      position: absolute; right: 14px; top: 50%; transform: translateY(-50%); color: #8a8a9a; pointer-events: none;
+    }
+    #pane-settings .salary .dash { color: #a3a3b2; }
+    #pane-settings .check {
+      display: inline-flex; align-items: center; gap: 10px; height: 44px; margin-left: 8px;
+      font-size: 15px; color: var(--ink-2); cursor: pointer; user-select: none;
+    }
+    #pane-settings .f-ctl > select { width: min(320px, 100%); }
+
+    /* Чипы */
+    #pane-settings .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    #pane-settings .chip {
+      height: 40px; padding: 0 16px; border: 1px solid var(--line); border-radius: 12px;
+      background: #fff; color: #555; font-size: 14px; font-weight: 500;
+    }
+    #pane-settings .chip:hover:not(:disabled) { border-color: #c9c9d6; background: #fafafe; color: var(--ink); }
+    #pane-settings .chip[aria-pressed="true"],
+    #pane-settings .chip[aria-pressed="true"]:hover:not(:disabled) {
+      background: var(--acc-soft); border-color: var(--acc-line); color: var(--acc-ink); font-weight: 700;
+    }
+    #pane-settings .f-row-hint { padding-top: 0; }
+    #pane-settings .f-row-hint .f-hint { margin-top: 0; }
+
+    /* Навыки: теги + раскрывающийся редактор */
+    #pane-settings .skills-field {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 52px; padding: 7px;
+      border: 1px solid var(--field); border-radius: 12px; background: #fff; cursor: text;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    #pane-settings .skills-field:hover { border-color: #c6c6d4; }
+    #pane-settings .skills-field:focus-within { border-color: var(--acc); box-shadow: var(--ring); }
+    #pane-settings .skills-field input.skill-input,
+    #pane-settings .skills-field input.skill-input:focus {
+      flex: 1 1 160px; min-width: 140px; height: 36px; padding: 0 8px; border: 0; box-shadow: none; background: transparent;
+    }
+    #pane-settings .skill-tag {
+      display: inline-flex; align-items: center; max-width: 100%; height: 36px; border-radius: 10px;
+      border: 1px solid #e4e2ee; background: #f1f0f7; color: var(--ink-2);
+      transition: background .15s, border-color .15s, box-shadow .15s;
+    }
+    #pane-settings .skill-tag:hover { background: #eae8f4; border-color: #d3cfe6; }
+    #pane-settings .skill-tag button,
+    #pane-settings .skill-tag button:hover:not(:disabled) {
+      height: 34px; border: 0; border-radius: 9px; background: transparent; color: inherit; font-size: 14px;
+    }
+    #pane-settings .skill-tag .skill-tag-btn { gap: 6px; padding: 0 4px 0 12px; font-weight: 600; min-width: 0; }
+    #pane-settings .skill-tag .nm { overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
+    #pane-settings .skill-tag .star { color: var(--acc); font-size: 13px; }
+    #pane-settings .skill-tag .skill-del { width: 30px; padding: 0; color: #8a8a9a; font-size: 18px; font-weight: 400; }
+    #pane-settings .skill-tag .skill-del:hover:not(:disabled) { color: #b42318; }
+    #pane-settings .skill-tag.core { background: var(--acc-soft); border-color: var(--acc-line); color: var(--acc-ink); }
+    #pane-settings .skill-tag.core:hover { background: #e3ddff; }
+    #pane-settings .skill-tag.off { opacity: .55; }
+    #pane-settings .skill-tag.open { border-color: var(--acc); box-shadow: var(--ring); }
+    #pane-settings .skill-tag.flash { animation: st-flash .6s ease-in-out 2; }
+    @keyframes st-flash { 50% { background: #fff3c4; border-color: #e5c04a; } }
+    #pane-settings .skill-editor {
+      margin-top: 12px; padding: 16px 18px; border: 1px solid #e6e3f5; border-radius: 14px; background: #fafaff;
+    }
+    #pane-settings .se-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); gap: 12px 16px; }
+    #pane-settings .se-foot { display: flex; align-items: flex-end; gap: 12px 20px; flex-wrap: wrap; margin-top: 12px; }
+    #pane-settings .se-foot .grow { flex: 1; }
+    #pane-settings .se-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: 13px; font-weight: 600; color: var(--mute); }
+    #pane-settings .se-field input { width: 100%; }
+    #pane-settings .se-w { width: 120px; }
+    #pane-settings .se-core { height: 44px; }
+    #pane-settings .se-done { height: 44px; padding: 0 22px; }
+
+    /* Расширенные настройки фильтра */
+    #pane-settings .spec-undo { display: flex; align-items: center; gap: 12px; margin: 0 0 14px; padding: 10px 14px;
+      background: #fff7e6; border: 1px solid #f3d19c; border-radius: 12px; font-size: 14px; color: #5a4500; }
+    #pane-settings .spec-undo button { margin-left: auto; border-radius: 10px; padding: 6px 14px; font-weight: 600; }
+    #pane-settings details.adv { margin-top: 14px; border-top: 1px solid #efeff5; }
+    #pane-settings details.adv > summary {
+      display: flex; align-items: center; gap: 10px; padding: 18px 0 8px; list-style: none; cursor: pointer;
+      font-weight: 700; font-size: 15px; color: var(--acc-ink); border-radius: 8px;
+    }
+    #pane-settings details.adv > summary::-webkit-details-marker { display: none; }
+    #pane-settings details.adv > summary small { font-weight: 500; font-size: 13px; color: var(--mute); }
+    #pane-settings details.adv > summary .ic { transition: transform .2s; }
+    #pane-settings details.adv[open] > summary .ic { transform: rotate(90deg); }
+    #pane-settings details.adv > summary:hover { color: var(--acc); }
+    #pane-settings details.adv > summary:focus-visible { outline: none; box-shadow: var(--ring); }
+
+    /* Telegram, календарь */
+    #pane-settings #tgChats:not(:empty) { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+    #pane-settings .tg-chat {
+      justify-content: space-between; gap: 12px; margin: 0; padding: 8px 8px 8px 14px;
+      border: 1px solid var(--line); border-radius: 12px; font-size: 15px;
+    }
+    #pane-settings .tg-chat label { display: flex; align-items: center; gap: 10px; min-width: 0; cursor: pointer; }
+    #pane-settings .del-chat { width: 34px; height: 34px; padding: 0; border-color: transparent; font-size: 18px; color: #8a8a9a; }
+    #pane-settings .del-chat:hover:not(:disabled) { color: #b42318; background: #fdecec; border-color: transparent; }
+    #pane-settings .st-tg-add #tgRef { flex: 1 1 240px; min-width: 0; }
+    #pane-settings #tgPicker:not(:empty) {
+      margin-top: 12px; padding: 12px 16px; border: 1px solid var(--line); border-radius: 12px; background: #fafafe;
+    }
+    #pane-settings #tgPicker label { display: flex; align-items: center; gap: 10px; margin: 6px 0; font-size: 15px; cursor: pointer; }
+    #pane-settings #tgPicker button { margin-top: 8px; }
+    #pane-settings .days { display: flex; flex-wrap: wrap; gap: 8px; }
+    #pane-settings .days label {
+      position: relative; display: inline-flex; align-items: center; justify-content: center;
+      min-width: 52px; height: 40px; margin: 0; padding: 0 12px; border: 1px solid var(--line); border-radius: 12px;
+      background: #fff; color: #555; font-size: 14px; cursor: pointer; transition: background .15s, border-color .15s;
+    }
+    #pane-settings .days label:hover { border-color: #c9c9d6; background: #fafafe; }
+    #pane-settings .days input[type=checkbox] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; }
+    #pane-settings .days label:has(input:checked) { background: var(--acc-soft); border-color: var(--acc-line); color: var(--acc-ink); font-weight: 700; }
+    #pane-settings .days label:has(input:focus-visible) { box-shadow: var(--ring); }
+
+    /* Липкий подвал */
+    #pane-settings .st-footer {
+      position: sticky; bottom: 0; z-index: 4;
+      background: rgba(255, 255, 255, .94); backdrop-filter: blur(8px);
+      border-top: 1px solid #e6e6ef; box-shadow: 0 -6px 24px rgba(24, 20, 60, .06);
+    }
+    #pane-settings .st-footer-in {
+      max-width: 1200px; margin: 0 auto; padding: 14px 28px;
+      display: flex; align-items: center; gap: 12px 20px; flex-wrap: wrap;
+    }
+    #pane-settings .st-status { flex: 1; min-width: 200px; display: flex; align-items: center; gap: 6px 16px; flex-wrap: wrap; font-size: 14px; }
+    #pane-settings .st-dirty { display: inline-flex; align-items: center; gap: 8px; color: #8a4b00; font-weight: 600; }
+    #pane-settings .st-dirty i { width: 8px; height: 8px; border-radius: 50%; background: #f59e0b; box-shadow: 0 0 0 3px rgba(245, 158, 11, .2); }
+    #pane-settings #settingsNote { font-size: 14px; color: var(--mute); }
+    #pane-settings #settingsNote.good { color: #1e6b2f; font-weight: 600; }
+    #pane-settings #settingsNote.bad { color: #b42318; font-weight: 600; }
+    #pane-settings #settingsReset, #pane-settings #settingsSave { height: 44px; padding: 0 24px; font-size: 15px; }
+    #pane-settings #settingsSave { padding: 0 32px; }
+
+    @media (max-width: 899px) {
+      #pane-settings .st-shell { grid-template-columns: minmax(0, 1fr); gap: 16px; padding: 16px 16px 28px; }
+      #pane-settings .st-nav { position: static; flex-direction: row; flex-wrap: wrap; gap: 6px; padding: 0; background: none; box-shadow: none; }
+      #pane-settings .st-nav-item {
+        width: auto; height: 40px; padding: 0 14px; gap: 8px; border-radius: 999px;
+        background: #fff; border: 1px solid var(--line); font-size: 14px;
+      }
+      #pane-settings .st-nav-item:hover { background: #fafafe; }
+      #pane-settings .st-nav-item[aria-selected="true"] { border-color: var(--acc-line); background: var(--acc-soft); }
+      #pane-settings .st-head h2 { font-size: 24px; }
+      #pane-settings .st-card, #pane-settings .spec { padding: 20px; border-radius: 18px; }
+      #pane-settings .st-row, #pane-settings .f-row, #pane-settings .resume-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+      #pane-settings .st-row > label, #pane-settings .st-row > .st-label { padding-top: 0; }
+      #pane-settings .f-label { min-height: 0; }
+      #pane-settings .f-row-hint > :first-child { display: none; }
+      #pane-settings .resume-row { padding: 16px; }
+      #pane-settings .resume-row .suggest { justify-self: start; }
+      #pane-settings .spec-badge { width: 52px; height: 52px; border-radius: 14px; }
+      #pane-settings .spec-title h3 { font-size: 20px; }
+      #pane-settings .se-grid { grid-template-columns: minmax(0, 1fr); }
+      #pane-settings .st-footer-in { padding: 12px 16px; }
+    }
+    @media (max-width: 560px) {
+      #pane-settings .spec-head { gap: 14px; }
+      #pane-settings .spec-badge { width: 44px; height: 44px; border-radius: 12px; }
+      #pane-settings .spec-badge .ic { width: 24px; height: 24px; }
+      #pane-settings .spec-title { min-width: 0; }
+      #pane-settings .spec-title h3 { font-size: 18px; }
+      #pane-settings .spec-title p { font-size: 14px; }
+      #pane-settings details.adv > summary small { display: none; }
+      #pane-settings .spec-tools { width: 100%; justify-content: space-between; }
+      #pane-settings .in-suffix { flex: 1 1 120px; }
+      #pane-settings .check { margin-left: 0; }
+      #pane-settings .resume-pick { flex-wrap: wrap; }
+      #pane-settings .resume-pick input { flex-basis: 100%; }
+      #pane-settings .suggest { width: 100%; }
+      /* Подвал — одна строка: «Сбросить», индикатор, «Сохранить». Постоянная
+         подсказка («Изменения действуют…») на телефоне не нужна, а над
+         кнопками отнимала бы строку у формы; сообщение о сохранении или
+         ошибке — своей строкой над кнопками. */
+      #pane-settings .st-footer-in { gap: 10px; }
+      #pane-settings .st-status { flex: 1 1 0; min-width: 0; font-size: 13px; line-height: 1.25; }
+      #pane-settings #settingsNote.idle, #pane-settings #settingsNote:empty { display: none; }
+      #pane-settings .st-status:has(#settingsNote:not(.idle):not(:empty)) { order: -1; flex-basis: 100%; }
+      #pane-settings .st-dirty-txt { display: none; }
+      #pane-settings .st-dirty::after { content: 'Не сохранено'; }
+      #pane-settings #settingsReset { padding: 0 14px; }
+      #pane-settings #settingsSave { padding: 0 20px; }
+    }
     [hidden] { display: none !important; }
   </style>
 </head>
@@ -242,156 +601,285 @@
   </section>
 
   <section id="pane-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
-    <div class="actions">
-      <button id="settingsSave" class="primary">Сохранить настройки</button>
-      <button id="addSpec">+ Добавить специальность</button>
-      <span class="hint" id="settingsNote">Изменения применяются после нажатия «Сохранить настройки» и действуют со следующего поиска.</span>
-    </div>
-    <div class="settings-block" id="profileBlock">
-      <strong>О тебе</strong>
-      <span class="hint">имя подставляется в письма, сообщения рекрутёрам и ответы бота.</span>
-      <div class="llm-row">
-        <label for="profileName">Твоё имя и фамилия</label>
-        <div>
-          <input type="text" id="profileName" placeholder="Иван Петров" spellcheck="false">
-          <div class="hint">пусто — модель пишет про «кандидата» и подписи не ставит.</div>
+    <div class="st-shell">
+      <nav class="st-nav" id="settingsNav" role="tablist" aria-label="Разделы настроек" aria-orientation="vertical">
+        <button type="button" class="st-nav-item" role="tab" data-sec="filters" aria-selected="true"><span data-icon="funnel"></span>Фильтры поиска</button>
+        <button type="button" class="st-nav-item" role="tab" data-sec="accounts" aria-selected="false" tabindex="-1"><span data-icon="key"></span>Аккаунты и ключи</button>
+        <button type="button" class="st-nav-item" role="tab" data-sec="telegram" aria-selected="false" tabindex="-1"><span data-icon="send"></span>Telegram</button>
+        <button type="button" class="st-nav-item" role="tab" data-sec="auto" aria-selected="false" tabindex="-1"><span data-icon="zap"></span>Автоотклик</button>
+        <button type="button" class="st-nav-item" role="tab" data-sec="chat" aria-selected="false" tabindex="-1"><span data-icon="chat"></span>Переписка</button>
+      </nav>
+
+      <div class="st-main">
+        <div class="st-sec" data-sec="filters" role="tabpanel" aria-label="Фильтры поиска">
+          <div class="st-head">
+            <h2>Фильтры поиска</h2>
+            <p>Какие вакансии искать и как их отбирать. Фильтров может быть несколько — например, под разные должности.</p>
+          </div>
+          <div class="settings-block st-card" id="profileBlock">
+            <div class="st-card-head">
+              <span class="st-ic" data-icon="user"></span>
+              <div><h3>О тебе</h3><p>Имя подставляется в письма, сообщения рекрутёрам и ответы бота.</p></div>
+            </div>
+            <div class="st-row">
+              <label for="profileName">Имя и фамилия</label>
+              <div>
+                <input type="text" id="profileName" class="w-md" placeholder="Иван Петров" spellcheck="false">
+                <p class="st-hint">Пусто — модель пишет про «кандидата» и подписи не ставит.</p>
+              </div>
+            </div>
+          </div>
+          <div class="spec-switch">
+            <div id="specPills" role="group" aria-label="Фильтры"></div>
+            <button type="button" id="addSpec"><span data-icon="plus"></span>Добавить резюме</button>
+          </div>
+          <div class="spec-undo" id="specUndo" role="status" hidden>
+            <span id="specUndoText"></span>
+            <button type="button" id="specUndoBtn">Вернуть</button>
+          </div>
+          <div id="specList"></div>
+          <div class="settings-block st-card" id="stopBlock">
+            <div class="st-card-head">
+              <span class="st-ic" data-icon="ban"></span>
+              <div>
+                <h3><label for="stopWords">Исключить вакансии со словами</label></h3>
+                <p>По одному слову или фразе в строке. Вакансия отсеивается, если слово есть в названии или дважды и больше в описании. Действует для всех фильтров.</p>
+              </div>
+            </div>
+            <textarea id="stopWords" rows="5" placeholder="например:&#10;вахта&#10;1С&#10;Битрикс"></textarea>
+          </div>
+        </div>
+
+        <div class="st-sec" data-sec="accounts" role="tabpanel" aria-label="Аккаунты и ключи" hidden>
+          <div class="st-head">
+            <h2>Аккаунты и ключи</h2>
+            <p>Вход на hh.ru и ключи сервисов. Всё хранится только на этом компьютере, в data/settings.json — в git этот каталог не попадает.</p>
+          </div>
+          <div class="settings-block st-card" id="hhLoginBlock">
+            <div class="st-card-head">
+              <span class="st-ic" data-icon="login"></span>
+              <div><h3>Вход на hh.ru</h3><p>Нужен, чтобы программа откликалась на вакансии от твоего имени. Достаточно войти один раз — вход запоминается на этом компьютере.</p></div>
+            </div>
+            <div class="st-login">
+              <button type="button" id="hhLoginBtn" class="primary">Войти в hh.ru</button>
+              <span id="hhLoginState" class="login-state"></span>
+            </div>
+            <p class="st-hint">Откроется отдельное окно браузера с сайтом hh.ru. Введи там логин и пароль (или код из СМС) сам —
+              программа не видит и не сохраняет пароль. Когда вход получится, окно закроется само.</p>
+          </div>
+          <div class="settings-block st-card" id="llmBlock">
+            <div class="st-card-head">
+              <span class="st-ic" data-icon="sparkles"></span>
+              <div><h3>Нейросеть для писем</h3><p>Пишет письма, личные сообщения рекрутёрам, отвечает на анкеты и заполняет фильтры по резюме.</p></div>
+            </div>
+            <div class="st-row">
+              <label for="llmKey">Ключ OpenRouter</label>
+              <div>
+                <div class="st-inline">
+                  <input type="password" id="llmKey" class="w-md" placeholder="sk-or-v1-…" autocomplete="off" spellcheck="false">
+                  <button type="button" id="llmKeyShow">Показать ключ</button>
+                </div>
+                <p class="st-hint">Берётся на openrouter.ai/keys. Пусто — ключ берётся из файла .env.</p>
+              </div>
+            </div>
+            <div class="st-row">
+              <label for="llmModel">Какая нейросеть пишет</label>
+              <div>
+                <select id="llmModel" class="w-full"></select>
+                <input type="text" id="llmModelOther" class="w-full st-gap" placeholder="например z-ai/glm-5.3" spellcheck="false" hidden>
+                <p class="st-hint">Выбранная пробуется первой; если она откажет (лимит, кончились деньги),
+                  пойдут запасные из config.json. Платные модели тратят деньги со счёта OpenRouter.</p>
+              </div>
+            </div>
+          </div>
+          <div class="settings-block st-card" id="captchaBlock">
+            <div class="st-card-head">
+              <span class="st-ic" data-icon="shield"></span>
+              <div><h3>Капча hh.ru</h3><p>Картинка капчи уходит в сервис распознавания, ответ программа вписывает сама.
+                Не решилось — пищит и ждёт, пока решишь в окне браузера. Риск для аккаунта hh.ru — на тебе.</p></div>
+            </div>
+            <div class="st-row st-row-switch">
+              <span class="st-label">Решать автоматически</span>
+              <label class="switch"><input type="checkbox" id="captchaEnabled"><span class="switch-ui" aria-hidden="true"></span><span>решать капчу через сервис</span></label>
+            </div>
+            <div class="st-row">
+              <label for="captchaProvider">Сервис</label>
+              <div>
+                <select id="captchaProvider" class="w-md">
+                  <option value="rucaptcha">ruCaptcha (rucaptcha.com, оплата в рублях)</option>
+                  <option value="2captcha">2captcha (2captcha.com)</option>
+                </select>
+              </div>
+            </div>
+            <div class="st-row">
+              <label for="captchaKey">Ключ сервиса</label>
+              <div>
+                <input type="password" id="captchaKey" class="w-md" placeholder="32 символа из личного кабинета" autocomplete="off" spellcheck="false">
+                <p class="st-hint">В личном кабинете сервиса, раздел API. Одна капча стоит доли копейки.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="st-sec" data-sec="telegram" role="tabpanel" aria-label="Telegram" hidden>
+          <div class="st-head">
+            <h2>Telegram</h2>
+            <p>Каналы и группы, где искать вакансии. Нужен VPN и вход: npm run tg:login.</p>
+          </div>
+          <div class="settings-block st-card" id="tgBlock">
+            <div class="st-card-head">
+              <span class="st-ic" data-icon="send"></span>
+              <div><h3>Где искать</h3><p>Снятая галочка — чат остаётся в списке, но поиск в нём не идёт.</p></div>
+            </div>
+            <div id="tgChats"></div>
+            <div class="st-inline st-tg-add">
+              <input type="text" id="tgRef" placeholder="@канал или ссылка t.me" spellcheck="false">
+              <button type="button" id="tgAdd">Добавить канал</button>
+              <button type="button" id="tgPick">Выбрать из моих каналов и групп</button>
+            </div>
+            <div id="tgPicker"></div>
+            <span class="st-hint st-note" id="tgNote" role="status"></span>
+            <div class="st-row st-divided">
+              <label for="tgDays">Первое чтение</label>
+              <div>
+                <div class="st-inline"><span>смотреть посты за последние</span>
+                  <input type="number" id="tgDays" class="w-num" min="1" max="90" step="1"><span>дней</span></div>
+                <p class="st-hint">Только для нового чата; дальше читаются посты с прошлого раза.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="st-sec" data-sec="auto" role="tabpanel" aria-label="Автоотклик" hidden>
+          <div class="st-head">
+            <h2>Автоотклик</h2>
+            <p>Поиск сам одобряет подходящее и отправляет отклики — без твоего просмотра. По умолчанию выключен.</p>
+          </div>
+          <div class="settings-block st-card" id="autoBlock">
+            <div class="st-card-head">
+              <span class="st-ic st-ic-warn" data-icon="zap"></span>
+              <div><h3>Отправка без просмотра</h3><p>Отправленный отклик не отозвать. Советуем сначала поработать вручную.</p></div>
+            </div>
+            <div class="st-row st-row-switch">
+              <span class="st-label">Автоотклик</span>
+              <label class="switch"><input type="checkbox" id="autoApply"><span class="switch-ui" aria-hidden="true"></span><span>включить автоотклик (отправка без моего просмотра)</span></label>
+            </div>
+            <div class="st-row">
+              <label for="autoMinScore">Порог скоринга</label>
+              <div>
+                <input type="number" id="autoMinScore" class="w-num" min="0" max="100" step="1" placeholder="—">
+                <p class="st-hint">Отправлять автоматически, только если скоринг вакансии не ниже этого порога (0–100).
+                  Пусто — общий порог minScore из config.json.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="st-sec" data-sec="chat" role="tabpanel" aria-label="Переписка" hidden>
+          <div class="st-head">
+            <h2>Переписка</h2>
+            <p>Бот-секретарь, календарь собеседований, напоминания молчащим рекрутёрам и ящик откликов hh.ru.</p>
+          </div>
+          <div class="settings-block st-card" id="secretaryBlock">
+            <div class="st-card-head">
+              <span class="st-ic" data-icon="chat"></span>
+              <div><h3>Секретарь в личке рабочего аккаунта</h3><p>Бот отвечает рекрутёрам, которые пишут в личку твоего рабочего Telegram-аккаунта (он задаётся в config.json → bot.secretary.account).
+                Подключается в Telegram: Настройки → Telegram для бизнеса / Chat Automation → Чат-боты → твой бот (токен из TG_BOT_TOKEN). Тумблер действует сразу, без перезапуска бота.</p></div>
+            </div>
+            <label class="switch"><input type="checkbox" id="secEnabled"><span class="switch-ui" aria-hidden="true"></span><span>разрешить секретарю отвечать рекрутёрам</span></label>
+          </div>
+          <div class="settings-block st-card" id="calendarBlock">
+            <div class="st-card-head">
+              <span class="st-ic" data-icon="calendar"></span>
+              <div><h3>Календарь секретаря</h3><p>Локальный, без Google: рабочие окна минус уже записанные встречи.</p></div>
+            </div>
+            <label class="switch"><input type="checkbox" id="calSlots"><span class="switch-ui" aria-hidden="true"></span><span>предлагать рекрутёру слоты и проверять названное им время по рабочим окнам</span></label>
+            <div class="st-row st-divided">
+              <label for="calTz">Часовой пояс</label>
+              <div><input type="text" id="calTz" class="w-md" spellcheck="false">
+                <p class="st-hint">Имя IANA, например Europe/Moscow; в нём строятся слоты и называется время рекрутёру.</p></div>
+            </div>
+            <div class="st-row">
+              <span class="st-label">Рабочие дни</span>
+              <div class="days" id="calDays"></div>
+            </div>
+            <div class="st-row">
+              <label for="calStart">Рабочий день</label>
+              <div class="st-inline"><span>с</span><input type="time" id="calStart"><span>до</span><input type="time" id="calEnd"></div>
+            </div>
+            <div class="st-row">
+              <label for="calSlot">Встреча</label>
+              <div class="st-inline"><input type="number" id="calSlot" class="w-num" min="15" max="240" step="5"><span>мин, отступ</span>
+                <input type="number" id="calBuffer" class="w-num" min="0" max="120" step="5"><span>мин</span></div>
+            </div>
+            <div class="st-row">
+              <label for="calHorizon">Горизонт</label>
+              <div>
+                <div class="st-inline"><input type="number" id="calHorizon" class="w-num" min="1" max="60"><span>дней, не ближе чем через</span>
+                  <input type="number" id="calLead" class="w-num" min="0" max="168"><span>ч</span></div>
+                <p class="st-hint">Для предложенных слотов.</p>
+              </div>
+            </div>
+            <div class="st-switches st-divided">
+              <label class="switch"><input type="checkbox" id="calIcs"><span class="switch-ui" aria-hidden="true"></span><span>прикладывать файл .ics к пингу о собеседовании</span></label>
+              <div>
+                <div class="st-inline">
+                  <label class="switch"><input type="checkbox" id="calRemind"><span class="switch-ui" aria-hidden="true"></span><span>напоминание за</span></label>
+                  <input type="number" id="calRemindMin" class="w-num" min="5" max="1440" aria-label="За сколько минут напоминать"><span>мин до собеседования</span>
+                </div>
+                <p class="st-hint">Это второй пинг о том же собеседовании; выключи, если хочешь только один.</p>
+              </div>
+            </div>
+          </div>
+          <div class="settings-block st-card" id="followupsBlock">
+            <div class="st-card-head">
+              <span class="st-ic" data-icon="bell"></span>
+              <div><h3>Напоминания молчащим рекрутёрам (дожимы)</h3><p>Одно повторное сообщение рекрутёру, который молчит. Уходит с твоего рабочего Telegram-аккаунта и необратимо. По умолчанию выключено.</p></div>
+            </div>
+            <label class="switch"><input type="checkbox" id="fuEnabled"><span class="switch-ui" aria-hidden="true"></span><span>разрешить напоминания молчащим рекрутёрам</span></label>
+            <div class="st-row st-divided">
+              <label for="fuAfter">Молчит</label>
+              <div class="st-inline"><input type="number" id="fuAfter" class="w-num" min="1" max="30"><span>дней и дольше — напомнить</span></div>
+            </div>
+            <div class="st-row">
+              <label for="fuMaxAge">Не старше</label>
+              <div class="st-inline"><input type="number" id="fuMaxAge" class="w-num" min="1" max="60"><span>дней с отклика — по более старым не напоминать</span></div>
+            </div>
+          </div>
+          <div class="settings-block st-card" id="hhInboxBlock">
+            <div class="st-card-head">
+              <span class="st-ic" data-icon="inbox"></span>
+              <div><h3>Ящик откликов hh.ru</h3><p>Читает новые сообщения работодателей и приглашения в чатах откликов. По умолчанию выключено.</p></div>
+            </div>
+            <div class="st-switches">
+              <label class="switch"><input type="checkbox" id="hhEnabled"><span class="switch-ui" aria-hidden="true"></span><span>проверять сообщения от работодателей на hh.ru</span></label>
+              <div>
+                <label class="switch"><input type="checkbox" id="hhReply"><span class="switch-ui" aria-hidden="true"></span><span>отвечать работодателям автоматически</span></label>
+                <p class="st-hint">Чат открывается без блокировки, работодатель увидит, что сообщения прочитаны; нужна проба: npm run hh:inbox -- --probe-chat.</p>
+              </div>
+            </div>
+            <div class="st-row st-divided">
+              <label for="hhInterval">Проверять</label>
+              <div class="st-inline"><span>раз в</span><input type="number" id="hhInterval" class="w-num" min="10" max="1440"><span>мин</span></div>
+            </div>
+            <div class="st-row">
+              <label for="hhMaxReplies">Лимит ответов</label>
+              <div class="st-inline"><span>не больше</span><input type="number" id="hhMaxReplies" class="w-num" min="1" max="100"><span>в сутки</span></div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
-    <div class="settings-block" id="llmBlock">
-      <strong>Нейросеть для писем</strong>
-      <span class="hint">кто пишет письма, личные сообщения рекрутёрам и отвечает на анкеты.</span>
-      <div class="llm-row">
-        <label for="llmKey">Ключ OpenRouter (API-ключ)</label>
-        <div>
-          <input type="password" id="llmKey" placeholder="sk-or-v1-…" autocomplete="off" spellcheck="false">
-          <button type="button" id="llmKeyShow">Показать ключ</button>
-          <div class="hint">берётся на openrouter.ai/keys. Хранится в data/settings.json на этом компьютере —
-            в git этот каталог не попадает. Пусто — ключ берётся из файла .env.</div>
+
+    <div class="st-footer">
+      <div class="st-footer-in">
+        <button type="button" id="settingsReset" disabled title="Вернуть всё, как было при последнем сохранении">Сбросить</button>
+        <div class="st-status">
+          <span class="st-dirty" id="settingsDirty" hidden><i aria-hidden="true"></i><span class="st-dirty-txt">Есть несохранённые изменения</span></span>
+          <span class="hint idle" id="settingsNote" role="status">Изменения действуют со следующего поиска.</span>
         </div>
+        <button id="settingsSave" class="primary">Сохранить</button>
       </div>
-      <div class="llm-row">
-        <label for="llmModel">Какая нейросеть пишет</label>
-        <div>
-          <select id="llmModel"></select>
-          <input type="text" id="llmModelOther" placeholder="например z-ai/glm-5.3" spellcheck="false" hidden>
-          <div class="hint">выбранная пробуется первой; если она откажет (лимит, кончились деньги),
-            пойдут запасные из config.json. Платные модели тратят деньги со счёта OpenRouter.</div>
-        </div>
-      </div>
-    </div>
-    <div class="settings-block" id="captchaBlock">
-      <strong>Капча hh.ru</strong>
-      <span class="hint">картинка капчи уходит в сервис распознавания, ответ программа вписывает сама.
-        Не решилось — пищит и ждёт, пока решишь в окне браузера. Риск для аккаунта hh.ru — на тебе.</span>
-      <div class="llm-row">
-        <label for="captchaEnabled">Решать автоматически</label>
-        <div><input type="checkbox" id="captchaEnabled"></div>
-      </div>
-      <div class="llm-row">
-        <label for="captchaProvider">Сервис</label>
-        <div>
-          <select id="captchaProvider">
-            <option value="rucaptcha">ruCaptcha (rucaptcha.com, оплата в рублях)</option>
-            <option value="2captcha">2captcha (2captcha.com)</option>
-          </select>
-        </div>
-      </div>
-      <div class="llm-row">
-        <label for="captchaKey">Ключ сервиса (API-ключ)</label>
-        <div>
-          <input type="password" id="captchaKey" placeholder="32 символа из личного кабинета" autocomplete="off" spellcheck="false">
-          <div class="hint">в личном кабинете сервиса, раздел API. Одна капча стоит доли копейки.
-            Хранится в data/settings.json на этом компьютере.</div>
-        </div>
-      </div>
-    </div>
-    <div class="settings-block" id="hhLoginBlock">
-      <strong>Вход на hh.ru</strong>
-      <span class="hint">нужен, чтобы программа могла откликаться на вакансии от твоего имени. Достаточно войти один раз — вход запоминается на этом компьютере.</span>
-      <div class="actions" style="padding-left:0;">
-        <button type="button" id="hhLoginBtn" class="primary">Войти в hh.ru</button>
-        <span id="hhLoginState" class="login-state"></span>
-      </div>
-      <div class="hint">Откроется отдельное окно браузера с сайтом hh.ru. Введи там логин и пароль (или код из СМС) сам —
-        программа не видит и не сохраняет пароль. Когда вход получится, окно закроется само.</div>
-    </div>
-    <div id="specList"></div>
-    <div class="settings-block" id="stopBlock">
-      <label for="stopWords"><strong>Стоп-слова — исключить вакансии</strong>
-        <span class="hint">по одному в строке. Отсекают вакансию, если слово в заголовке или 2+ раза в описании.</span></label>
-      <textarea id="stopWords" rows="5"></textarea>
-    </div>
-    <div class="settings-block" id="tgBlock">
-      <strong>Telegram</strong>
-      <span class="hint">каналы и группы, где искать вакансии. Нужен VPN и вход: npm run tg:login.</span>
-      <div id="tgChats"></div>
-      <div class="actions" style="padding-left:0; flex-wrap:wrap;">
-        <input type="text" id="tgRef" placeholder="@канал или ссылка t.me" size="28">
-        <button id="tgAdd">Добавить канал</button>
-        <button id="tgPick">Выбрать из моих каналов и групп</button>
-        <label class="hint">При первом чтении смотреть посты за последние, дней:
-          <input type="number" id="tgDays" min="1" max="90" step="1" style="width:64px;"></label>
-      </div>
-      <div id="tgPicker"></div>
-      <span class="hint" id="tgNote"></span>
-    </div>
-    <div class="settings-block" id="autoBlock">
-      <strong>Автоотклик</strong>
-      <span class="hint">поиск сам одобряет подходящее и отправляет — без твоего просмотра. По умолчанию выключен.</span>
-      <div style="margin-top:8px;">
-        <label><input type="checkbox" id="autoApply"> включить автоотклик (отправка без моего просмотра)</label>
-      </div>
-      <div style="margin-top:8px;">
-        <label class="hint">Отправлять автоматически, только если вакансия набрала баллов не меньше
-          <input type="number" id="autoMinScore" min="0" max="100" step="1" style="width:72px;">
-          (пусто — общий порог minScore из config.json)</label>
-      </div>
-    </div>
-    <div class="settings-block" id="secretaryBlock">
-      <strong>Секретарь в личке рабочего аккаунта</strong>
-      <span class="hint">бот отвечает рекрутёрам, которые пишут в личку твоего рабочего Telegram-аккаунта (он задаётся в config.json → bot.secretary.account). Подключается в Telegram:
-        Настройки → Telegram для бизнеса / Chat Automation → Чат-боты → твой бот (токен из TG_BOT_TOKEN). Тумблер действует сразу, без перезапуска бота.</span>
-      <div style="margin-top:8px;"><label><input type="checkbox" id="secEnabled"> разрешить секретарю отвечать рекрутёрам</label></div>
-    </div>
-    <div class="settings-block" id="calendarBlock">
-      <strong>Календарь секретаря</strong>
-      <span class="hint">локальный, без Google: рабочие окна минус уже записанные встречи.</span>
-      <div style="margin-top:8px;"><label><input type="checkbox" id="calSlots"> предлагать рекрутёру слоты и проверять названное им время по рабочим окнам</label></div>
-      <div class="llm-row"><label for="calTz">Часовой пояс</label><div><input type="text" id="calTz" size="22" spellcheck="false">
-        <div class="hint">имя IANA, например Europe/Moscow; в нём строятся слоты и называется время рекрутёру.</div></div></div>
-      <div class="llm-row"><label>Рабочие дни</label><div class="days" id="calDays"></div></div>
-      <div class="llm-row"><label for="calStart">Рабочий день</label><div>
-        с <input type="time" id="calStart"> до <input type="time" id="calEnd"></div></div>
-      <div class="llm-row"><label for="calSlot">Встреча, минут</label><div>
-        <input type="number" id="calSlot" min="15" max="240" step="5" style="width:72px;">
-        отступ <input type="number" id="calBuffer" min="0" max="120" step="5" style="width:72px;"> мин</div></div>
-      <div class="llm-row"><label for="calHorizon">Горизонт, дней</label><div>
-        <input type="number" id="calHorizon" min="1" max="60" style="width:72px;">
-        не ближе чем через <input type="number" id="calLead" min="0" max="168" style="width:72px;"> ч (для предложенных слотов)</div></div>
-      <div style="margin-top:8px;"><label><input type="checkbox" id="calIcs"> прикладывать файл .ics к пингу о собеседовании</label></div>
-      <div style="margin-top:4px;"><label><input type="checkbox" id="calRemind"> напоминание за
-        <input type="number" id="calRemindMin" min="5" max="1440" style="width:72px;"> мин до собеседования</label>
-        <div class="hint">это второй пинг о том же собеседовании; выключи, если хочешь только один.</div></div>
-    </div>
-    <div class="settings-block" id="followupsBlock">
-      <strong>Напоминания молчащим рекрутёрам (дожимы)</strong>
-      <span class="hint">одно повторное сообщение рекрутёру, который молчит. Уходит с твоего рабочего Telegram-аккаунта и необратимо.
-        По умолчанию выключено.</span>
-      <div style="margin-top:8px;"><label><input type="checkbox" id="fuEnabled"> разрешить напоминания молчащим рекрутёрам</label></div>
-      <div style="margin-top:8px;"><label class="hint">Напоминать, если рекрутёр молчит, дней:
-        <input type="number" id="fuAfter" min="1" max="30" style="width:72px;"></label>
-        <label class="hint">· не напоминать по откликам старше, дней: <input type="number" id="fuMaxAge" min="1" max="60" style="width:72px;"></label></div>
-    </div>
-    <div class="settings-block" id="hhInboxBlock">
-      <strong>Ящик откликов hh.ru</strong>
-      <span class="hint">читает новые сообщения работодателей и приглашения в чатах откликов. По умолчанию выключено.</span>
-      <div style="margin-top:8px;"><label><input type="checkbox" id="hhEnabled"> проверять сообщения от работодателей на hh.ru</label></div>
-      <div style="margin-top:4px;"><label><input type="checkbox" id="hhReply"> отвечать работодателям автоматически</label>
-        <div class="hint">чат открывается без блокировки, работодатель увидит, что сообщения прочитаны; нужна проба: npm run hh:inbox -- --probe-chat.</div></div>
-      <div style="margin-top:8px;"><label class="hint">Проверять раз в
-        <input type="number" id="hhInterval" min="10" max="1440" style="width:72px;"> мин</label>
-        <label class="hint">· ответов в сутки не больше <input type="number" id="hhMaxReplies" min="1" max="100" style="width:72px;"></label></div>
     </div>
   </section>
 
@@ -1033,6 +1521,11 @@ async function pollSearch() {
       // Заголовок — отдельной строкой: это самый частый «тихий» отсев, когда
       // «Слова заголовка» специальности не совпадают с тем, что ищется.
       if (r.rejectedTitle) parts.push(`заголовок не совпал со «Словами заголовка» ${r.rejectedTitle}`);
+      // Зарплата и формат — тоже отдельными строками, а не в общей сумме:
+      // это поля фильтра, которые пользователь только что выставил сам, и
+      // ему надо видеть, что именно они урезали выдачу.
+      if (r.rejectedSalary) parts.push(`зарплата не подошла ${r.rejectedSalary}`);
+      if (r.rejectedFormat) parts.push(`формат работы не подошёл ${r.rejectedFormat}`);
       const rejected = (r.rejectedExperience ?? 0) + (r.rejectedGrade ?? 0)
         + (r.rejectedStopword ?? 0) + (r.rejectedInternship ?? 0);
       if (rejected) parts.push(`отсеяно фильтрами ${rejected}`);
@@ -1492,76 +1985,451 @@ function renderLlm(llm) {
   document.getElementById('llmKey').value = llm.apiKey ?? '';
 }
 
-function skillRow(k) {
-  return `<tr class="skill" data-id="${esc(k.id ?? '')}">
-    <td><input type="text" data-k="name" value="${esc(k.name)}"></td>
-    <td><input type="text" data-k="synonyms" value="${esc(k.synonyms.join(', '))}"></td>
-    <td><input type="number" data-k="weight" min="0" max="100" step="1" value="${k.weight}"></td>
-    <td><input type="checkbox" data-k="core" ${k.core ? 'checked' : ''}></td>
-    <td><button class="del-skill" title="Удалить навык">×</button></td>
-  </tr>`;
+// ----------------------------------------------------------------------------
+// Вкладка «Настройки» (редизайн 2026-11-19). Специальность показывается как
+// «Фильтр автоматического поиска» — форма в духе фильтра вакансий hh.ru:
+// должность, зарплата, опыт, занятость, график, формат и навыки-теги.
+//
+// Карточек .spec в DOM столько же, сколько специальностей, видна одна
+// (активная). collectSettings собирает все, поэтому переключение между
+// фильтрами ничего не теряет и не требует сохранения.
+// ----------------------------------------------------------------------------
+
+const ICON_PATHS = {
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4.5 20.5c.9-3.9 3.9-6.5 7.5-6.5s6.6 2.6 7.5 6.5"/>',
+  coins: '<circle cx="8" cy="8" r="6"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/><path d="m16.71 13.88.7.71-2.82 2.82"/>',
+  bars: '<path d="M3 21h18"/><rect x="5" y="13" width="3" height="5" rx="1"/><rect x="10.5" y="9" width="3" height="9" rx="1"/><rect x="16" y="5" width="3" height="13" rx="1"/>',
+  briefcase: '<rect x="3" y="7" width="18" height="13" rx="2.5"/><path d="M8.5 7V5.5a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2V7"/><path d="M3 12.5h18"/><path d="M11 12.5V14h2v-1.5"/>',
+  doc: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6"/><path d="M9 17h4"/>',
+  calendar: '<rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M8 3v4M16 3v4M3 10h18"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  laptop: '<rect x="4" y="5" width="16" height="11" rx="2"/><path d="M2 19h20"/>',
+  layers: '<path d="m12 3 9 4.5-9 4.5-9-4.5z"/><path d="m3 12 9 4.5 9-4.5"/><path d="m3 16.5 9 4.5 9-4.5"/>',
+  file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M12 11v6"/><path d="m9.5 14.5 2.5 2.5 2.5-2.5"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  type: '<path d="M4 7V5h16v2"/><path d="M12 5v14"/><path d="M9 19h6"/>',
+  sparkles: '<path d="M12 3.5l1.6 4.4 4.4 1.6-4.4 1.6L12 15.5l-1.6-4.4L6 9.5l4.4-1.6z"/><path d="M18.5 15l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/><path d="M5.5 15.5l.5 1.3 1.3.5-1.3.5-.5 1.3-.5-1.3-1.3-.5 1.3-.5z"/>',
+  funnel: '<path d="M3.5 5h17l-6.5 7.5V19l-4 2v-8.5z"/>',
+  key: '<circle cx="7.5" cy="15.5" r="4"/><path d="m10.4 12.6 9.1-9.1"/><path d="m16.5 6.5 2.5 2.5"/><path d="m14 9 2 2"/>',
+  send: '<path d="M21 3 10.5 13.5"/><path d="M21 3l-6.5 18-4-7.5-7.5-4z"/>',
+  zap: '<path d="M13 2.5 4.5 13.5H11l-1 8 8.5-11H12z"/>',
+  chat: '<path d="M20.5 12a8.5 8.5 0 0 1-12.3 7.6L3.5 20.5l1-4.5A8.5 8.5 0 1 1 20.5 12z"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  trash: '<path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/>',
+  ban: '<circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/>',
+  login: '<path d="M15 3h3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-3"/><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/>',
+  shield: '<path d="M12 3 4.5 6v6c0 4.5 3.2 7.9 7.5 9 4.3-1.1 7.5-4.5 7.5-9V6z"/><path d="m9 12 2 2 4-4"/>',
+  bell: '<path d="M6 16v-5a6 6 0 1 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
+  inbox: '<path d="M3 13h5l1.5 3h5l1.5-3h5"/><path d="M5.5 5h13L21 13v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5z"/>',
+  chevron: '<path d="m9 6 6 6-6 6"/>',
+};
+
+/** Линейная иконка: inline SVG, цвет — currentColor, без внешних ресурсов. */
+function icon(name, size) {
+  const s = size || 20;
+  return `<svg class="ic" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"`
+    + ` stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${ICON_PATHS[name] || ''}</svg>`;
+}
+
+/**
+ * Опыт в форме — градация hh.ru, а не число: «1–3 года» человеку понятнее, чем
+ * «сколько лет вписать». В настройки по-прежнему уходит одно число лет —
+ * нижняя граница градации, — так что гейт опыта работает с ним как раньше.
+ */
+const EXPERIENCE_BUCKETS = [[0, 'Нет опыта'], [2, '1–3 года'], [4, '3–6 лет'], [6, 'Более 6 лет']];
+
+/** Годы опыта → значение списка: 0 → 0, 1–2 → 2, 3–5 → 4, 6 и больше → 6. */
+function experienceBucket(years) {
+  const y = Math.floor(Number(years));
+  if (!Number.isFinite(y) || y <= 0) return 0;
+  if (y <= 2) return 2;
+  if (y <= 5) return 4;
+  return 6;
+}
+
+const EMPLOYMENT_CHIPS = [['FULL', 'Полная'], ['PART', 'Частичная'], ['PROJECT', 'Проектная'], ['INTERNSHIP', 'Стажировка']];
+const CONTRACT_CHIPS = [['LABOR', 'Трудовой договор'], ['GPH', 'ГПХ или совместительство']];
+const SCHEDULE_CHIPS = [
+  ['FIVE_ON_TWO_OFF', '5/2'], ['TWO_ON_TWO_OFF', '2/2'], ['SIX_ON_ONE_OFF', '6/1'],
+  ['FLEXIBLE', 'Свободный'], ['WEEKEND', 'По выходным'], ['OTHER', 'Другое'],
+];
+const WORK_FORMAT_CHIPS = [['ON_SITE', 'В офисе'], ['HYBRID', 'Гибрид'], ['REMOTE', 'Удалённо']];
+const WORKING_HOURS = [
+  ['', 'Любые'], ['HOURS_4', '4 часа в день'], ['HOURS_6', '6 часов в день'], ['HOURS_8', '8 часов в день'],
+  ['HOURS_10', '10 часов в день'], ['HOURS_12', '12 часов в день'], ['FLEXIBLE', 'По договорённости'],
+];
+
+/**
+ * Фильтры специальности с умолчаниями. Специальность без filters (файл,
+ * записанный до 2026-11-19, или сервер старше страницы) — это «фильтров нет»:
+ * пустые списки и «Не указана» включена, ровно прежнее поведение поиска.
+ */
+function specFilters(s) {
+  const f = s && typeof s.filters === 'object' && s.filters !== null ? s.filters : {};
+  const list = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
+  const money = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  return {
+    salaryFrom: money(f.salaryFrom),
+    salaryTo: money(f.salaryTo),
+    includeNoSalary: f.includeNoSalary !== false,
+    employment: list(f.employment),
+    contract: list(f.contract),
+    schedule: list(f.schedule),
+    workingHours: typeof f.workingHours === 'string' && f.workingHours !== '' ? f.workingHours : null,
+    workFormat: list(f.workFormat),
+  };
+}
+
+/** «150 000» → 150000; пустое поле → null (зарплата не задана). */
+function parseSalary(text) {
+  const t = String(text).replace(/\s/g, '');
+  if (t === '') return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** 150000 → «150 000»: длинное число без разрядов читается с ошибкой на ноль. */
+function fmtSalary(n) {
+  return n === null || n === undefined ? '' : String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
 }
 
 function blankSpecialty() {
-  return { name: '', enabled: true, queries: [], titleWords: [], skills: [], experienceYears: 1, resumePdf: null };
+  return {
+    name: '', enabled: true, queries: [], titleWords: [], skills: [], experienceYears: 1, resumePdf: null,
+    filters: specFilters(null),
+  };
 }
 
-/** Нетронутая заготовка специальности не сохраняется: иначе пустое название не дало бы сохранить остальные настройки. */
+/** Нетронутая заготовка фильтра не сохраняется: иначе пустое название не дало бы сохранить остальные настройки. */
 function isBlankSpecCard(el) {
   const v = (f) => el.querySelector(`[data-f="${f}"]`).value.trim();
   return !el.dataset.id && v('name') === '' && v('queries') === '' && v('titleWords') === ''
-    && v('resumePdf') === '' && el.querySelectorAll('.skill').length === 0;
+    && v('resumePdf') === '' && el.querySelectorAll('.skill').length === 0
+    && v('salaryFrom') === '' && v('salaryTo') === '' && v('workingHours') === ''
+    && el.querySelector('[data-f="includeNoSalary"]').checked
+    && el.querySelectorAll('.chip[aria-pressed="true"]').length === 0;
+}
+
+function collectSpecialty(el) {
+  const f = (name) => el.querySelector(`[data-f="${name}"]`);
+  const chips = (group) => [...el.querySelectorAll(`.chips[data-group="${group}"] .chip[aria-pressed="true"]`)]
+    .map((b) => b.dataset.v);
+  return {
+    id: el.dataset.id || undefined,
+    name: f('name').value,
+    enabled: f('enabled').checked,
+    queries: lines(f('queries').value),
+    titleWords: f('titleWords').value.split(',').map((x) => x.trim()).filter(Boolean),
+    experienceYears: Number(f('experienceYears').value),
+    resumePdf: f('resumePdf').value.trim() || null,
+    legacyLetters: el.dataset.legacy === 'true',
+    skills: [...el.querySelectorAll('.skill')].map((k) => ({
+      id: k.dataset.id || undefined,
+      name: k.querySelector('[data-k="name"]').value,
+      synonyms: k.querySelector('[data-k="synonyms"]').value.split(',').map((x) => x.trim()).filter(Boolean),
+      weight: Number(k.querySelector('[data-k="weight"]').value),
+      core: k.querySelector('[data-k="core"]').checked,
+    })),
+    filters: {
+      salaryFrom: parseSalary(f('salaryFrom').value),
+      salaryTo: parseSalary(f('salaryTo').value),
+      includeNoSalary: f('includeNoSalary').checked,
+      employment: chips('employment'),
+      contract: chips('contract'),
+      schedule: chips('schedule'),
+      workingHours: f('workingHours').value || null,
+      workFormat: chips('workFormat'),
+    },
+  };
+}
+
+function formRow(iconName, label, control, extraClass) {
+  return `<div class="f-row${extraClass ? ' ' + extraClass : ''}">
+      <div class="f-label">${icon(iconName)}<span>${label}</span></div>
+      <div class="f-ctl">${control}</div>
+    </div>`;
+}
+
+function chipGroup(group, label, options, selected) {
+  return `<div class="chips" data-group="${group}" role="group" aria-label="${esc(label)}">${options.map(([v, text]) =>
+    `<button type="button" class="chip" data-v="${v}" aria-pressed="${selected.includes(v)}">${esc(text)}</button>`).join('')}</div>`;
+}
+
+/**
+ * Навык в DOM — элемент .skill: он же раскрывающийся редактор (скрыт, пока
+ * навык не выбран). Данные навыка живут только в его полях — тег над ним лишь
+ * показывает имя, поэтому collectSettings читает .skill и ничего не теряет.
+ */
+let skillSeq = 0;
+function skillEl(k) {
+  const el = document.createElement('div');
+  el.className = 'skill skill-editor';
+  el.hidden = true;
+  el.dataset.id = k.id ?? '';
+  el.dataset.key = 'k' + (++skillSeq);
+  el.id = 'skill-' + el.dataset.key;
+  el.innerHTML = `
+    <div class="se-grid">
+      <label class="se-field"><span>Название</span>
+        <input type="text" data-k="name" value="${esc(k.name)}" spellcheck="false"></label>
+      <label class="se-field"><span>Синонимы через запятую</span>
+        <input type="text" data-k="synonyms" value="${esc((k.synonyms || []).join(', '))}" spellcheck="false"></label>
+    </div>
+    <div class="se-foot">
+      <label class="se-field se-w"><span>Вес 0–100</span>
+        <input type="number" data-k="weight" min="0" max="100" step="1" value="${esc(k.weight ?? 10)}"></label>
+      <label class="switch se-core"><input type="checkbox" data-k="core" ${k.core ? 'checked' : ''}><span class="switch-ui" aria-hidden="true"></span><span>Обязательный</span></label>
+      <span class="grow"></span>
+      <button type="button" class="se-done primary">Готово</button>
+    </div>
+    <p class="f-hint">Навык засчитывается, если в вакансии встретился любой из синонимов. Вес — насколько навык важен для оценки; 0 выключает навык, не удаляя его.</p>`;
+  return el;
 }
 
 function specCard(s) {
+  const fl = specFilters(s);
+  const exp = experienceBucket(s.experienceYears);
   const el = document.createElement('div');
   el.className = 'spec';
   el.dataset.id = s.id ?? '';
   el.dataset.legacy = String(s.legacyLetters === true);
   el.innerHTML = `
-    <div class="row"><label>Название специальности<br><span class="hint">например «Менеджер проектов»</span></label>
-      <div><input type="text" data-f="name" value="${esc(s.name)}" size="32" placeholder="Кем ищешь работу">
-        <label title="Снятая галочка — специальность сохраняется, но поиск по ней не идёт"><input type="checkbox" data-f="enabled" ${s.enabled ? 'checked' : ''}> искать вакансии по этой специальности</label>
-        <button class="del-spec">Удалить специальность</button></div></div>
-    <div class="row"><label>Поисковые запросы<br><span class="hint">что вводить в поиск на сайтах, по одному в строке</span></label>
-      <textarea data-f="queries" placeholder="например:&#10;менеджер проектов&#10;project manager">${esc(s.queries.join('\n'))}</textarea></div>
-    <div class="row"><label>Слова в названии вакансии<br><span class="hint">через запятую; вакансия без них отсеивается</span></label>
-      <input type="text" data-f="titleWords" value="${esc(s.titleWords.join(', '))}" placeholder="например: менеджер, manager, руководитель проектов"></div>
-    <div class="row"><label>Мой опыт работы, лет</label>
-      <input type="number" data-f="experienceYears" min="0" max="50" step="1" value="${s.experienceYears}"></div>
-    <div class="row resume-row"><label>Резюме (PDF)<br><span class="hint">нажми «Обзор…» и выбери файл</span></label>
-      <div>
+    <div class="spec-head">
+      <div class="spec-badge">${icon('briefcase', 30)}</div>
+      <div class="spec-title">
+        <h3>Фильтр автоматического поиска</h3>
+        <p>Укажите параметры вакансий, которые подходят вам</p>
+      </div>
+      <div class="spec-tools">
+        <label class="switch" title="Выключенный фильтр сохраняется, но поиск по нему не идёт"><input type="checkbox" data-f="enabled" ${s.enabled ? 'checked' : ''}><span class="switch-ui" aria-hidden="true"></span><span>Искать</span></label>
+        <button type="button" class="del-spec" title="Удалить этот фильтр">${icon('trash', 18)}<span>Удалить</span></button>
+      </div>
+    </div>
+
+    <div class="resume-row">
+      <div class="f-label">${icon('file')}<span>Резюме (PDF)</span></div>
+      <div class="f-ctl">
         <div class="resume-pick">
-          <input type="text" data-f="resumePdf" value="${esc(s.resumePdf ?? '')}" placeholder="Файл не выбран" spellcheck="false">
+          <input type="text" data-f="resumePdf" value="${esc(s.resumePdf ?? '')}" placeholder="Файл не выбран" spellcheck="false" aria-label="Путь к резюме в PDF">
           <button type="button" class="resume-browse">Обзор…</button>
           <input type="file" class="resume-file" accept="application/pdf,.pdf" hidden>
         </div>
-        <span class="hint resume-note">по резюме пишутся сопроводительные письма и ответы рекрутёрам.</span>
-      </div></div>
-    <div class="row"><label>Навыки<br><span class="hint">синонимы через запятую; вес 0–100 — насколько навык важен; «обязательный» — без него вакансия отсеивается</span></label>
-      <div>
-        <table class="skills"><thead><tr><th>Навык</th><th>Синонимы</th><th>Вес</th><th>Обязательный</th><th></th></tr></thead>
-          <tbody>${s.skills.map(skillRow).join('')}</tbody></table>
-        <button class="add-skill">+ Добавить навык</button>
-        <button class="suggest" title="Нейросеть прочитает резюме и заполнит слова названия и навыки">Заполнить навыки по резюме (ИИ)</button>
-        <span class="hint suggest-note"></span>
-      </div></div>`;
+        <p class="resume-hint">Нейросеть прочитает резюме и заполнит должность, запросы, опыт и навыки. Ничего не сохраняется, пока не нажмёшь «Сохранить».</p>
+        <span class="resume-note" role="status"></span>
+        <span class="suggest-note" role="status"></span>
+      </div>
+      <button type="button" class="suggest" title="Нейросеть прочитает резюме и заполнит должность, поисковые запросы, слова названия, опыт и навыки">${icon('sparkles')}<span class="lbl">Заполнить с ИИ</span></button>
+    </div>
 
-  // «Обзор…»: браузер не даёт странице путь к файлу, поэтому PDF уходит на
+    ${formRow('user', 'Должность', `<input type="text" class="w-full" data-f="name" value="${esc(s.name)}" placeholder="Например, бизнес-аналитик" aria-label="Должность" spellcheck="false">`)}
+    ${formRow('coins', 'Зарплата', `<div class="salary">
+        <label class="in-suffix"><input type="text" inputmode="numeric" data-f="salaryFrom" value="${fmtSalary(fl.salaryFrom)}" placeholder="От" aria-label="Зарплата от, рублей в месяц"><span>₽</span></label>
+        <span class="dash" aria-hidden="true">—</span>
+        <label class="in-suffix"><input type="text" inputmode="numeric" data-f="salaryTo" value="${fmtSalary(fl.salaryTo)}" placeholder="До" aria-label="Зарплата до, рублей в месяц"><span>₽</span></label>
+        <label class="check" title="Показывать вакансии без указанной зарплаты"><input type="checkbox" data-f="includeNoSalary" ${fl.includeNoSalary ? 'checked' : ''}><span>Не указана</span></label>
+      </div>
+      <p class="f-hint">В рублях в месяц. «Не указана» — показывать и вакансии без зарплаты.</p>`)}
+    ${formRow('bars', 'Опыт работы', `<select data-f="experienceYears" aria-label="Опыт работы">${EXPERIENCE_BUCKETS
+      .map(([v, l]) => `<option value="${v}"${v === exp ? ' selected' : ''}>${l}</option>`).join('')}</select>
+      <p class="f-hint">Вакансии, где требуется больше опыта, отсеиваются</p>`)}
+    ${formRow('briefcase', 'Тип занятости', chipGroup('employment', 'Тип занятости', EMPLOYMENT_CHIPS, fl.employment))}
+    ${formRow('doc', 'Оформление', chipGroup('contract', 'Оформление', CONTRACT_CHIPS, fl.contract))}
+    ${formRow('calendar', 'График работы', chipGroup('schedule', 'График работы', SCHEDULE_CHIPS, fl.schedule))}
+    ${formRow('clock', 'Рабочие часы', `<select data-f="workingHours" aria-label="Рабочие часы">${WORKING_HOURS
+      .map(([v, l]) => `<option value="${v}"${v === (fl.workingHours ?? '') ? ' selected' : ''}>${l}</option>`).join('')}</select>`)}
+    ${formRow('laptop', 'Формат работы', chipGroup('workFormat', 'Формат работы', WORK_FORMAT_CHIPS, fl.workFormat))}
+    <div class="f-row f-row-hint"><div></div><p class="f-hint">Ничего не выбрано — подходит любое значение</p></div>
+    ${formRow('layers', 'Навыки', `<div class="skills-field">
+        <input type="text" class="skill-input" placeholder="Добавьте навык…" spellcheck="false" aria-label="Новый навык: Enter или запятая — добавить">
+      </div>
+      <div class="skill-list"></div>
+      <p class="f-hint">Нажми на навык, чтобы задать синонимы и вес. ★ — обязательный: без него вакансия отсеивается</p>`, 'f-row-skills')}
+
+    ${formRow('type', 'Ключевые слова', `<input type="text" class="w-full" data-f="titleWords" value="${esc(s.titleWords.join(', '))}" aria-label="Ключевые слова" placeholder="например: аналитик, analyst" spellcheck="false">
+      <p class="f-hint">Через запятую. Вакансия проходит, только если хотя бы одно из этих слов есть в её названии — так отсекаются чужие профессии.</p>`)}
+
+    <details class="adv"${s.queries.length > 0 ? ' open' : ''}>
+      <summary>${icon('chevron', 18)}<span>Искать ещё по другим названиям</span><small>необязательно</small></summary>
+      ${formRow('search', 'Запросы для поиска', `<textarea data-f="queries" rows="4" aria-label="Запросы для поиска" placeholder="по одному в строке, например:&#10;бизнес-аналитик&#10;business analyst">${esc(s.queries.join('\n'))}</textarea>
+        <p class="f-hint">Это то, что программа вбивает в строку поиска на hh.ru, hr.ge и careerist. Пусто — ищет по должности.
+          Добавь сюда другие названия той же работы (например, по-английски), чтобы находить больше вакансий.</p>`)}
+    </details>`;
+
+  const $ = (sel) => el.querySelector(sel);
+
+  // ---- Зарплата: только цифры; при уходе с поля — разряды пробелами.
+  for (const inp of el.querySelectorAll('[data-f="salaryFrom"], [data-f="salaryTo"]')) {
+    inp.addEventListener('input', () => {
+      const clean = inp.value.replace(/[^\d\s]/g, '');
+      if (clean !== inp.value) inp.value = clean;
+    });
+    inp.addEventListener('blur', () => { inp.value = fmtSalary(parseSalary(inp.value)); });
+  }
+
+  // ---- Навыки: теги в поле + раскрывающийся редактор выбранного.
+  const skillsField = $('.skills-field');
+  const skillInput = $('.skill-input');
+  const skillList = $('.skill-list');
+  const tagOf = (sk) => skillsField.querySelector(`.skill-tag[data-key="${sk.dataset.key}"]`);
+  const skillOf = (tag) => skillList.querySelector(`.skill[data-key="${tag.dataset.key}"]`);
+
+  function syncTag(sk) {
+    const tag = tagOf(sk);
+    if (!tag) return;
+    const name = sk.querySelector('[data-k="name"]').value.trim() || 'Без названия';
+    const core = sk.querySelector('[data-k="core"]').checked;
+    const wRaw = sk.querySelector('[data-k="weight"]').value.trim();
+    const off = wRaw !== '' && Number(wRaw) === 0;
+    tag.classList.toggle('core', core);
+    tag.classList.toggle('off', off);
+    tag.querySelector('.star').hidden = !core;
+    tag.querySelector('.nm').textContent = name;
+    tag.querySelector('.skill-tag-btn').title = `${name}: вес ${wRaw || '—'}${core ? ', обязательный' : ''}${off ? ' (выключен)' : ''}. Нажми, чтобы изменить`;
+    tag.querySelector('.skill-del').setAttribute('aria-label', `Удалить навык «${name}»`);
+  }
+
+  function openSkill(target) {
+    for (const sk of skillList.querySelectorAll('.skill')) {
+      const on = sk === target;
+      sk.hidden = !on;
+      const tag = tagOf(sk);
+      tag.classList.toggle('open', on);
+      tag.querySelector('.skill-tag-btn').setAttribute('aria-expanded', String(on));
+    }
+  }
+
+  function addSkill(k) {
+    const sk = skillEl(k);
+    skillList.appendChild(sk);
+    const tag = document.createElement('span');
+    tag.className = 'skill-tag';
+    tag.dataset.key = sk.dataset.key;
+    tag.innerHTML = `<button type="button" class="skill-tag-btn" aria-expanded="false" aria-controls="${sk.id}"><span class="star" aria-label="обязательный">★</span><span class="nm"></span></button>`
+      + '<button type="button" class="skill-del">×</button>';
+    skillsField.insertBefore(tag, skillInput);
+    syncTag(sk);
+    return sk;
+  }
+
+  function setSkills(list) {
+    skillList.innerHTML = '';
+    for (const tag of skillsField.querySelectorAll('.skill-tag')) tag.remove();
+    for (const k of list) addSkill(k);
+  }
+
+  /** Текст из поля «Добавьте навык…» → навыки; повтор не добавляется, а подсвечивается. */
+  function commitSkillText(text) {
+    for (const part of text.split(',')) {
+      const name = part.trim();
+      if (name === '') continue;
+      const dup = [...skillList.querySelectorAll('.skill')]
+        .find((sk) => sk.querySelector('[data-k="name"]').value.trim().toLowerCase() === name.toLowerCase());
+      if (dup) {
+        const tag = tagOf(dup);
+        tag.classList.remove('flash');
+        void tag.offsetWidth; // перезапуск анимации
+        tag.classList.add('flash');
+        continue;
+      }
+      addSkill({ name, synonyms: [name], weight: 10, core: false });
+    }
+    refreshSettingsDirty();
+  }
+
+  for (const k of s.skills) addSkill(k);
+
+  skillInput.addEventListener('keydown', (e) => {
+    // Backspace в пустом поле намеренно ничего не удаляет: навык с синонимами
+    // и весом слишком легко потерять одним лишним нажатием.
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commitSkillText(skillInput.value);
+      skillInput.value = '';
+    } else if (e.key === 'Escape') {
+      skillInput.value = '';
+    }
+  });
+  // Запятая (набранная или вставленная) завершает навык; хвост после неё остаётся в поле.
+  skillInput.addEventListener('input', () => {
+    if (!skillInput.value.includes(',')) return;
+    const parts = skillInput.value.split(',');
+    const rest = parts.pop();
+    commitSkillText(parts.join(','));
+    skillInput.value = rest.trimStart();
+  });
+  // Ушёл с поля, не нажав Enter (например, сразу на «Сохранить») — набранное не теряется.
+  skillInput.addEventListener('blur', () => {
+    if (skillInput.value.trim() === '') return;
+    commitSkillText(skillInput.value);
+    skillInput.value = '';
+  });
+  skillsField.addEventListener('click', (e) => { if (e.target === skillsField) skillInput.focus(); });
+
+  el.addEventListener('keydown', (e) => {
+    const sk = e.target.closest('.skill');
+    if (!sk || (e.key !== 'Enter' && e.key !== 'Escape') || e.target.tagName === 'BUTTON') return;
+    e.preventDefault();
+    openSkill(null);
+    tagOf(sk).querySelector('.skill-tag-btn').focus();
+  });
+
+  el.addEventListener('click', (e) => {
+    const t = e.target;
+    const chip = t.closest('.chip');
+    if (chip) {
+      chip.setAttribute('aria-pressed', String(chip.getAttribute('aria-pressed') !== 'true'));
+      return;
+    }
+    const tagBtn = t.closest('.skill-tag-btn');
+    if (tagBtn) {
+      const sk = skillOf(tagBtn.closest('.skill-tag'));
+      const opening = sk.hidden;
+      openSkill(opening ? sk : null);
+      if (opening) sk.querySelector('[data-k="synonyms"]').focus({ preventScroll: true });
+      return;
+    }
+    const del = t.closest('.skill-del');
+    if (del) {
+      const tag = del.closest('.skill-tag');
+      skillOf(tag).remove();
+      tag.remove();
+      skillInput.focus({ preventScroll: true });
+      return;
+    }
+    const done = t.closest('.se-done');
+    if (done) {
+      const sk = done.closest('.skill');
+      openSkill(null);
+      tagOf(sk).querySelector('.skill-tag-btn').focus();
+    }
+  });
+
+  el.addEventListener('input', (e) => {
+    const sk = e.target.closest('.skill');
+    if (sk) syncTag(sk);
+    if (e.target.matches('[data-f="name"]')) renderSpecSwitch();
+  });
+  el.addEventListener('change', (e) => {
+    const sk = e.target.closest('.skill');
+    if (sk) syncTag(sk);
+    if (e.target.matches('[data-f="enabled"]')) renderSpecSwitch();
+  });
+
+  // ---- «Обзор…»: браузер не даёт странице путь к файлу, поэтому PDF уходит на
   // сервер панели, ложится в data/resumes/pdf, и в поле встаёт его полный путь.
-  const fileInput = el.querySelector('.resume-file');
-  const resumeNote = el.querySelector('.resume-note');
-  el.querySelector('.resume-browse').onclick = () => fileInput.click();
+  const fileInput = $('.resume-file');
+  const resumeNote = $('.resume-note');
+  $('.resume-browse').onclick = () => fileInput.click();
   fileInput.onchange = async () => {
     const file = fileInput.files && fileInput.files[0];
     fileInput.value = '';
     if (!file) return;
+    resumeNote.classList.remove('bad', 'good');
     if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') {
       resumeNote.textContent = 'Нужен файл в формате PDF.';
       resumeNote.classList.add('bad');
       return;
     }
-    resumeNote.classList.remove('bad', 'good');
     resumeNote.textContent = 'Прикрепляю «' + file.name + '»…';
     let res, body;
     try {
@@ -1581,43 +2449,308 @@ function specCard(s) {
       resumeNote.classList.add('bad');
       return;
     }
-    el.querySelector('[data-f="resumePdf"]').value = body.path;
-    resumeNote.textContent = '✓ Резюме «' + body.name + '» прикреплено. Нажми «Сохранить настройки», чтобы применить.';
+    $('[data-f="resumePdf"]').value = body.path;
+    resumeNote.textContent = '✓ Резюме «' + body.name + '» прикреплено. Нажми «Сохранить», чтобы применить.';
     resumeNote.classList.add('good');
+    refreshSettingsDirty();
   };
 
-  el.querySelector('.add-skill').onclick = () => {
-    el.querySelector('tbody').insertAdjacentHTML('beforeend', skillRow({ name: '', synonyms: [], weight: 10, core: false }));
-  };
-  el.querySelector('.del-spec').onclick = () => {
-    if (confirm('Удалить специальность «' + el.querySelector('[data-f="name"]').value + '»? Сохранение — отдельной кнопкой.')) el.remove();
-  };
-  el.addEventListener('click', (e) => {
-    if (e.target.classList.contains('del-skill')) e.target.closest('tr').remove();
-  });
-  el.querySelector('.suggest').onclick = async () => {
-    const note = el.querySelector('.suggest-note');
-    note.textContent = 'Модель думает…';
-    const res = await post('/api/settings/suggest', {
-      name: el.querySelector('[data-f="name"]').value,
-      resumePdf: el.querySelector('[data-f="resumePdf"]').value,
-    });
-    const body = await res.json();
-    if (!res.ok) { note.textContent = 'Не вышло: ' + body.error; return; }
-    el.querySelector('[data-f="titleWords"]').value = body.suggestion.titleWords.join(', ');
-    el.querySelector('tbody').innerHTML = body.suggestion.skills.map(skillRow).join('');
-    note.textContent = 'Заполнено, но не сохранено — поправь и нажми «Сохранить настройки».';
+  // Без confirm(): в окне панели браузер может подавлять диалоги, и confirm()
+  // тогда молча отвечает «нет» — кнопка выглядела бы мёртвой. Удаление и так
+  // обратимо: карточка уходит сразу, рядом появляется «Вернуть», а на диск
+  // изменение попадает только по «Сохранить».
+  $('.del-spec').onclick = () => removeSpecCard(el);
+
+  // ---- «Заполнить с ИИ»: ответ модели подставляется НЕсохранённым.
+  // Предпочтения (занятость, график, формат, часы, оформление) модель не
+  // трогает: по резюме их не вывести, это решает сам человек.
+  function applySuggestion(sg) {
+    const nameIn = $('[data-f="name"]');
+    if (typeof sg.name === 'string' && sg.name.trim() !== '' && nameIn.value.trim() === '') {
+      nameIn.value = sg.name.trim();
+      renderSpecSwitch();
+    }
+    let advChanged = false;
+    if (Array.isArray(sg.queries) && sg.queries.length > 0) {
+      $('[data-f="queries"]').value = sg.queries.join('\n');
+      advChanged = true;
+    }
+    if (Array.isArray(sg.titleWords) && sg.titleWords.length > 0) {
+      $('[data-f="titleWords"]').value = sg.titleWords.join(', ');
+    }
+    if (typeof sg.experienceYears === 'number' && Number.isFinite(sg.experienceYears)) {
+      $('[data-f="experienceYears"]').value = String(experienceBucket(sg.experienceYears));
+    }
+    const from = $('[data-f="salaryFrom"]');
+    if (typeof sg.salaryFrom === 'number' && sg.salaryFrom > 0 && from.value.trim() === '') {
+      from.value = fmtSalary(Math.round(sg.salaryFrom));
+    }
+    if (Array.isArray(sg.skills) && sg.skills.length > 0) setSkills(sg.skills);
+    // Показываем, что именно заполнилось в свёрнутом блоке.
+    if (advChanged) $('details.adv').open = true;
+  }
+
+  const suggestBtn = $('.suggest');
+  suggestBtn.onclick = async () => {
+    const note = $('.suggest-note');
+    note.classList.remove('good', 'bad');
+    const name = $('[data-f="name"]').value.trim();
+    const resumePdf = $('[data-f="resumePdf"]').value.trim();
+    // Без должности и без резюме предлагать не из чего — запрос не шлём.
+    // Текст зовёт именно к резюме: подсказка строится по нему (cli.ts,
+    // deps.settings.suggest), одна должность без PDF вернёт ту же просьбу.
+    if (name === '' && resumePdf === '') {
+      note.textContent = 'Сначала прикрепи резюме (PDF): по нему нейросеть заполнит должность, запросы, опыт и навыки.';
+      note.classList.add('bad');
+      return;
+    }
+    suggestBtn.disabled = true;
+    suggestBtn.classList.add('busy');
+    suggestBtn.querySelector('.lbl').textContent = 'Модель думает…';
+    note.textContent = '';
+    let res, body;
+    try {
+      res = await post('/api/settings/suggest', { name, resumePdf });
+      body = await res.json();
+    } catch (e) {
+      res = { ok: false };
+      body = { error: String(e) };
+    } finally {
+      suggestBtn.disabled = false;
+      suggestBtn.classList.remove('busy');
+      suggestBtn.querySelector('.lbl').textContent = 'Заполнить с ИИ';
+    }
+    // Пока модель думала, форму перерисовали («Сохранить» или «Сбросить»), и
+    // эта карточка уже не на странице: молча записать ответ в неё — потерять его.
+    if (!el.isConnected) {
+      setSettingsNote('Ответ ИИ пришёл после того, как форма обновилась, и не подставлен — нажми «Заполнить с ИИ» ещё раз.', 'bad');
+      return;
+    }
+    if (!res.ok) {
+      note.textContent = 'Не вышло: ' + body.error;
+      note.classList.add('bad');
+      return;
+    }
+    applySuggestion(body.suggestion);
+    note.textContent = '✓ Заполнено, но не сохранено — проверь и нажми «Сохранить».';
+    note.classList.add('good');
+    refreshSettingsDirty();
   };
   return el;
 }
 
-function renderSettings(s) {
+// ---- Переключатель фильтров (пилюли над карточкой).
+let activeSpecIdx = 0;
+
+function specCards() {
+  return [...document.querySelectorAll('#specList .spec')];
+}
+
+function activateSpec(i) {
+  const cards = specCards();
+  activeSpecIdx = Math.max(0, Math.min(Number(i) || 0, cards.length - 1));
+  cards.forEach((c, k) => { c.hidden = k !== activeSpecIdx; });
+  renderSpecSwitch();
+}
+
+function renderSpecSwitch() {
+  document.getElementById('specPills').innerHTML = specCards().map((c, k) => {
+    const name = c.querySelector('[data-f="name"]').value.trim();
+    const on = c.querySelector('[data-f="enabled"]').checked;
+    const cur = k === activeSpecIdx;
+    return `<button type="button" class="spec-pill${name ? '' : ' empty'}" data-i="${k}"${cur ? ' aria-current="true"' : ''}`
+      + `${on ? '' : ' title="Фильтр выключен — поиск по нему не идёт"'}>`
+      + `${on ? '' : '<span class="dot" aria-label="выключен"></span>'}<span class="nm">${esc(name || 'Новое резюме')}</span></button>`;
+  }).join('');
+}
+
+let removedSpec = null;
+
+function hideSpecUndo() {
+  removedSpec = null;
+  document.getElementById('specUndo').hidden = true;
+}
+
+function removeSpecCard(card) {
+  const cards = specCards();
+  const idx = cards.indexOf(card);
+  const blank = isBlankSpecCard(card);
+  if (blank && cards.length === 1) {
+    // Единственная пустая заготовка: удалять нечего, она и так не сохраняется.
+    // Без этой ветки на её месте сразу вставала бы новая такая же, и казалось
+    // бы, что кнопка не сработала.
+    setSettingsNote('Это пустая карточка — она не сохраняется, удалять нечего.', '');
+    return;
+  }
+  card.remove();
+  // Без карточек форме нечего показать — оставляем пустую заготовку (она не сохраняется).
+  if (specCards().length === 0) document.getElementById('specList').appendChild(specCard(blankSpecialty()));
+  activateSpec(Math.max(0, idx - 1));
+  refreshSettingsDirty();
+  if (blank) { hideSpecUndo(); return; }
+  removedSpec = { card, idx };
+  const name = card.querySelector('[data-f="name"]').value.trim();
+  document.getElementById('specUndoText').textContent = (name ? 'Резюме «' + name + '» удалено' : 'Резюме удалено')
+    + '. Окончательно — после «Сохранить».';
+  document.getElementById('specUndo').hidden = false;
+}
+
+document.getElementById('specUndoBtn').onclick = () => {
+  if (!removedSpec) return;
+  const { card, idx } = removedSpec;
+  hideSpecUndo();
+  // Если на месте удалённой встала пустая заготовка — она больше не нужна.
+  const only = specCards();
+  if (only.length === 1 && isBlankSpecCard(only[0])) only[0].remove();
+  document.getElementById('specList').insertBefore(card, specCards()[idx] ?? null);
+  activateSpec(specCards().indexOf(card));
+  refreshSettingsDirty();
+};
+
+document.getElementById('specPills').addEventListener('click', (e) => {
+  const pill = e.target.closest('.spec-pill');
+  if (pill) activateSpec(Number(pill.dataset.i));
+});
+
+// ---- Разделы вкладки (меню слева). Выбранный помнится между заходами.
+const SETTINGS_SECTIONS = ['filters', 'accounts', 'telegram', 'auto', 'chat'];
+const SETTINGS_SECTION_KEY = 'jobAutoapply.settingsSection.v1';
+
+function showSettingsSection(name, remember) {
+  const sec = SETTINGS_SECTIONS.includes(name) ? name : 'filters';
+  for (const b of document.querySelectorAll('#settingsNav .st-nav-item')) {
+    const on = b.dataset.sec === sec;
+    b.setAttribute('aria-selected', String(on));
+    b.tabIndex = on ? 0 : -1;
+  }
+  for (const pane of document.querySelectorAll('#pane-settings .st-sec')) pane.hidden = pane.dataset.sec !== sec;
+  if (remember !== false) {
+    try { localStorage.setItem(SETTINGS_SECTION_KEY, sec); } catch { /* приватный режим: раздел просто не запомнится */ }
+  }
+}
+
+document.getElementById('settingsNav').addEventListener('click', (e) => {
+  const item = e.target.closest('.st-nav-item');
+  if (!item) return;
+  showSettingsSection(item.dataset.sec);
+  // На узком экране меню над контентом: после выбора раздела — к его началу.
+  const top = document.querySelector('#pane-settings .st-main').getBoundingClientRect().top;
+  const hdr = document.querySelector('header').getBoundingClientRect().height;
+  if (top < hdr) window.scrollBy({ top: top - hdr - 12, behavior: 'instant' });
+});
+document.getElementById('settingsNav').addEventListener('keydown', (e) => {
+  const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key];
+  if (!step) return;
+  e.preventDefault();
+  const items = [...document.querySelectorAll('#settingsNav .st-nav-item')];
+  const i = items.findIndex((b) => b.getAttribute('aria-selected') === 'true');
+  const next = items[(i + step + items.length) % items.length];
+  showSettingsSection(next.dataset.sec);
+  next.focus();
+});
+
+for (const slot of document.querySelectorAll('#pane-settings [data-icon]')) {
+  slot.innerHTML = icon(slot.dataset.icon, slot.classList.contains('st-ic') ? 22 : 20);
+}
+
+(function restoreSettingsSection() {
+  let saved = null;
+  try { saved = localStorage.getItem(SETTINGS_SECTION_KEY); } catch { /* нет хранилища — первый раздел */ }
+  showSettingsSection(saved || 'filters', false);
+})();
+
+// Липкие меню и подвал считают отступ от липкой шапки, а её высота меняется
+// (полосы VPN и автоотклика появляются и пропадают).
+(function trackHeaderHeight() {
+  const header = document.querySelector('header');
+  const set = () => document.documentElement.style.setProperty('--hdr-h', header.offsetHeight + 'px');
+  set();
+  if (typeof ResizeObserver === 'function') new ResizeObserver(set).observe(header);
+})();
+
+// ---- «Есть несохранённые изменения». Сравниваем снимок того, что ушло бы на
+// сервер, со снимком после загрузки: так вернуть поле как было — значит снова
+// «изменений нет», а отменённое подтверждение автоотклика не считается правкой.
+let settingsBaseline = null;
+
+function settingsSnapshot() {
+  try { return JSON.stringify(collectSettings()); } catch { return null; }
+}
+
+function refreshSettingsDirty() {
+  if (settingsBaseline === null) return;
+  const dirty = settingsSnapshot() !== settingsBaseline;
+  document.getElementById('settingsDirty').hidden = !dirty;
+  document.getElementById('settingsReset').disabled = !dirty;
+  const note = document.getElementById('settingsNote');
+  if (dirty && note.classList.contains('good')) setSettingsNote('', '');
+}
+
+function markSettingsClean() {
+  settingsBaseline = settingsSnapshot();
+  refreshSettingsDirty();
+}
+
+function setSettingsNote(text, kind) {
+  const note = document.getElementById('settingsNote');
+  note.classList.remove('idle');
+  note.textContent = text;
+  note.classList.toggle('good', kind === 'good');
+  note.classList.toggle('bad', kind === 'bad');
+}
+
+for (const type of ['input', 'change', 'click']) {
+  document.getElementById('pane-settings').addEventListener(type, () => refreshSettingsDirty());
+}
+
+/**
+ * Ошибка проверки при сохранении: показываем, где она. Ошибка про фильтр
+ * («Имя»: … или «специальность №N: …») переключает на этот фильтр, про навык —
+ * ещё и раскрывает навык; прочие — открывают раздел по ключевому слову.
+ */
+function revealSettingsError(msg, savedCards) {
+  let card = null;
+  let m = /^специальность №(\d+)/.exec(msg);
+  if (m) card = savedCards[Number(m[1]) - 1] ?? null;
+  else if ((m = /^«([^»]+)»/.exec(msg))) {
+    const key = m[1].toLowerCase();
+    const same = savedCards.filter((c) => c.querySelector('[data-f="name"]').value.trim().toLowerCase() === key);
+    // Повтор сервер (validateSettings) сообщает на ВТОРОМ фильтре с этим
+    // названием без учёта регистра — его и надо переименовать, а не исходный.
+    card = (/повтор названия/.test(msg) ? same[1] : same[0]) ?? same[0] ?? null;
+  }
+  if (card) {
+    showSettingsSection('filters');
+    activateSpec(specCards().indexOf(card));
+    if (/запрос/.test(msg)) card.querySelector('details.adv').open = true;
+    const sm = /^«[^»]+», (?:«([^»]+)»|навык №(\d+))/.exec(msg);
+    if (sm) {
+      const skills = [...card.querySelectorAll('.skill')];
+      const sk = sm[1] !== undefined
+        ? skills.find((k) => k.querySelector('[data-k="name"]').value.trim() === sm[1])
+        : skills[Number(sm[2]) - 1];
+      if (sk && sk.hidden) card.querySelector(`.skill-tag[data-key="${sk.dataset.key}"] .skill-tag-btn`).click();
+    }
+    return;
+  }
+  const bySection = [
+    [/telegram/i, 'telegram'], [/автоотклик/i, 'auto'], [/стоп-слов/i, 'filters'],
+    [/календар|секретар|дожим|напомин|ящик|hhInbox/i, 'chat'], [/капч|ключ|модел|имя|профил/i, 'accounts'],
+  ];
+  for (const [re, sec] of bySection) {
+    if (re.test(msg)) { showSettingsSection(sec); return; }
+  }
+}
+
+function renderSettings(s, keepIdx) {
   settingsLoaded = s;
+  hideSpecUndo();
   const list = document.getElementById('specList');
   list.innerHTML = '';
   for (const spec of s.specialties) list.appendChild(specCard(spec));
   // Новый пользователь: специальностей ещё нет — показываем пустую заготовку.
   if (s.specialties.length === 0) list.appendChild(specCard(blankSpecialty()));
+  activateSpec(typeof keepIdx === 'number' ? keepIdx : 0);
   document.getElementById('stopWords').value = s.stopWords.join('\n');
   const auto = s.autoApply ?? { enabled: false, minScore: null };
   document.getElementById('autoApply').checked = auto.enabled;
@@ -1634,6 +2767,7 @@ function renderSettings(s) {
   for (const c of tg.chats) addChatRow(c);
   document.getElementById('tgDays').value = tg.firstReadDays;
   renderSecretarySettings(s);
+  markSettingsClean();
 }
 
 const WEEKDAYS_SHORT = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
@@ -1757,6 +2891,7 @@ document.getElementById('tgAdd').onclick = async () => {
   addChatRow({ ...body.chat, enabled: true });
   document.getElementById('tgRef').value = '';
   note.textContent = 'Добавлен. Сохранение — кнопкой «Сохранить».';
+  refreshSettingsDirty();
 };
 
 document.getElementById('tgPick').onclick = async () => {
@@ -1783,26 +2918,7 @@ document.getElementById('tgPick').onclick = async () => {
 };
 
 function collectSettings() {
-  const specialties = [...document.querySelectorAll('#specList .spec')].filter((el) => !isBlankSpecCard(el)).map((el) => {
-    const f = (name) => el.querySelector(`[data-f="${name}"]`);
-    return {
-      id: el.dataset.id || undefined,
-      name: f('name').value,
-      enabled: f('enabled').checked,
-      queries: lines(f('queries').value),
-      titleWords: f('titleWords').value.split(',').map((x) => x.trim()).filter(Boolean),
-      experienceYears: Number(f('experienceYears').value),
-      resumePdf: f('resumePdf').value.trim() || null,
-      legacyLetters: el.dataset.legacy === 'true',
-      skills: [...el.querySelectorAll('.skill')].map((tr) => ({
-        id: tr.dataset.id || undefined,
-        name: tr.querySelector('[data-k="name"]').value,
-        synonyms: tr.querySelector('[data-k="synonyms"]').value.split(',').map((x) => x.trim()).filter(Boolean),
-        weight: Number(tr.querySelector('[data-k="weight"]').value),
-        core: tr.querySelector('[data-k="core"]').checked,
-      })),
-    };
-  });
+  const specialties = specCards().filter((el) => !isBlankSpecCard(el)).map(collectSpecialty);
   return {
     version: 1,
     profile: { name: document.getElementById('profileName').value.trim() || null },
@@ -1832,10 +2948,9 @@ function collectSettings() {
 }
 
 async function loadSettings() {
-  const note = document.getElementById('settingsNote');
   const res = await fetch('/api/settings');
   const body = await res.json();
-  if (!res.ok) { note.textContent = body.error; return; }
+  if (!res.ok) { setSettingsNote(body.error, 'bad'); return; }
   renderSettings(body);
 }
 
@@ -1855,7 +2970,22 @@ document.getElementById('llmKeyShow').onclick = () => {
 };
 
 document.getElementById('addSpec').onclick = () => {
-  document.getElementById('specList').appendChild(specCard(blankSpecialty()));
+  // Нетронутая заготовка уже есть — открываем её, а не плодим пустые карточки.
+  let card = specCards().find(isBlankSpecCard);
+  if (!card) {
+    card = specCard(blankSpecialty());
+    document.getElementById('specList').appendChild(card);
+  }
+  activateSpec(specCards().indexOf(card));
+  card.querySelector('[data-f="name"]').focus();
+};
+
+document.getElementById('settingsReset').onclick = () => {
+  if (!settingsLoaded) return;
+  const dirty = !document.getElementById('settingsDirty').hidden;
+  if (dirty && !confirm('Сбросить несохранённые изменения?\n\nВсё, что поправлено после последнего сохранения, вернётся как было.')) return;
+  renderSettings(settingsLoaded, activeSpecIdx);
+  setSettingsNote('Изменения сброшены.', '');
 };
 
 /**
@@ -1882,13 +3012,31 @@ document.getElementById('autoApply').onchange = (e) => {
 };
 
 document.getElementById('settingsSave').onclick = async () => {
-  const note = document.getElementById('settingsNote');
-  note.textContent = 'Сохраняю…';
-  const res = await post('/api/settings', collectSettings());
-  const body = await res.json();
-  if (!res.ok) { note.textContent = 'Не сохранено: ' + body.error; return; }
-  renderSettings(body.settings);
-  note.textContent = 'Сохранено. Действует со следующего поиска.';
+  const btn = document.getElementById('settingsSave');
+  const cards = specCards();
+  const saved = cards.filter((c) => !isBlankSpecCard(c));
+  // После сохранения карточки перерисовываются с ответа сервера — остаёмся на
+  // том же фильтре (нетронутая заготовка не сохраняется: тогда — на последнем).
+  const keep = saved.indexOf(cards[activeSpecIdx]);
+  setSettingsNote('Сохраняю…', '');
+  btn.disabled = true;
+  let res, body;
+  try {
+    res = await post('/api/settings', collectSettings());
+    body = await res.json();
+  } catch (e) {
+    setSettingsNote('Не сохранено: ' + e, 'bad');
+    return;
+  } finally {
+    btn.disabled = false;
+  }
+  if (!res.ok) {
+    setSettingsNote('Не сохранено: ' + body.error, 'bad');
+    revealSettingsError(String(body.error ?? ''), saved);
+    return;
+  }
+  renderSettings(body.settings, keep >= 0 ? keep : saved.length - 1);
+  setSettingsNote('Сохранено. Действует со следующего поиска.', 'good');
 };
 
 loadSettings();
@@ -1961,57 +3109,58 @@ const TOUR_STEPS = [
   {
     target: '#tab-settings', tab: 'settings',
     title: 'Начни с настроек',
-    text: '<p>Во вкладке «Настройки» ты один раз рассказываешь программе о себе: кем ищешь работу, какие у тебя навыки и какое резюме прикладывать.</p>',
+    text: '<p>Во вкладке «Настройки» ты один раз рассказываешь программе о себе: кем ищешь работу, какие у тебя навыки и какое резюме прикладывать.</p>'
+      + '<p>Слева — разделы: фильтры поиска, аккаунты и ключи, Telegram, автоотклик и переписка.</p>',
   },
   {
-    target: '#profileBlock', tab: 'settings',
+    target: '#profileBlock', tab: 'settings', section: 'filters',
     title: 'Имя',
     text: '<p>Впиши имя и фамилию — ими подписываются письма и сообщения рекрутёрам. Если оставить пустым, письма пишутся от лица «кандидата» без подписи.</p>',
   },
   {
-    target: '#llmBlock', tab: 'settings',
+    target: '#llmBlock', tab: 'settings', section: 'accounts',
     title: 'Нейросеть для писем',
     text: '<p>Письма пишет нейросеть через сервис OpenRouter. Получи ключ на <b>openrouter.ai/keys</b> и вставь его сюда.</p>'
       + '<p>Ниже выбери модель: есть бесплатные. Ключ хранится только на твоём компьютере.</p>',
   },
   {
-    target: '#hhLoginBlock', tab: 'settings',
+    target: '#hhLoginBlock', tab: 'settings', section: 'accounts',
     title: 'Вход на hh.ru',
     text: '<p>Чтобы программа могла откликаться от твоего имени, один раз войди в свой аккаунт hh.ru: нажми <b>«Войти в hh.ru»</b>.</p>'
       + '<p>Откроется окно браузера — логин и пароль вводишь ты сам, программа их не видит. Когда вход получится, окно закроется само.</p>',
   },
   {
-    target: '#specList .spec', tab: 'settings',
-    title: 'Специальность — кем ты ищешь работу',
-    text: '<p>Карточка специальности описывает, какие вакансии искать: название, поисковые запросы, слова в названии вакансии и твой опыт.</p>'
-      + '<p>Сначала карточка пустая — впиши название и поисковые запросы, остальное поможет заполнить нейросеть по резюме. Специальностей может быть несколько: «+ Добавить специальность».</p>',
+    target: '#specList .spec:not([hidden])', tab: 'settings', section: 'filters',
+    title: 'Фильтр — какие вакансии искать',
+    text: '<p>Фильтр устроен как поиск вакансий на hh.ru: должность, зарплата, опыт, тип занятости, график, формат работы и навыки.</p>'
+      + '<p>Не выбрал ничего в группе — подходит любое значение. Фильтров может быть несколько (например, под разные должности): кнопка <b>«+ Добавить резюме»</b> над карточкой.</p>',
   },
   {
-    target: '#specList .spec .resume-row', tab: 'settings',
+    target: '#specList .spec:not([hidden]) .resume-row', tab: 'settings', section: 'filters',
     title: 'Прикрепи резюме',
     text: '<p>Нажми <b>«Обзор…»</b> и выбери своё резюме в формате PDF. По нему нейросеть пишет письма и отвечает рекрутёрам.</p>'
       + '<p>Без резюме письма не пишутся.</p>',
   },
   {
-    target: '#specList .spec .suggest', tab: 'settings',
-    title: 'Навыки — по ним оцениваются вакансии',
-    text: '<p>Каждой вакансии программа ставит баллы по совпавшим навыкам. Чем больше «вес» навыка, тем он важнее; «обязательный» навык должен быть в вакансии, иначе она отсеивается.</p>'
-      + '<p>Эта кнопка заполнит навыки автоматически по твоему резюме — останется только поправить.</p>',
+    target: '#specList .spec:not([hidden]) .suggest', tab: 'settings', section: 'filters',
+    title: '«Заполнить с ИИ»',
+    text: '<p>Нейросеть прочитает резюме и заполнит должность, поисковые запросы, опыт и навыки — останется только поправить. Зарплату — только если она указана в резюме.</p>'
+      + '<p>Навыки дают вакансии баллы: чем больше «вес», тем навык важнее; ★ «обязательный» должен быть в вакансии, иначе она отсеивается. Нажми на навык, чтобы поправить.</p>',
   },
   {
-    target: '#stopBlock', tab: 'settings',
+    target: '#stopBlock', tab: 'settings', section: 'filters',
     title: 'Стоп-слова',
-    text: '<p>Слова, при которых вакансия сразу отбрасывается: например, «стажёр», «вахта» или название компании, куда ты не хочешь.</p>',
+    text: '<p>Слова, при которых вакансия сразу отбрасывается: например, «вахта», «1С» или название компании, куда ты не хочешь.</p>',
   },
   {
-    target: '#autoBlock', tab: 'settings',
+    target: '#autoBlock', tab: 'settings', section: 'auto',
     title: 'Автоотклик — осторожно',
     text: '<p>Если включить, программа будет сама отправлять отклики без твоего просмотра. По умолчанию выключено — советуем сначала поработать вручную.</p>',
   },
   {
     target: '#settingsSave', tab: 'settings',
     title: 'Не забудь сохранить',
-    text: '<p>Изменения в настройках применяются только после нажатия <b>«Сохранить настройки»</b>.</p>',
+    text: '<p>Изменения в настройках применяются только после нажатия <b>«Сохранить»</b> внизу экрана. Пока есть несохранённое, рядом горит подсказка; <b>«Сбросить»</b> вернёт всё как было.</p>',
   },
   {
     target: '.search-box', tab: 'pending',
@@ -2056,7 +3205,7 @@ const TOUR_STEPS = [
     target: '#tourStart',
     title: 'Готово! 🎉',
     text: '<p>Чтобы пройти обучение ещё раз, нажми эту кнопку.</p>'
-      + '<p>Сейчас открою «Настройки» — начни с ключа, специальности и резюме. И не забудь войти в hh.ru кнопкой <b>«Войти в hh.ru»</b>.</p>',
+      + '<p>Сейчас открою «Настройки» — начни с ключа, фильтра и резюме. И не забудь войти в hh.ru кнопкой <b>«Войти в hh.ru»</b> в разделе «Аккаунты и ключи».</p>',
     finishTab: 'settings',
   },
 ];
@@ -2081,8 +3230,18 @@ function tourWaitFor(selector, ms) {
   });
 }
 
+// Раздел настроек, открытый до тура: тур листает разделы, но выбор человека
+// (и запомненный в localStorage раздел) трогать не должен.
+let tourPrevSection = null;
+
+function currentSettingsSection() {
+  const cur = document.querySelector('#settingsNav .st-nav-item[aria-selected="true"]');
+  return cur ? cur.dataset.sec : null;
+}
+
 function startTour() {
   if (tourRoot) return;
+  tourPrevSection = currentSettingsSection();
   tourRoot = tourEl(`<div id="tour" role="dialog" aria-modal="true" aria-labelledby="tourTitle">
     <div class="tour-block"></div>
     <div class="tour-spot none"></div>
@@ -2123,6 +3282,8 @@ async function goTour(i) {
   tourIdx = i;
   const step = TOUR_STEPS[i];
   if (step.tab) showTab(step.tab);
+  // Цель может жить в другом разделе настроек — иначе она скрыта и подсветить нечего.
+  if (step.section) showSettingsSection(step.section, false);
   const card = tourRoot.querySelector('.tour-card');
   tourRoot.querySelector('.tour-step').textContent = `Шаг ${i + 1} из ${TOUR_STEPS.length}`;
   tourRoot.querySelector('.tour-title').textContent = step.title;
@@ -2135,7 +3296,8 @@ async function goTour(i) {
   const target = step.target ? await tourWaitFor(step.target, 2000) : null;
   if (tourIdx !== i || !tourRoot) return;
   card.classList.toggle('center', target === null);
-  if (target && !target.closest('header')) {
+  // Липкие шапка и подвал настроек видны всегда — прокручивать к ним незачем.
+  if (target && !target.closest('header') && !target.closest('.st-footer')) {
     // Шапка липкая и закрыла бы цель: ставим цель сразу под шапкой, чтобы
     // под ней осталось место для карточки.
     const headerH = document.querySelector('header').getBoundingClientRect().height;
@@ -2199,6 +3361,11 @@ function endTour() {
   tourRoot.remove();
   tourRoot = null;
   tourIdx = -1;
+  // Последний шаг зовёт к ключу и входу в hh.ru — они в «Аккаунтах и ключах».
+  // Тур прерван — возвращаем раздел, открытый до него.
+  if (finishTab === 'settings') showSettingsSection('accounts', false);
+  else if (tourPrevSection) showSettingsSection(tourPrevSection, false);
+  tourPrevSection = null;
   if (finishTab) showTab(finishTab);
 }
 

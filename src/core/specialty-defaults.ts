@@ -1,4 +1,4 @@
-import type { Skill, Specialty } from './specialty.js';
+import { defaultFilters, type Skill, type Specialty } from './specialty.js';
 
 /**
  * То, что до 2026-09-18 было зашито в код, переложенное в данные. Отсюда
@@ -78,6 +78,7 @@ export function makeBaSpecialty(queries: string[], resumePdf: string | null): Sp
     id: BA_SPECIALTY_ID, name: 'Бизнес-аналитик', enabled: true, queries: [...queries],
     titleWords: [...BA_TITLE_WORDS], skills: cloneSkills(),
     experienceYears: DEFAULT_EXPERIENCE_YEARS, resumePdf, legacyLetters: true,
+    filters: defaultFilters(),
   };
 }
 

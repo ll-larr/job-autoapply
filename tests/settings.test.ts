@@ -3,9 +3,13 @@ import { mkdtempSync, readFileSync, writeFileSync, existsSync, readdirSync } fro
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
-  validateSettings, seedSettings, freshSettings, loadSettings, saveSettings, enabledSpecialties, type Settings,
+  validateSettings, seedSettings, freshSettings, loadSettings, saveSettings, enabledSpecialties, mergeMissingSections,
+  type Settings,
 } from '../src/core/settings.js';
 import { BA_SPECIALTY_ID, SYSTEM_ANALYST_SPECIALTY_ID, BA_SKILLS } from '../src/core/specialty-defaults.js';
+import {
+  DEFAULT_FILTERS, EMPLOYMENT_FORMS, CONTRACT_TYPES, WORK_SCHEDULES, WORKING_HOURS, WORK_FORMATS,
+} from '../src/core/specialty.js';
 
 const CONFIG_QUERIES = [
   { query: 'аналитик бизнес-процессов' },
@@ -65,7 +69,7 @@ describe('validateSettings', () => {
   it.each([
     ['пустое название', (s: Settings) => { s.specialties[0]!.name = '  '; }, /название/],
     ['повтор названия', (s: Settings) => { s.specialties[1]!.name = 'бизнес-аналитик'; }, /повтор/],
-    ['нет слов заголовка', (s: Settings) => { s.specialties[0]!.titleWords = ['']; }, /слов[оа] заголовка/],
+    ['нет слов заголовка', (s: Settings) => { s.specialties[0]!.titleWords = ['']; }, /ключевое слово/],
     ['вес больше 100', (s: Settings) => { s.specialties[0]!.skills[0]!.weight = 101; }, /вес/],
     ['дробный вес', (s: Settings) => { s.specialties[0]!.skills[0]!.weight = 2.5; }, /вес/],
     ['навык без синонимов', (s: Settings) => { s.specialties[0]!.skills[0]!.synonyms = [' ']; }, /синоним/],
@@ -242,5 +246,112 @@ describe('настройки нового пользователя', () => {
     expect(s.stopWords).toEqual([]);
     expect(s.autoApply.enabled).toBe(false);
     expect(validateSettings(s)).toMatchObject({ ok: true });
+  });
+});
+
+describe('validateSettings — фильтр специальности (редизайн 2026-11-19)', () => {
+  function base(): Settings {
+    return seedSettings(CONFIG_QUERIES, null);
+  }
+  function withFilters(filters: unknown): unknown {
+    const s = base() as unknown as { specialties: Array<Record<string, unknown>> };
+    s.specialties[0]!['filters'] = filters;
+    return s;
+  }
+
+  it('засев и новые специальности — пустой фильтр, по копии на каждую', () => {
+    const s = base();
+    expect(s.specialties[0]!.filters).toEqual(DEFAULT_FILTERS);
+    s.specialties[0]!.filters.employment.push('FULL');
+    expect(s.specialties[1]!.filters.employment).toEqual([]);
+    expect(DEFAULT_FILTERS.employment).toEqual([]);
+  });
+
+  it('нет filters (старый файл, старая страница) — умолчания, а не ошибка', () => {
+    const s = base() as unknown as { specialties: Array<Record<string, unknown>> };
+    delete s.specialties[0]!['filters'];
+    const r = validateSettings(s);
+    expect(r.ok && r.settings.specialties[0]!.filters).toEqual(DEFAULT_FILTERS);
+  });
+
+  it('частичный фильтр дополняется умолчаниями', () => {
+    const r = validateSettings(withFilters({ salaryFrom: 120000 }));
+    expect(r.ok && r.settings.specialties[0]!.filters).toEqual({ ...DEFAULT_FILTERS, salaryFrom: 120000 });
+  });
+
+  it('полный фильтр сохраняется как есть, повторы убираются молча', () => {
+    const r = validateSettings(withFilters({
+      salaryFrom: 100000, salaryTo: 200000, includeNoSalary: false,
+      employment: ['FULL', 'INTERNSHIP', 'FULL'], contract: ['LABOR', 'GPH', 'GPH'],
+      schedule: ['FIVE_ON_TWO_OFF', 'FIVE_ON_TWO_OFF'], workingHours: 'HOURS_8', workFormat: ['REMOTE', 'HYBRID', 'REMOTE'],
+    }));
+    expect(r.ok && r.settings.specialties[0]!.filters).toEqual({
+      salaryFrom: 100000, salaryTo: 200000, includeNoSalary: false,
+      employment: ['FULL', 'INTERNSHIP'], contract: ['LABOR', 'GPH'],
+      schedule: ['FIVE_ON_TWO_OFF'], workingHours: 'HOURS_8', workFormat: ['REMOTE', 'HYBRID'],
+    });
+  });
+
+  it('все известные значения принимаются', () => {
+    const r = validateSettings(withFilters({
+      employment: [...EMPLOYMENT_FORMS], contract: [...CONTRACT_TYPES], schedule: [...WORK_SCHEDULES], workFormat: [...WORK_FORMATS],
+    }));
+    expect(r.ok).toBe(true);
+    for (const h of WORKING_HOURS) expect(validateSettings(withFilters({ workingHours: h })).ok).toBe(true);
+  });
+
+  it('«от» и «до» равны — можно', () => {
+    expect(validateSettings(withFilters({ salaryFrom: 150000, salaryTo: 150000 })).ok).toBe(true);
+  });
+
+  it.each([
+    ['«до» меньше «от»', { salaryFrom: 200000, salaryTo: 100000 }, '«Бизнес-аналитик»: зарплата «до» меньше «от»'],
+    ['отрицательная зарплата', { salaryFrom: -1 }, /зарплата «от» — целое/],
+    ['дробная зарплата', { salaryTo: 1.5 }, /зарплата «до» — целое/],
+    ['зарплата строкой', { salaryFrom: '100000' }, /зарплата «от»/],
+    ['зарплата больше потолка', { salaryFrom: 100_000_001 }, /100 000 000/],
+    ['неизвестная занятость', { employment: ['FULL', 'VOLUNTEER'] }, '«Бизнес-аналитик»: тип занятости — неизвестное значение «VOLUNTEER»'],
+    ['неизвестное оформление', { contract: ['IP'] }, /оформление — неизвестное значение «IP»/],
+    ['неизвестный график', { schedule: ['3/3'] }, /график работы — неизвестное значение/],
+    ['неизвестный формат', { workFormat: ['FIELD'] }, /формат работы — неизвестное значение/],
+    ['неизвестные часы', { workingHours: 'HOURS_24' }, /рабочие часы — неизвестное значение «HOURS_24»/],
+    ['список не списком', { employment: 'FULL' }, /тип занятости — ожидался список/],
+    ['фильтр не объектом', 'всё', /фильтр — ожидался объект/],
+  ])('отклоняет: %s', (_l, filters, message) => {
+    const r = validateSettings(withFilters(filters));
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toMatch(message);
+  });
+});
+
+describe('mergeMissingSections — фильтр специальности', () => {
+  it('страница без filters не сбрасывает фильтр: берётся у специальности с тем же id', () => {
+    const current = seedSettings(CONFIG_QUERIES, null);
+    current.specialties[1]!.filters = { ...current.specialties[1]!.filters, salaryFrom: 90000, workFormat: ['REMOTE'] };
+    const fromOldPage = structuredClone(current) as unknown as { specialties: Array<Record<string, unknown>> };
+    for (const s of fromOldPage.specialties) delete s['filters'];
+    // Порядок поменяли — сопоставление по id, а не по месту в списке.
+    fromOldPage.specialties.reverse();
+    const r = validateSettings(mergeMissingSections(current, fromOldPage));
+    expect(r.ok).toBe(true);
+    const byId = new Map(r.ok ? r.settings.specialties.map((s) => [s.id, s]) : []);
+    expect(byId.get(SYSTEM_ANALYST_SPECIALTY_ID)!.filters).toMatchObject({ salaryFrom: 90000, workFormat: ['REMOTE'] });
+    expect(byId.get(BA_SPECIALTY_ID)!.filters).toEqual(DEFAULT_FILTERS);
+    // Присланное не мутируется: дополненные специальности — новые объекты.
+    expect(fromOldPage.specialties[0]!['filters']).toBeUndefined();
+  });
+
+  it('присланный filters главнее текущего, новая специальность без id получает умолчания', () => {
+    const current = seedSettings(CONFIG_QUERIES, null);
+    current.specialties[0]!.filters.salaryFrom = 90000;
+    const next = structuredClone(current) as unknown as { specialties: Array<Record<string, unknown>> };
+    next.specialties[0]!['filters'] = { salaryFrom: 50000 };
+    next.specialties.push({
+      name: 'Менеджер продукта', queries: ['pm'], titleWords: ['продакт'],
+      skills: [{ name: 'Роадмап', synonyms: ['роадмап'], weight: 20, core: true }], experienceYears: 1,
+    });
+    const r = validateSettings(mergeMissingSections(current, next));
+    expect(r.ok && r.settings.specialties[0]!.filters.salaryFrom).toBe(50000);
+    expect(r.ok && r.settings.specialties[2]!.filters).toEqual(DEFAULT_FILTERS);
   });
 });

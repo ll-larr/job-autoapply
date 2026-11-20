@@ -1,4 +1,5 @@
 import type { Vacancy } from '../core/vacancy.js';
+import type { VacancyFilters } from '../core/specialty.js';
 
 export interface SearchFilters {
   query: string;
@@ -58,6 +59,14 @@ export interface SearchFilters {
    */
   titleWords?: readonly string[];
   /**
+   * «Фильтр автоматического поиска» специальности (зарплата, занятость, график,
+   * формат — редизайн 2026-11-19). hh.ru переводит его в параметры URL поиска
+   * (adapters/hh.ts#buildSearchUrl); прочие адаптеры его игнорируют — у них
+   * нет таких параметров, и то, что можно проверить по вакансии, проверяет
+   * конвейер (core/screening.ts). undefined — без фильтра.
+   */
+  vacancyFilters?: VacancyFilters;
+  /**
    * Кнопка «Остановить поиск». Адаптер, который читает выдачу долго (hh.ru:
    * навигация на каждую вакансию), SHOULD проверять его между страницами и
    * карточками и возвращать то, что уже прочитал. Необязательно: адаптер, не
@@ -99,6 +108,14 @@ export interface Adapter {
    * `skip > 0` search обязан вернуть пустой список.
    */
   readonly queryless?: boolean;
+  /**
+   * Адаптер заполняет зарплату вакансий (salaryFrom/salaryTo), так что пустые
+   * поля значат «зарплата не указана», а не «площадка её не сообщает». Только
+   * тогда конвейер отсеивает вакансию без зарплаты при снятом «Не указана»
+   * (core/screening.ts). Без флага (careerist, hr.ge, Telegram — зарплату не
+   * читают вовсе) такая проверка вырезала бы всю их выдачу одной галочкой.
+   */
+  readonly reportsSalary?: boolean;
   search(filters: SearchFilters): Promise<Vacancy[]>;
   /** ctx необязателен: адаптерам площадок он не нужен, Telegram берёт из него резюме. */
   apply(vacancy: Vacancy, letter: string, ctx?: ApplyContext): Promise<ApplyResult>;

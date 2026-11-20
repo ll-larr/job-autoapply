@@ -11,7 +11,9 @@ import {
   hasTitleWord,
   DEFAULT_SCREENING,
   STOPWORD_DESCRIPTION_THRESHOLD,
+  type ScreeningProfile,
 } from '../src/core/screening.js';
+import { DEFAULT_FILTERS, type VacancyFilters } from '../src/core/specialty.js';
 
 function v(over: Partial<Parameters<typeof normalizeVacancy>[0]> = {}) {
   return normalizeVacancy({
@@ -389,5 +391,89 @@ describe('правила по разбору отменённых 2026-09-01', (
       expect(isAboveJuniorTitle('Ведущий бизнес-аналитик')).toBe(true);
       expect(isAboveJuniorTitle('Senior Analyst')).toBe(true);
     });
+  });
+});
+
+describe('screenVacancy — фильтр специальности (редизайн 2026-11-19)', () => {
+  const F = (over: Partial<VacancyFilters>): VacancyFilters => ({ ...DEFAULT_FILTERS, ...over });
+  const screen = (over: Parameters<typeof v>[0], f: VacancyFilters, extra: Partial<ScreeningProfile> = {}) =>
+    screenVacancy(v({ source: 'hrge', ...over }), { ...DEFAULT_SCREENING, filters: f, ...extra });
+  const reason = (r: ReturnType<typeof screenVacancy>) => (r.passed ? 'passed' : r.reason);
+
+  it('пустой фильтр ничего нового не режет', () => {
+    expect(screen({ salaryFrom: 10, salaryTo: 20, isRemote: true }, F({})).passed).toBe(true);
+    expect(screen({}, F({})).passed).toBe(true);
+  });
+
+  describe('зарплата', () => {
+    it('вилка целиком ниже «от» — отсев', () => {
+      expect(reason(screen({ salaryFrom: 80000, salaryTo: 120000, currency: 'RUR' }, F({ salaryFrom: 150000 })))).toBe('salary');
+    });
+
+    it('вилка задевает «от» — проходит', () => {
+      expect(screen({ salaryFrom: 100000, salaryTo: 160000, currency: 'RUR' }, F({ salaryFrom: 150000 })).passed).toBe(true);
+      // Только «от 100 000» без верхней границы — может и подойти.
+      expect(screen({ salaryFrom: 100000, currency: 'RUB' }, F({ salaryFrom: 150000 })).passed).toBe(true);
+    });
+
+    it('вилка целиком выше «до» — отсев', () => {
+      expect(reason(screen({ salaryFrom: 300000, currency: null }, F({ salaryTo: 250000 })))).toBe('salary');
+      expect(screen({ salaryFrom: 200000, salaryTo: 400000 }, F({ salaryTo: 250000 })).passed).toBe(true);
+    });
+
+    it('валюта не указана — считаем рублями', () => {
+      expect(reason(screen({ salaryTo: 50000, currency: null }, F({ salaryFrom: 100000 })))).toBe('salary');
+    });
+
+    it('другая валюта — проходит: сравнить нельзя, но зарплата указана', () => {
+      expect(screen({ salaryFrom: 1000, salaryTo: 2000, currency: 'USD' }, F({ salaryFrom: 150000 })).passed).toBe(true);
+      expect(screen({ salaryFrom: 1000, currency: 'GEL' }, F({ includeNoSalary: false, salaryFrom: 150000 })).passed).toBe(true);
+    });
+
+    it('без зарплаты: проходит при «Не указана», отсев — без неё', () => {
+      expect(screen({}, F({ salaryFrom: 150000 })).passed).toBe(true);
+      const r = screen({}, F({ includeNoSalary: false }));
+      expect(r).toMatchObject({ passed: false, reason: 'salary', detail: 'зарплата не указана' });
+    });
+
+    it('площадка уже отобрала «только с зарплатой» (hh.ru) — отсутствие зарплаты не отсев', () => {
+      expect(screen({}, F({ includeNoSalary: false }), { salaryPresenceCheckedAtSource: true }).passed).toBe(true);
+      // Но вилка, которая есть, всё равно сравнивается.
+      expect(reason(screen({ salaryTo: 50000 }, F({ salaryFrom: 100000 }), { salaryPresenceCheckedAtSource: true }))).toBe('salary');
+    });
+  });
+
+  describe('формат работы', () => {
+    it('удалёнка при фильтре без «Удалённо» — отсев', () => {
+      expect(reason(screen({ isRemote: true }, F({ workFormat: ['ON_SITE', 'HYBRID'] })))).toBe('format');
+    });
+
+    it('удалёнка проходит с «Удалённо» и без фильтра формата', () => {
+      expect(screen({ isRemote: true }, F({ workFormat: ['REMOTE'] })).passed).toBe(true);
+      expect(screen({ isRemote: true }, F({})).passed).toBe(true);
+    });
+
+    it('isRemote false не значит «офис» — при фильтре «Удалённо» проходит', () => {
+      expect(screen({ isRemote: false }, F({ workFormat: ['REMOTE'] })).passed).toBe(true);
+    });
+  });
+
+  describe('стажировка', () => {
+    it('по умолчанию отсекается, как раньше', () => {
+      expect(reason(screen({ title: 'Бизнес-аналитик (стажёр)' }, F({})))).toBe('internship');
+      expect(reason(screen({ title: 'Бизнес-аналитик (стажёр)' }, F({ employment: ['FULL'] })))).toBe('internship');
+    });
+
+    it('«Стажировка» в типе занятости снимает этот отсев', () => {
+      expect(screen({ title: 'Бизнес-аналитик (стажёр)' }, F({ employment: ['INTERNSHIP'] })).passed).toBe(true);
+      expect(screen({ title: 'Стажировка: бизнес-аналитик' }, F({ employment: ['FULL', 'INTERNSHIP'] })).passed).toBe(true);
+    });
+  });
+
+  it('порядок: стоп-слово раньше зарплаты, зарплата раньше формата и заголовка', () => {
+    const f = F({ includeNoSalary: false, workFormat: ['ON_SITE'] });
+    expect(reason(screen({ title: 'Бизнес-аналитик 1С' }, f))).toBe('stopword');
+    expect(reason(screen({ title: 'Маркетолог', isRemote: true }, f))).toBe('salary');
+    expect(reason(screen({ title: 'Маркетолог', isRemote: true, salaryFrom: 100000 }, f))).toBe('format');
   });
 });

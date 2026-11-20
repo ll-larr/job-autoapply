@@ -6,6 +6,7 @@ import { parseExperienceFromText } from '../core/screening.js';
 import type { Adapter, ApplyResult, SearchFilters } from './types.js';
 import { hasTitleWord, isAboveJuniorTitle, isExperienceWithin, isSeniorTitle } from '../core/screening.js';
 import { DEFAULT_EXPERIENCE_YEARS } from '../core/specialty-defaults.js';
+import type { VacancyFilters } from '../core/specialty.js';
 import { isLoggedIn, sharedProfile } from '../browser.js';
 import { isStopRequested } from '../core/sender.js';
 import {
@@ -248,14 +249,51 @@ const ITEMS_PER_PAGE = 100;
  * со значением 100; берём максимум, чтобы вдвое сократить число загрузок
  * страниц выдачи при большом --limit.
  */
-export function buildSearchUrl(query: string, page = 0): string {
+export function buildSearchUrl(query: string, page = 0, f?: VacancyFilters): string {
   const params = new URLSearchParams({
     text: query,
     area: '1',
     page: String(page),
     items_on_page: String(ITEMS_PER_PAGE),
   });
+  if (f !== undefined) appendFilterParams(params, f);
   return `https://hh.ru/search/vacancy?${params.toString()}`;
+}
+
+/**
+ * Фильтр специальности → параметры поиска hh.ru. Имена и значения проверены
+ * живыми запросами 2026-11-19: каждый меняет число найденного. Разные
+ * параметры hh пересекает по И, повторы одного параметра — по ИЛИ; отсюда
+ * правила для стажировки и оформления ниже.
+ *
+ * Опыт сюда сознательно не идёт: локальный гейт (core/screening.ts) пропускает
+ * и вакансии НИЖЕ моего опыта, а `experience=` hh отрезал бы их.
+ * salaryTo тоже: у hh нет параметра «зарплата до» — её проверяет конвейер.
+ */
+function appendFilterParams(params: URLSearchParams, f: VacancyFilters): void {
+  if (f.salaryFrom !== null) params.append('salary', String(f.salaryFrom));
+  if (!f.includeNoSalary) params.append('only_with_salary', 'true');
+
+  // Стажировка у hh — метка, а не форма занятости. Одна она — label=internship;
+  // вместе с другими формами метка сузила бы выдачу до одних стажировок (И),
+  // поэтому шлём только формы, а стажировки пропустит локальный отсев
+  // (с INTERNSHIP в фильтре он их не режет).
+  const forms = f.employment.filter((e) => e !== 'INTERNSHIP');
+  if (f.employment.includes('INTERNSHIP') && forms.length === 0) params.append('label', 'internship');
+  for (const e of forms) params.append('employment_form', e);
+
+  // Трудовой договор и ГПХ у hh — разные параметры, а не значения одного:
+  // оба сразу дали бы «и то, и другое», то есть меньше, чем выбрал человек.
+  // Выбраны оба — фильтра по оформлению нет вовсе.
+  const labor = f.contract.includes('LABOR');
+  const gph = f.contract.includes('GPH');
+  if (labor && !gph) params.append('label', 'accept_labor_contract');
+  // accept_temporary — это «Оформление по ГПХ или по совместительству».
+  if (gph && !labor) params.append('accept_temporary', 'true');
+
+  for (const s of f.schedule) params.append('work_schedule_by_days', s);
+  if (f.workingHours !== null) params.append('working_hours', f.workingHours);
+  for (const w of f.workFormat) params.append('work_format', w);
 }
 
 export function extractVacancyId(url: string): string | null {
@@ -277,7 +315,31 @@ const CURRENCY_SYMBOLS: Array<[string, string]> = [
   ['₽', 'RUR'],
   ['$', 'USD'],
   ['€', 'EUR'],
+  ['₸', 'KZT'],
+  ['Br', 'BYR'],
+  ['BYN', 'BYR'],
+  ['сум', 'UZS'],
+  ["so'm", 'UZS'],
+  ['сом', 'KGS'],
+  ['₾', 'GEL'],
+  ['₼', 'AZN'],
+  ['֏', 'AMD'],
+  ['₴', 'UAH'],
 ];
+
+/**
+ * Валюта, которую не знает CURRENCY_SYMBOLS. Отличить её от «валюта не
+ * указана» (null) важно: null конвейер сравнивает с рублёвым фильтром
+ * зарплаты (core/screening.ts), и «от 1 500 <неизвестная валюта>» отсеялось
+ * бы как «ниже 150 000 ₽».
+ */
+const OTHER_CURRENCY = 'OTHER';
+
+/** Слова в тексте зарплаты, которые не говорят о валюте. */
+const SALARY_NOISE_WORDS: ReadonlySet<string> = new Set([
+  'от', 'до', 'за', 'в', 'на', 'месяц', 'мес', 'смену', 'час', 'руки', 'вычета', 'налогов', 'после',
+  'gross', 'net',
+]);
 
 /**
  * Формат текста зарплаты на карточке не был снят живьём: документированный
@@ -301,13 +363,33 @@ export function parseSalaryText(raw: string): ParsedSalary {
       break;
     }
   }
+  if (currency === null && /руб/i.test(text)) currency = 'RUR';
 
   const numbers = [...text.matchAll(/\d[\d\s]*\d|\d/g)]
     .map((m) => Number(m[0].replace(/\s/g, '')))
     .filter((n) => Number.isFinite(n) && n > 0);
 
+  // Валютный знак не найден, но в тексте есть что-то кроме чисел, «от/до» и
+  // слов про период и налоги — значит, это валюта, которой нет в списке.
+  if (currency === null && numbers.length > 0) {
+    const rest = text.replace(/\d/g, ' ');
+    const hasSymbol = /[^\p{L}\d\s.,:;–—\-/()]/u.test(rest);
+    const hasUnknownWord = (rest.match(/\p{L}+/gu) ?? []).some((w) => !SALARY_NOISE_WORDS.has(w.toLowerCase()));
+    if (hasSymbol || hasUnknownWord) currency = OTHER_CURRENCY;
+  }
+
   if (numbers.length === 0) return { from: null, to: null, currency };
-  if (numbers.length === 1) return { from: numbers[0]!, to: numbers[0]!, currency };
+  if (numbers.length === 1) {
+    // Открытая вилка: «от 100 000» — потолка нет, «до 200 000» — нет пола.
+    // Сделать из неё from=to нельзя: локальный отсев по зарплате
+    // (core/screening.ts, salaryMismatch) отрезал бы «от 100 000» при фильтре
+    // «от 150 000», хотя hh.ru сам вернул её по параметру salary.
+    const n = numbers[0]!;
+    // «до» ищем только перед числом: «до вычета налогов» о вилке не говорит.
+    if (/(^|[^\p{L}])от\s*\d/iu.test(text)) return { from: n, to: null, currency };
+    if (/(^|[^\p{L}])до\s*\d/iu.test(text)) return { from: null, to: n, currency };
+    return { from: n, to: n, currency };
+  }
   return { from: Math.min(numbers[0]!, numbers[1]!), to: Math.max(numbers[0]!, numbers[1]!), currency };
 }
 
@@ -926,7 +1008,7 @@ export class HhAdapter implements Adapter {
         // капчи (core/pacing.ts).
         if (pageNo > 0) await this.pause(this.pacing.pageDelayMs, signal);
         if (signal?.aborted) break;
-        const url = buildSearchUrl(filters.query, pageNo);
+        const url = buildSearchUrl(filters.query, pageNo, filters.vacancyFilters);
         // waitUntil:'load'/'networkidle' никогда не наступают на hh.ru —
         // страница держит фоновые запросы (реклама, опросы, аналитика)
         // неопределённо долго (см. scripts/capture-hh.ts). Ждём

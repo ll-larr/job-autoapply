@@ -803,8 +803,12 @@ export async function startPanel(
         if (req.method === 'POST' && req.url === '/api/settings/suggest') {
           const b = await readJson(req);
           const name = typeof b['name'] === 'string' ? b['name'].trim() : '';
-          if (name === '') return json(res, { error: 'Сначала впиши название специальности.' }, 400);
           const pdf = typeof b['resumePdf'] === 'string' && b['resumePdf'].trim() !== '' ? b['resumePdf'].trim() : null;
+          // Должность можно не вписывать: модель предложит её по резюме. Без
+          // резюме и без должности предлагать не из чего — модель не зовём.
+          if (name === '' && pdf === null) {
+            return json(res, { error: 'Прикрепи резюме (PDF) — по нему нейросеть предложит должность, запросы и навыки.' }, 400);
+          }
           const r = await deps.settings.suggest(name, pdf);
           // 502: сама панель исправна, не ответила модель за ней.
           return r.ok ? json(res, { suggestion: r.suggestion }) : json(res, { error: r.error }, 502);

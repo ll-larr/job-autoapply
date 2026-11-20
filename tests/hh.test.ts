@@ -5,6 +5,8 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { chromium, type Browser, type BrowserContext, type Page, type Route } from 'playwright';
 import { normalizeVacancy } from '../src/core/vacancy.js';
+import { salaryMismatch } from '../src/core/screening.js';
+import { DEFAULT_FILTERS, type VacancyFilters } from '../src/core/specialty.js';
 import {
   parseSearchPage,
   classifyApplyOutcome,
@@ -123,8 +125,38 @@ describe('parseSalaryText', () => {
     expect(parseSalaryText('100 000 – 150 000 ₽')).toEqual({ from: 100000, to: 150000, currency: 'RUR' });
   });
 
-  it('одно число', () => {
-    expect(parseSalaryText('от 200 000 ₽')).toEqual({ from: 200000, to: 200000, currency: 'RUR' });
+  it('одно число без «от/до» — from = to', () => {
+    expect(parseSalaryText('200 000 ₽')).toEqual({ from: 200000, to: 200000, currency: 'RUR' });
+  });
+
+  it('открытая вилка: «от» — без потолка, «до» — без пола', () => {
+    expect(parseSalaryText('от 200 000 ₽')).toEqual({ from: 200000, to: null, currency: 'RUR' });
+    expect(parseSalaryText('до 200 000 ₽ за месяц, до вычета налогов')).toEqual({ from: null, to: 200000, currency: 'RUR' });
+    expect(parseSalaryText('100 000 ₽ до вычета налогов')).toEqual({ from: 100000, to: 100000, currency: 'RUR' });
+  });
+
+  it('валюта: известные знаки, «руб», неизвестная — OTHER, без знака — null', () => {
+    expect(parseSalaryText('от 300 000 ₸').currency).toBe('KZT');
+    expect(parseSalaryText('от 1 500 Br').currency).toBe('BYR');
+    expect(parseSalaryText('от 90 000 руб.').currency).toBe('RUR');
+    expect(parseSalaryText('от 5 000 ¥').currency).toBe('OTHER');
+    expect(parseSalaryText('от 5 000 лари').currency).toBe('OTHER');
+    expect(parseSalaryText('от 150 000').currency).toBeNull();
+  });
+
+  it('с отсевом по зарплате: открытая вилка и чужая валюта не отсеиваются', () => {
+    const f = (o: Partial<VacancyFilters>): VacancyFilters => ({ ...DEFAULT_FILTERS, ...o });
+    const vac = (raw: string) => {
+      const p = parseSalaryText(raw);
+      return { salaryFrom: p.from, salaryTo: p.to, currency: p.currency };
+    };
+    expect(salaryMismatch(vac('от 100 000 ₽'), f({ salaryFrom: 150000 }))).toBeNull();
+    expect(salaryMismatch(vac('до 200 000 ₽'), f({ salaryTo: 150000 }))).toBeNull();
+    expect(salaryMismatch(vac('от 1 500 Br'), f({ salaryFrom: 150000 }))).toBeNull();
+    expect(salaryMismatch(vac('от 1 500 ¥'), f({ salaryFrom: 150000 }))).toBeNull();
+    // Закрытая вилка целиком ниже «от» по-прежнему отсеивается.
+    expect(salaryMismatch(vac('до 100 000 ₽'), f({ salaryFrom: 150000 }))).not.toBeNull();
+    expect(salaryMismatch(vac('от 200 000 ₽'), f({ salaryTo: 150000 }))).not.toBeNull();
   });
 
   it('текст без цифр — числа null, валюта null без символа', () => {

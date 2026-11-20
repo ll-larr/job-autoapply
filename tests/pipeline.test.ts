@@ -8,7 +8,7 @@ import { normalizeVacancy } from '../src/core/vacancy.js';
 import type { Vacancy } from '../src/core/vacancy.js';
 import type { Adapter, SearchFilters } from '../src/adapters/types.js';
 import { DEFAULT_SPECIALTY } from '../src/core/specialty-defaults.js';
-import type { Specialty } from '../src/core/specialty.js';
+import { DEFAULT_FILTERS, type Specialty, type VacancyFilters } from '../src/core/specialty.js';
 
 const CONFIG = {
   minScore: 40, letterModels: ['m:free'],
@@ -972,5 +972,96 @@ describe('runSearch — остановка (signal)', () => {
     const rep = await runSearch(opts({ adapters: [mkAdapter([PROCESS_LANGUAGE])] }));
     expect(rep.stoppedBecause).toBe('exhausted');
     expect(rep.queued).toBe(1);
+  });
+});
+
+describe('runSearch — фильтр специальности (редизайн 2026-11-19)', () => {
+  const withFilters = (over: Partial<VacancyFilters>): Specialty => ({
+    ...DEFAULT_SPECIALTY, filters: { ...DEFAULT_SPECIALTY.filters, ...over },
+  });
+
+  function vacancies(
+    source: string,
+    items: Array<Partial<Parameters<typeof normalizeVacancy>[0]>>,
+    reportsSalary = true,
+  ): Adapter & { seen: SearchFilters[] } {
+    const seen: SearchFilters[] = [];
+    return {
+      name: source,
+      reportsSalary,
+      seen,
+      async search(f) {
+        seen.push(f);
+        return items.map((it, i) => normalizeVacancy({
+          source, sourceId: String(i), title: 'Бизнес-аналитик', company: 'C', url: `https://${source}/vacancy/${i}`,
+          description: PROCESS_LANGUAGE, geo: 'Москва', postedAt: '2026-08-20T00:00:00Z', ...it,
+        }));
+      },
+      async apply() { return { status: 'sent' }; },
+    };
+  }
+  const gen = async () => ({ letter: 'письмо', mode: 'hybrid' as const });
+
+  it('фильтр специальности фразы уходит адаптеру в vacancyFilters', async () => {
+    const spec = withFilters({ salaryFrom: 150000, workFormat: ['REMOTE'] });
+    const a = vacancies('hh', []);
+    await runSearch({ queue: q, config: CONFIG, queries: [{ query: 'x', specialty: spec }], adapters: [a], generate: gen });
+    expect(a.seen[0]!.vacancyFilters).toEqual(spec.filters);
+  });
+
+  it('без специальности — пустой фильтр по умолчанию', async () => {
+    const a = vacancies('hh', []);
+    await runSearch({ queue: q, config: CONFIG, queries: [{ query: 'x' }], adapters: [a], generate: gen });
+    expect(a.seen[0]!.vacancyFilters).toEqual(DEFAULT_FILTERS);
+  });
+
+  it('зарплата и формат отсеиваются и считаются своими строками отчёта', async () => {
+    const spec = withFilters({ salaryFrom: 150000, includeNoSalary: false, workFormat: ['ON_SITE'] });
+    const rep = await runSearch({
+      queue: q, config: CONFIG, queries: [{ query: 'x', specialty: spec }], generate: gen,
+      adapters: [vacancies('hrge', [
+        { salaryFrom: 50000, salaryTo: 90000, currency: 'RUR' }, // ниже «от»
+        {}, // без зарплаты при снятом «Не указана»
+        { salaryFrom: 200000, isRemote: true }, // удалёнка
+        { salaryFrom: 200000 }, // подходит
+      ])],
+    });
+    expect(rep.rejectedSalary).toBe(2);
+    expect(rep.rejectedFormat).toBe(1);
+    expect(rep.queued).toBe(1);
+  });
+
+  it('hh.ru: «только с зарплатой» уже в URL — вакансия без прочитанной зарплаты не отсеивается', async () => {
+    const spec = withFilters({ includeNoSalary: false });
+    const rep = await runSearch({
+      queue: q, config: CONFIG, queries: [{ query: 'x', specialty: spec }], generate: gen,
+      adapters: [vacancies('hh', [{}])],
+    });
+    expect(rep.rejectedSalary).toBe(0);
+    expect(rep.queued).toBe(1);
+  });
+
+  it('площадка, которая не сообщает зарплату, — снятое «Не указана» её выдачу не вырезает', async () => {
+    const spec = withFilters({ includeNoSalary: false, salaryFrom: 150000 });
+    const rep = await runSearch({
+      queue: q, config: CONFIG, queries: [{ query: 'x', specialty: spec }], generate: gen,
+      adapters: [vacancies('careerist', [{}, {}], false)],
+    });
+    expect(rep.rejectedSalary).toBe(0);
+    expect(rep.queued).toBe(2);
+  });
+
+  it('стажировка проходит, если она выбрана в типе занятости', async () => {
+    const items = [{ title: 'Бизнес-аналитик (стажёр)' }];
+    const off = await runSearch({
+      queue: q, config: CONFIG, queries: [{ query: 'x' }], generate: gen, adapters: [vacancies('hrge', items)],
+    });
+    expect(off.rejectedInternship).toBe(1);
+    const on = await runSearch({
+      queue: q, config: CONFIG, queries: [{ query: 'x', specialty: withFilters({ employment: ['INTERNSHIP'] }) }],
+      generate: gen, adapters: [vacancies('hrge', items)],
+    });
+    expect(on.rejectedInternship).toBe(0);
+    expect(on.queued).toBe(1);
   });
 });

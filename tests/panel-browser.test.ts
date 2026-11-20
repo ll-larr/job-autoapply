@@ -320,32 +320,391 @@ describe('панель в браузере — уведомление про VPN
   }, 40000);
 });
 
+/** Раздел вкладки «Настройки» (меню слева): элементы других разделов скрыты. */
+async function settingsSection(name: 'filters' | 'accounts' | 'telegram' | 'auto' | 'chat'): Promise<void> {
+  await page.click(`#settingsNav [data-sec="${name}"]`);
+}
+
+/** Активная (видимая) карточка фильтра. */
+const activeSpec = () => page.locator('#specList .spec:not([hidden])');
+
 describe('вкладка «Настройки» в настоящем браузере', () => {
   let stored: Settings;
   let sp: { port: number; close(): Promise<void> };
+  let suggestCalls: Array<{ name: string; resumePdf: string | null }>;
 
   beforeEach(async () => {
     stored = seedSettings(undefined, null);
+    suggestCalls = [];
     sp = await startPanel(q, 0, {
       settings: {
         get: () => stored,
         save: async (raw) => { const r = validateSettings(raw); if (r.ok) stored = r.settings; return r; },
-        suggest: async () => ({
-          ok: true,
-          suggestion: { titleWords: ['менеджер продукта'], skills: [{ name: 'Роадмап', synonyms: ['роадмап'], weight: 25, core: true }] },
-        }),
+        suggest: async (name, resumePdf) => {
+          suggestCalls.push({ name, resumePdf });
+          return {
+            ok: true,
+            suggestion: {
+              name: 'Продакт-менеджер',
+              queries: ['менеджер продукта', 'product manager'],
+              titleWords: ['менеджер продукта'],
+              skills: [{ name: 'Роадмап', synonyms: ['роадмап'], weight: 25, core: true }],
+              experienceYears: 4,
+              salaryFrom: 180000,
+            },
+          };
+        },
       },
     });
   });
   afterEach(async () => { await sp.close(); });
 
-  it('правка веса навыка сохраняется', async () => {
+  it('правка веса навыка сохраняется: клик по тегу раскрывает редактор', async () => {
     await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
-    const weight = page.locator('.spec').first().locator('.skill').first().locator('[data-k="weight"]');
+    const card = page.locator('.spec').first();
+    // Редактор навыка скрыт, пока по тегу не кликнули.
+    expect(await card.locator('.skill').first().isHidden()).toBe(true);
+    await card.locator('.skill-tag-btn').first().click();
+    const weight = card.locator('.skill').first().locator('[data-k="weight"]');
     await weight.fill('30');
+    await card.locator('.skill').first().locator('.se-done').click();
+    expect(await card.locator('.skill').first().isHidden()).toBe(true);
     await page.click('#settingsSave');
     await expect.poll(() => stored.specialties[0]!.skills[0]!.weight).toBe(30);
     await expect.poll(() => page.textContent('#settingsNote')).toMatch(/Сохранено/);
+  });
+
+  it('клик по чипу «Тип занятости» уходит в filters.employment, повторный клик снимает', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    const part = activeSpec().locator('.chips[data-group="employment"] .chip[data-v="PART"]');
+    await part.click();
+    expect(await part.getAttribute('aria-pressed')).toBe('true');
+    await activeSpec().locator('.chips[data-group="workFormat"] .chip[data-v="REMOTE"]').click();
+    await activeSpec().locator('.chips[data-group="schedule"] .chip[data-v="FIVE_ON_TWO_OFF"]').click();
+    await activeSpec().locator('.chips[data-group="schedule"] .chip[data-v="FIVE_ON_TWO_OFF"]').click();
+    await activeSpec().locator('[data-f="workingHours"]').selectOption('HOURS_8');
+    await page.click('#settingsSave');
+    await expect.poll(() => stored.specialties[0]!.filters?.employment).toEqual(['PART']);
+    expect(stored.specialties[0]!.filters?.workFormat).toEqual(['REMOTE']);
+    expect(stored.specialties[0]!.filters?.schedule).toEqual([]);
+    expect(stored.specialties[0]!.filters?.workingHours).toBe('HOURS_8');
+    // После перерисовки с ответа сервера чип остаётся выбранным.
+    await expect.poll(() => part.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('зарплата «От» сохраняется числом, пустое «До» — null, «Не указана» снимается', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    await activeSpec().locator('[data-f="salaryFrom"]').fill('150 000');
+    await activeSpec().locator('[data-f="includeNoSalary"]').uncheck();
+    await page.click('#settingsSave');
+    await expect.poll(() => stored.specialties[0]!.filters?.salaryFrom).toBe(150000);
+    expect(stored.specialties[0]!.filters?.salaryTo).toBeNull();
+    expect(stored.specialties[0]!.filters?.includeNoSalary).toBe(false);
+    // Ждём перерисовку карточек с ответа сервера, иначе она сотрёт набранное ниже.
+    await expect.poll(() => page.textContent('#settingsNote')).toMatch(/Сохранено/);
+    expect(await activeSpec().locator('[data-f="salaryFrom"]').inputValue()).toBe('150 000');
+    // Буквы в поле зарплаты не попадают вовсе.
+    await activeSpec().locator('[data-f="salaryTo"]').pressSequentially('2x0');
+    expect(await activeSpec().locator('[data-f="salaryTo"]').inputValue()).toBe('20');
+  });
+
+  it('навык добавляется через поле «Добавьте навык…» и Enter; повтор не добавляется', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    const before = stored.specialties[0]!.skills.length;
+    const input = activeSpec().locator('.skill-input');
+    await input.fill('Power BI');
+    await input.press('Enter');
+    await input.fill('power bi');
+    await input.press('Enter');
+    // Backspace в пустом поле ничего не удаляет.
+    await input.press('Backspace');
+    expect(await activeSpec().locator('.skill-tag').count()).toBe(before + 1);
+    await page.click('#settingsSave');
+    await expect.poll(() => stored.specialties[0]!.skills.length).toBe(before + 1);
+    expect(stored.specialties[0]!.skills.at(-1)).toMatchObject({ name: 'Power BI', synonyms: ['Power BI'], weight: 10, core: false });
+  });
+
+  it('× на теге удаляет навык', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    const before = stored.specialties[0]!.skills.length;
+    const firstName = stored.specialties[0]!.skills[0]!.name;
+    await activeSpec().locator('.skill-tag .skill-del').first().click();
+    await page.click('#settingsSave');
+    await expect.poll(() => stored.specialties[0]!.skills.length).toBe(before - 1);
+    expect(stored.specialties[0]!.skills.map((k) => k.name)).not.toContain(firstName);
+  });
+
+  it('«Заполнить с ИИ» заполняет должность, запросы, опыт, зарплату и навыки', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    await page.click('#addSpec');
+    const card = activeSpec();
+    await card.locator('[data-f="resumePdf"]').fill('C:/cv/резюме.pdf');
+    await card.locator('.suggest').click();
+    await expect.poll(() => card.locator('[data-f="queries"]').inputValue()).toBe('менеджер продукта\nproduct manager');
+    // Пустая должность — берётся предложенная; запрос ушёл с пустым именем.
+    expect(suggestCalls.at(-1)).toEqual({ name: '', resumePdf: 'C:/cv/резюме.pdf' });
+    expect(await card.locator('[data-f="name"]').inputValue()).toBe('Продакт-менеджер');
+    expect(await card.locator('[data-f="experienceYears"]').inputValue()).toBe('4');
+    expect(await card.locator('[data-f="salaryFrom"]').inputValue()).toBe('180 000');
+    expect(await card.locator('[data-f="titleWords"]').inputValue()).toBe('менеджер продукта');
+    expect(await card.locator('.skill-tag').count()).toBe(1);
+    expect(await card.locator('.skill-tag.core').count()).toBe(1);
+    // Пилюля переключателя подхватила новое название.
+    expect(await page.locator('.spec-pill[aria-current="true"]').innerText()).toMatch(/Продакт-менеджер/);
+    await page.click('#settingsSave');
+    await expect.poll(() => stored.specialties.map((s) => s.name)).toContain('Продакт-менеджер');
+    const saved = stored.specialties.find((s) => s.name === 'Продакт-менеджер')!;
+    expect(saved.queries).toEqual(['менеджер продукта', 'product manager']);
+    expect(saved.experienceYears).toBe(4);
+    expect(saved.filters?.salaryFrom).toBe(180000);
+  });
+
+  it('«Заполнить с ИИ» не трогает уже вписанную должность и зарплату', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    await page.click('#addSpec');
+    const card = activeSpec();
+    await card.locator('[data-f="name"]').fill('Менеджер продукта');
+    await card.locator('[data-f="salaryFrom"]').fill('250000');
+    await card.locator('.suggest').click();
+    await expect.poll(() => card.locator('.skill [data-k="name"]').first().inputValue()).toBe('Роадмап');
+    expect(await card.locator('[data-f="name"]').inputValue()).toBe('Менеджер продукта');
+    // Ушёл с поля — разряды расставились пробелами; значение то же, что вписано руками.
+    expect(await card.locator('[data-f="salaryFrom"]').inputValue()).toBe('250 000');
+    expect(suggestCalls.at(-1)!.name).toBe('Менеджер продукта');
+  });
+
+  it('переключение фильтров: видна одна карточка, правка второй сохраняется во вторую', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    expect(stored.specialties.length).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => page.locator('.spec-pill').count()).toBe(stored.specialties.length);
+    expect(await page.locator('#specList .spec:not([hidden])').count()).toBe(1);
+    await page.locator('.spec-pill').nth(1).click();
+    expect(await page.locator('.spec').nth(1).isVisible()).toBe(true);
+    expect(await page.locator('.spec').nth(0).isVisible()).toBe(false);
+    await activeSpec().locator('[data-f="name"]').fill('Аналитик данных');
+    expect(await page.locator('.spec-pill').nth(1).innerText()).toMatch(/Аналитик данных/);
+    await activeSpec().locator('.chips[data-group="contract"] .chip[data-v="GPH"]').click();
+    await page.click('#settingsSave');
+    await expect.poll(() => stored.specialties[1]!.name).toBe('Аналитик данных');
+    expect(stored.specialties[1]!.filters?.contract).toEqual(['GPH']);
+    expect(stored.specialties[0]!.filters?.contract).toEqual([]);
+    // После сохранения остаёмся на том же фильтре.
+    expect(await page.locator('.spec-pill[aria-current="true"]').innerText()).toMatch(/Аналитик данных/);
+  });
+
+  it('выключенный фильтр помечен в пилюле и сохраняется с enabled: false', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    await activeSpec().locator('[data-f="enabled"]').uncheck();
+    expect(await page.locator('.spec-pill').first().locator('.dot').count()).toBe(1);
+    await page.click('#settingsSave');
+    await expect.poll(() => stored.specialties[0]!.enabled).toBe(false);
+  });
+
+  it('ошибка про второй фильтр переключает на него', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    await page.locator('.spec-pill').nth(1).click();
+    await activeSpec().locator('[data-f="titleWords"]').fill('');
+    await page.locator('.spec-pill').nth(0).click();
+    await page.click('#settingsSave');
+    await expect.poll(() => page.textContent('#settingsNote')).toMatch(/ключевое слово/);
+    expect(await page.locator('.spec').nth(1).isVisible()).toBe(true);
+    expect(await page.locator('.spec').nth(1).locator('[data-f="titleWords"]').isVisible()).toBe(true);
+  });
+
+  it('«Удалить» убирает карточку без системного диалога, «Вернуть» возвращает её', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    page.on('dialog', (d) => { throw new Error('неожиданный диалог: ' + d.message()); });
+    const before = await page.locator('.spec').count();
+    await page.click('#addSpec');
+    await activeSpec().locator('[data-f="name"]').fill('Временное');
+    await activeSpec().locator('.del-spec').click();
+    await expect.poll(() => page.locator('.spec').count()).toBe(before);
+    expect(await page.locator('.spec-pill').allTextContents()).not.toContain('Временное');
+    expect(await page.locator('#specUndo').isVisible()).toBe(true);
+    await page.click('#specUndoBtn');
+    await expect.poll(() => page.locator('.spec').count()).toBe(before + 1);
+    expect(await activeSpec().locator('[data-f="name"]').inputValue()).toBe('Временное');
+    expect(await page.locator('#specUndo').isVisible()).toBe(false);
+  });
+
+  it('единственную пустую карточку «Удалить» не пересоздаёт молча, а объясняет', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    for (let n = await page.locator('.spec').count(); n > 0; n--) await activeSpec().locator('.del-spec').click();
+    expect(await page.locator('.spec').count()).toBe(1);
+    await activeSpec().locator('.del-spec').click();
+    await expect.poll(() => page.textContent('#settingsNote')).toMatch(/пустая карточка/);
+  });
+
+  it('индикатор несохранённых изменений и «Сбросить» с подтверждением', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    await page.waitForSelector('#specList .spec');
+    expect(await page.locator('#settingsDirty').isHidden()).toBe(true);
+    expect(await page.isDisabled('#settingsReset')).toBe(true);
+    const original = await page.inputValue('#stopWords');
+    await page.fill('#stopWords', 'вахта');
+    expect(await page.locator('#settingsDirty').isVisible()).toBe(true);
+    // Вернул как было — изменений снова нет.
+    await page.fill('#stopWords', original);
+    expect(await page.locator('#settingsDirty').isHidden()).toBe(true);
+
+    await activeSpec().locator('.chips[data-group="employment"] .chip[data-v="FULL"]').click();
+    expect(await page.locator('#settingsDirty').isVisible()).toBe(true);
+    page.once('dialog', (d) => { void d.accept(); });
+    await page.click('#settingsReset');
+    await expect.poll(() => page.locator('#settingsDirty').isHidden()).toBe(true);
+    expect(await activeSpec().locator('.chips[data-group="employment"] .chip[data-v="FULL"]').getAttribute('aria-pressed')).toBe('false');
+
+    // После сохранения индикатор гаснет.
+    await page.fill('#stopWords', 'вахта');
+    await page.click('#settingsSave');
+    await expect.poll(() => page.textContent('#settingsNote')).toMatch(/Сохранено/);
+    expect(await page.locator('#settingsDirty').isHidden()).toBe(true);
+  });
+
+  it('разделы: меню переключает блоки, выбранный раздел помнится после перезагрузки', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    expect(await page.locator('#stopBlock').isVisible()).toBe(true);
+    expect(await page.locator('#profileBlock').isVisible()).toBe(true);
+    await settingsSection('accounts');
+    // #hhLoginBlock здесь не проверяем: без ручки входа (стенд без hhLogin) он прячется сам.
+    for (const id of ['#llmBlock', '#captchaBlock']) {
+      expect(await page.locator(id).isVisible(), id).toBe(true);
+    }
+    expect(await page.locator('#specList').isVisible()).toBe(false);
+    await page.reload();
+    await expect.poll(() => page.locator('#llmBlock').isVisible()).toBe(true);
+    await settingsSection('chat');
+    for (const id of ['#secretaryBlock', '#calendarBlock', '#followupsBlock', '#hhInboxBlock']) {
+      expect(await page.locator(id).isVisible(), id).toBe(true);
+    }
+    // Кнопка сохранения в липком подвале видна из любого раздела.
+    expect(await page.locator('#settingsSave').isVisible()).toBe(true);
+  });
+
+  it('тур онбординга: каждая цель в настройках видна — нужный раздел открывается сам', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    await page.waitForSelector('#specList .spec');
+    await page.click('#tourStart');
+    const hidden = await page.evaluate(async () => {
+      const w = window as unknown as {
+        TOUR_STEPS?: Array<{ target?: string; tab?: string }>;
+        goTour?: (i: number) => Promise<void>;
+      };
+      // const/функции верхнего уровня классического скрипта видны из evaluate по имени.
+      // eslint-disable-next-line no-eval
+      const steps = (w.TOUR_STEPS ?? eval('TOUR_STEPS')) as Array<{ target?: string; tab?: string }>;
+      // eslint-disable-next-line no-eval
+      const go = (w.goTour ?? eval('goTour')) as (i: number) => Promise<void>;
+      const bad: string[] = [];
+      for (const [i, step] of steps.entries()) {
+        // #hhLoginBlock прячется сам, когда у панели нет ручки входа (как на этом стенде).
+        if (step.tab !== 'settings' || !step.target || step.target === '#hhLoginBlock') continue;
+        await go(i);
+        const el = document.querySelector(step.target);
+        if (!el || el.getClientRects().length === 0) bad.push(step.target);
+      }
+      return bad;
+    });
+    expect(hidden).toEqual([]);
+  });
+
+  it('тур не трогает выбранный раздел: прерван — раздел прежний, пройден до конца — «Аккаунты и ключи»', async () => {
+    const SECTION_KEY = 'jobAutoapply.settingsSection.v1';
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    await page.waitForSelector('#specList .spec');
+    await settingsSection('telegram');
+    await page.click('#tourStart');
+    // Листаем все шаги: шаги настроек сами открывают свои разделы.
+    await page.evaluate(async () => {
+      // eslint-disable-next-line no-eval
+      const steps = eval('TOUR_STEPS') as unknown[];
+      // eslint-disable-next-line no-eval
+      const go = eval('goTour') as (i: number) => Promise<void>;
+      for (let i = 0; i < steps.length - 1; i++) await go(i);
+    });
+    await page.click('#tour .tour-skip');
+    expect(await page.locator('#tour').count()).toBe(0);
+    expect(await page.evaluate((k) => localStorage.getItem(k), SECTION_KEY)).toBe('telegram');
+    expect(await page.locator('#settingsNav [data-sec="telegram"]').getAttribute('aria-selected')).toBe('true');
+
+    // До конца: последний шаг зовёт к ключу и входу в hh.ru — открыт их раздел.
+    await page.click('#tourStart');
+    await page.evaluate(async () => {
+      // eslint-disable-next-line no-eval
+      const steps = eval('TOUR_STEPS') as unknown[];
+      // eslint-disable-next-line no-eval
+      await (eval('goTour') as (i: number) => Promise<void>)(steps.length - 1);
+    });
+    await page.click('#tour .tour-next');
+    await expect.poll(() => page.locator('#llmBlock').isVisible()).toBe(true);
+    expect(await page.evaluate((k) => localStorage.getItem(k), SECTION_KEY)).toBe('telegram');
+  });
+
+  it('повтор названия: открывается НОВЫЙ фильтр, который и надо переименовать', async () => {
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    await page.waitForSelector('#specList .spec');
+    const first = stored.specialties[0]!.name;
+    await page.click('#addSpec');
+    await activeSpec().locator('[data-f="name"]').fill(first);
+    const newIdx = (await page.locator('#specList .spec').count()) - 1;
+    await page.locator('.spec-pill').nth(0).click();
+    await page.click('#settingsSave');
+    await expect.poll(() => page.textContent('#settingsNote')).toMatch(/повтор названия/);
+    expect(await page.locator('#specList .spec').nth(newIdx).isVisible()).toBe(true);
+    expect(await page.locator('#specList .spec').nth(0).isVisible()).toBe(false);
+  });
+
+  it('ответ ИИ, пришедший после сохранения формы, не теряется молча', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    await sp.close();
+    sp = await startPanel(q, 0, {
+      settings: {
+        get: () => stored,
+        save: async (raw) => { const r = validateSettings(raw); if (r.ok) stored = r.settings; return r; },
+        suggest: async () => {
+          await gate;
+          return { ok: true, suggestion: { name: null, queries: ['q'], titleWords: ['w'], skills: [{ name: 'S', synonyms: ['s'], weight: 1, core: false }], experienceYears: 2, salaryFrom: null } };
+        },
+      },
+    });
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    await page.waitForSelector('#specList .spec');
+    await activeSpec().locator('.suggest').click();
+    await page.click('#settingsSave');
+    await expect.poll(() => page.textContent('#settingsNote')).toMatch(/Сохранено/);
+    release();
+    await expect.poll(() => page.textContent('#settingsNote')).toMatch(/не подставлен/);
+  });
+
+  it('телефон: подвал с несохранёнными изменениями — одна строка', async () => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    await page.waitForSelector('#specList .spec');
+    await activeSpec().locator('[data-f="name"]').fill('x');
+    expect(await page.locator('#settingsDirty').isVisible()).toBe(true);
+    const footer = await page.locator('#pane-settings .st-footer').boundingBox();
+    expect(footer!.height).toBeLessThan(90);
+    const save = await page.locator('#settingsSave').boundingBox();
+    const reset = await page.locator('#settingsReset').boundingBox();
+    expect(Math.abs(save!.y - reset!.y)).toBeLessThan(2);
+  });
+
+  it('узкий экран: меню разделов сверху, горизонтальной прокрутки у вкладки нет', async () => {
+    await page.setViewportSize({ width: 600, height: 900 });
+    await page.goto(`http://127.0.0.1:${sp.port}/#settings`);
+    await page.waitForSelector('#specList .spec');
+    const nav = await page.locator('#settingsNav').boundingBox();
+    const main = await page.locator('#pane-settings .st-main').boundingBox();
+    expect(main!.y).toBeGreaterThan(nav!.y + nav!.height - 1);
+    const overflow = await page.evaluate(() => {
+      const pane = document.getElementById('pane-settings')!;
+      return [...pane.querySelectorAll('*')].filter((e) => {
+        const el = e as HTMLElement;
+        return el.offsetParent !== null && el.getBoundingClientRect().right > pane.clientWidth + 1;
+      }).length;
+    });
+    expect(overflow).toBe(0);
   });
 
   it('стоп-слово добавляется через поле списка', async () => {
@@ -402,6 +761,7 @@ describe('Telegram во вкладке «Настройки»', () => {
 
   it('«Выбрать из моих чатов» добавляет отмеченное, сохранение кладёт чаты в настройки', async () => {
     await page.goto(`http://127.0.0.1:${tp.port}/#settings`);
+    await settingsSection('telegram');
     await page.click('#tgPick');
     await page.locator('#tgPicker input[data-i="1"]').check();
     await page.click('#tgPickAdd');
@@ -413,6 +773,7 @@ describe('Telegram во вкладке «Настройки»', () => {
 
   it('ошибка «Добавить» показывается человеку', async () => {
     await page.goto(`http://127.0.0.1:${tp.port}/#settings`);
+    await settingsSection('telegram');
     await page.fill('#tgRef', '@нет');
     await page.click('#tgAdd');
     await expect.poll(() => page.textContent('#tgNote')).toMatch(/канал не найден/);
@@ -421,6 +782,7 @@ describe('Telegram во вкладке «Настройки»', () => {
   it('включение автоотклика — только через подтверждение; отказ оставляет выключенным', async () => {
     stored.autoApply = { enabled: false, minScore: null };
     await page.goto(`http://127.0.0.1:${tp.port}/#settings`);
+    await settingsSection('auto');
     expect(await page.locator('#autoBanner').isHidden()).toBe(true);
 
     page.once('dialog', (d) => { void d.dismiss(); });
@@ -454,6 +816,7 @@ describe('Telegram во вкладке «Настройки»', () => {
 
   it('сохранение специальностей не трогает автоотклик', async () => {
     await page.goto(`http://127.0.0.1:${tp.port}/#settings`);
+    await page.locator('.spec').first().locator('.skill-tag-btn').first().click();
     await page.locator('.spec').first().locator('.skill').first().locator('[data-k="weight"]').fill('29');
     await page.click('#settingsSave');
     await expect.poll(() => stored.specialties[0]!.skills[0]!.weight).toBe(29);

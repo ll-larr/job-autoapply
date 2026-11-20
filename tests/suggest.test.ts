@@ -21,9 +21,14 @@ describe('suggestSpecialty', () => {
     const r = await suggestSpecialty('Менеджер продукта', 'РЕЗЮМЕ', {
       models: ['m'], attemptsPerModel: 2, fetchImpl: async () => reply(answers.shift()!),
     });
+    // Старый формат ответа (без новых полей) годится: они необязательны.
     expect(r).toEqual({
       ok: true,
-      suggestion: { titleWords: ['продакт'], skills: [{ name: 'Роадмап', synonyms: ['роадмап'], weight: 20, core: true }] },
+      suggestion: {
+        name: null, queries: [], titleWords: ['продакт'],
+        skills: [{ name: 'Роадмап', synonyms: ['роадмап'], weight: 20, core: true }],
+        experienceYears: null, salaryFrom: null,
+      },
     });
   });
 
@@ -46,9 +51,41 @@ describe('parseSuggestion', () => {
     ],
   };
 
+  const full = {
+    name: 'Менеджер продукта', queries: ['менеджер продукта', 'product manager'],
+    ...good, experienceYears: 4, salaryFrom: 250000,
+  };
+
   it('читает JSON и в ограде ```json', () => {
-    expect(parseSuggestion(JSON.stringify(good))).toEqual(good);
-    expect(parseSuggestion('Вот:\n```json\n' + JSON.stringify(good) + '\n```')).toEqual(good);
+    expect(parseSuggestion(JSON.stringify(full))).toEqual(full);
+    expect(parseSuggestion('Вот:\n```json\n' + JSON.stringify(full) + '\n```')).toEqual(full);
+  });
+
+  it('новые поля необязательны: без них — null и пустой список', () => {
+    expect(parseSuggestion(JSON.stringify(good))).toEqual({
+      ...good, name: null, queries: [], experienceYears: null, salaryFrom: null,
+    });
+  });
+
+  it('мусор в новых полях — null / [], ответ не отбрасывается', () => {
+    expect(parseSuggestion(JSON.stringify({
+      ...good, name: '  ', queries: 'pm', experienceYears: 'много', salaryFrom: { rub: 1 },
+    }))).toEqual({ ...good, name: null, queries: [], experienceYears: null, salaryFrom: null });
+    expect(parseSuggestion(JSON.stringify({ ...good, name: 7, queries: [' pm ', '', 3] })))
+      .toMatchObject({ name: null, queries: ['pm'] });
+  });
+
+  it.each([
+    [3.6, 4], [-2, 0], [80, 50], ['5', 5], [null, null], ['5 лет', null],
+  ])('опыт %j → %j (целое 0–50)', (raw, want) => {
+    expect(parseSuggestion(JSON.stringify({ ...good, experienceYears: raw }))!.experienceYears).toBe(want);
+  });
+
+  it.each([
+    [150000, 150000], [150000.4, 150000], ['200000', 200000], [0, null], [-5, null], [null, null], ['от 100 тыс', null],
+    [100_000_000, 100_000_000], [5_000_000_000, null],
+  ])('зарплата %j → %j (положительное целое не выше потолка валидации)', (raw, want) => {
+    expect(parseSuggestion(JSON.stringify({ ...good, salaryFrom: raw }))!.salaryFrom).toBe(want);
   });
 
   it('вес приводится к целому 0–100, пустые синонимы выкидываются', () => {
@@ -71,7 +108,14 @@ describe('buildSuggestMessages', () => {
     const [system, user] = buildSuggestMessages('Менеджер продукта', 'РЕЗЮМЕ');
     expect(system!.content).toContain('titleWords');
     expect(system!.content).toContain('Правила совпадения');
-    expect(user!.content).toContain('Менеджер продукта');
+    for (const field of ['"name"', '"queries"', '"experienceYears"', '"salaryFrom"']) expect(system!.content).toContain(field);
+    expect(user!.content).toContain('Специальность: Менеджер продукта');
+    expect(user!.content).toContain('РЕЗЮМЕ');
+  });
+
+  it('без названия — просим предложить должность по резюме', () => {
+    const [, user] = buildSuggestMessages('  ', 'РЕЗЮМЕ');
+    expect(user!.content).toContain('не указана — предложи должность по резюме');
     expect(user!.content).toContain('РЕЗЮМЕ');
   });
 });

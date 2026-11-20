@@ -128,6 +128,63 @@ describe('panel.html — выбор модели для писем (2026-09-20)'
   });
 });
 
+describe('panel.html — фильтр вакансий во вкладке «Настройки» (2026-11-19)', () => {
+  it('experienceBucket: годы → градация hh.ru (0 → 0, 1–2 → 2, 3–5 → 4, 6+ → 6)', () => {
+    const experienceBucket = extractFunction(html, 'experienceBucket');
+    expect([0, 1, 2, 3, 5, 6, 12].map(experienceBucket)).toEqual([0, 2, 2, 4, 4, 6, 6]);
+    // Мусор и отрицательное — «нет опыта», а не NaN в выпадающем списке.
+    expect(experienceBucket(undefined)).toBe(0);
+    expect(experienceBucket(-3)).toBe(0);
+  });
+
+  it('specFilters: без filters — умолчания, ровно прежнее поведение поиска', () => {
+    const specFilters = extractFunction(html, 'specFilters');
+    const empty = {
+      salaryFrom: null, salaryTo: null, includeNoSalary: true,
+      employment: [], contract: [], schedule: [], workingHours: null, workFormat: [],
+    };
+    expect(specFilters({ name: 'старая специальность' })).toEqual(empty);
+    expect(specFilters(null)).toEqual(empty);
+    expect(specFilters({ filters: { salaryFrom: 100000, includeNoSalary: false, employment: ['FULL', 7], workingHours: '' } }))
+      .toEqual({ ...empty, salaryFrom: 100000, includeNoSalary: false, employment: ['FULL'] });
+  });
+
+  it('parseSalary / fmtSalary: пробелы-разряды туда и обратно, пусто — null', () => {
+    const parseSalary = extractFunction(html, 'parseSalary');
+    const fmtSalary = extractFunction(html, 'fmtSalary');
+    expect(parseSalary('')).toBeNull();
+    expect(parseSalary('  ')).toBeNull();
+    expect(parseSalary('150 000')).toBe(150000);
+    expect(fmtSalary(1500000)).toBe('1 500 000');
+    expect(fmtSalary(null)).toBe('');
+    expect(parseSalary(fmtSalary(250000))).toBe(250000);
+  });
+
+  it('разметка: все id, на которые завязаны JS, тесты и тур, на месте', () => {
+    for (const id of [
+      'settingsSave', 'settingsReset', 'settingsNote', 'settingsDirty', 'addSpec', 'specList', 'specPills', 'settingsNav',
+      'profileBlock', 'hhLoginBlock', 'llmBlock', 'captchaBlock', 'stopBlock', 'stopWords', 'tgBlock', 'autoBlock',
+      'secretaryBlock', 'calendarBlock', 'followupsBlock', 'hhInboxBlock',
+    ]) expect(html, id).toContain(`id="${id}"`);
+    for (const sec of ['filters', 'accounts', 'telegram', 'auto', 'chat']) expect(html).toContain(`data-sec="${sec}"`);
+  });
+
+  it('стили вкладки скоуплены под #pane-settings и не трогают остальные вкладки', () => {
+    const css = /<style>([\s\S]*?)<\/style>/.exec(html)![1]!;
+    const start = css.indexOf('Вкладка «Настройки» (редизайн');
+    expect(start).toBeGreaterThan(-1);
+    const block = css.slice(css.indexOf('*/', start) + 2, css.indexOf('[hidden]', start));
+    // Каждый селектор (вне @keyframes) начинается с #pane-settings.
+    const selectors = block.replace(/@keyframes[^{]+\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/g, '')
+      .replace(/@media[^{]+\{/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('}').map((r) => r.split('{')[0]!.trim()).filter(Boolean);
+    expect(selectors.length).toBeGreaterThan(50);
+    for (const sel of selectors) {
+      for (const part of sel.split(',')) expect(part.trim(), sel).toMatch(/^#pane-settings\b/);
+    }
+  });
+});
+
 describe('panel.html — buildSendResultText, причины остановки и отказов', () => {
   const buildSendResultText = extractFunction(html, 'buildSendResultText');
   const base = { sent: 17, failed: 3, unthrottledSources: [], skippedEmptyLetter: [], deferredContacts: [], warnings: [] };

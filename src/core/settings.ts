@@ -1,7 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { SearchQueryConfig } from './config.js';
-import type { Skill, Specialty } from './specialty.js';
+import {
+  CONTRACT_TYPES, EMPLOYMENT_FORMS, MAX_FILTER_SALARY, WORK_FORMATS, WORK_SCHEDULES, WORKING_HOURS, defaultFilters,
+  type Skill, type Specialty, type VacancyFilters, type WorkingHours,
+} from './specialty.js';
 import type { TgChat } from '../telegram/types.js';
 import type { CaptchaProvider } from './captcha-solver.js';
 import { isValidTimeZone } from '../bot/tz.js';
@@ -201,7 +204,7 @@ export function validateSettings(raw: unknown): Result {
 
     const titleWords = cleanList(s['titleWords']);
     if (titleWords.length === 0) {
-      return { ok: false, error: `«${name}»: нужно хотя бы одно слово заголовка` };
+      return { ok: false, error: `«${name}»: нужно хотя бы одно ключевое слово (слово из названия вакансии)` };
     }
 
     const years = s['experienceYears'];
@@ -235,6 +238,9 @@ export function validateSettings(raw: unknown): Result {
       skills.push({ id: skillId, name: skillName, synonyms, weight, core: k['core'] === true });
     }
 
+    const filters = validateFilters(s['filters'], name);
+    if (!filters.ok) return filters;
+
     specialties.push({
       id,
       name,
@@ -245,6 +251,7 @@ export function validateSettings(raw: unknown): Result {
       experienceYears: years,
       resumePdf,
       legacyLetters: s['legacyLetters'] === true,
+      filters: filters.filters,
     });
   }
 
@@ -339,6 +346,81 @@ export function validateSettings(raw: unknown): Result {
   };
 }
 
+export { MAX_FILTER_SALARY };
+
+/**
+ * Список значений фильтра: только известные, повторы убираются молча (дубль —
+ * это двойной клик по чипу, а не ошибка). Неизвестное значение — ошибка:
+ * молча выкинуть его значило бы тихо ослабить фильтр, который человек задал.
+ */
+function enumList<T extends string>(
+  raw: unknown, allowed: readonly T[], name: string, label: string,
+): { ok: true; values: T[] } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, values: [] };
+  if (!Array.isArray(raw)) return { ok: false, error: `«${name}»: ${label} — ожидался список` };
+  const out: T[] = [];
+  for (const v of raw) {
+    if (typeof v !== 'string' || !(allowed as readonly string[]).includes(v)) {
+      return { ok: false, error: `«${name}»: ${label} — неизвестное значение «${String(v)}»` };
+    }
+    if (!out.includes(v as T)) out.push(v as T);
+  }
+  return { ok: true, values: out };
+}
+
+function salaryValue(raw: unknown, name: string, label: string): { ok: true; value: number | null } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, value: null };
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0 || raw > MAX_FILTER_SALARY) {
+    return { ok: false, error: `«${name}»: зарплата «${label}» — целое число рублей от 0 до 100 000 000 или пусто` };
+  }
+  return { ok: true, value: raw };
+}
+
+/**
+ * Фильтр специальности. Отсутствие раздела — пустой фильтр, то есть прежнее
+ * поведение: файлы и страницы до 2026-11-19 его не присылают, и это не ошибка.
+ */
+function validateFilters(raw: unknown, name: string): { ok: true; filters: VacancyFilters } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, filters: defaultFilters() };
+  if (!isRecord(raw)) return { ok: false, error: `«${name}»: фильтр — ожидался объект` };
+
+  const from = salaryValue(raw['salaryFrom'], name, 'от');
+  if (!from.ok) return from;
+  const to = salaryValue(raw['salaryTo'], name, 'до');
+  if (!to.ok) return to;
+  if (from.value !== null && to.value !== null && to.value < from.value) {
+    return { ok: false, error: `«${name}»: зарплата «до» меньше «от»` };
+  }
+
+  const employment = enumList(raw['employment'], EMPLOYMENT_FORMS, name, 'тип занятости');
+  if (!employment.ok) return employment;
+  const contract = enumList(raw['contract'], CONTRACT_TYPES, name, 'оформление');
+  if (!contract.ok) return contract;
+  const schedule = enumList(raw['schedule'], WORK_SCHEDULES, name, 'график работы');
+  if (!schedule.ok) return schedule;
+  const workFormat = enumList(raw['workFormat'], WORK_FORMATS, name, 'формат работы');
+  if (!workFormat.ok) return workFormat;
+
+  const hoursRaw = raw['workingHours'] ?? null;
+  if (hoursRaw !== null && (typeof hoursRaw !== 'string' || !(WORKING_HOURS as readonly string[]).includes(hoursRaw))) {
+    return { ok: false, error: `«${name}»: рабочие часы — неизвестное значение «${String(hoursRaw)}»` };
+  }
+
+  return {
+    ok: true,
+    filters: {
+      salaryFrom: from.value,
+      salaryTo: to.value,
+      includeNoSalary: raw['includeNoSalary'] !== false,
+      employment: employment.values,
+      contract: contract.values,
+      schedule: schedule.values,
+      workingHours: hoursRaw as WorkingHours | null,
+      workFormat: workFormat.values,
+    },
+  };
+}
+
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const minutesOf = (hhmm: string): number => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3));
 
@@ -424,6 +506,17 @@ export function mergeMissingSections(current: Settings, raw: unknown): unknown {
   const out: Record<string, unknown> = { ...raw };
   for (const key of ['profile', 'telegram', 'autoApply', 'llm', 'captcha', 'secretary', 'calendar', 'followups', 'hhInbox'] as const) {
     if (out[key] === undefined && current[key] !== undefined) out[key] = current[key];
+  }
+  // То же внутри специальности: страница до редизайна 2026-11-19 не знает
+  // filters, и без этого сохранение с неё молча сбросило бы фильтр к пустому.
+  // Сопоставление по id: новая специальность (без id) фильтра ещё не имеет.
+  if (Array.isArray(out['specialties'])) {
+    const byId = new Map(current.specialties.map((s) => [s.id, s] as const));
+    out['specialties'] = (out['specialties'] as unknown[]).map((s) => {
+      if (!isRecord(s) || s['filters'] !== undefined || typeof s['id'] !== 'string') return s;
+      const prev = byId.get(s['id'].trim());
+      return prev === undefined ? s : { ...s, filters: structuredClone(prev.filters) };
+    });
   }
   return out;
 }

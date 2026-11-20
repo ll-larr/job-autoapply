@@ -47,6 +47,14 @@ describe('buildSearchQueries', () => {
     ]);
   });
 
+  it('без запросов для поиска ищет по должности (названию фильтра)', () => {
+    const s = structuredClone(settings);
+    s.specialties[1]!.queries = [];
+    expect(buildSearchQueries(s, []).map((q) => `${q.specialty!.id}:${q.query}`)).toEqual([
+      'business-analyst:бизнес-аналитик', 'system-analyst:Системный аналитик',
+    ]);
+  });
+
   it('выключенная специальность не ищет', () => {
     const s = structuredClone(settings);
     s.specialties[1]!.enabled = false;
@@ -95,7 +103,7 @@ describe('formatSearchReport', () => {
   const BASE_REPORT: SearchReport = {
     found: 10, queued: 4, duplicates: 2, belowThreshold: 3, noCoreMatch: 1,
     rejectedExperience: 0, rejectedGrade: 0, rejectedStopword: 0, stopwordHits: {},
-    rejectedTitle: 0, rejectedInternship: 0,
+    rejectedTitle: 0, rejectedInternship: 0, rejectedSalary: 0, rejectedFormat: 0,
     tgNotVacancy: 0, tgNoContact: 0, tgSkippedChats: [], textDuplicates: 0,
     adapterErrors: [], stoppedBecause: 'target',
   };
@@ -115,7 +123,7 @@ describe('formatSearchReport', () => {
     const report: SearchReport = {
       ...BASE_REPORT, rejectedExperience: 5, rejectedGrade: 2,
       rejectedStopword: 2, stopwordHits: { '1С': 1, 'Битрикс': 1 },
-      rejectedTitle: 4, rejectedInternship: 3,
+      rejectedTitle: 4, rejectedInternship: 3, rejectedSalary: 6, rejectedFormat: 1,
     };
     const lines = formatSearchReport('q', report, 0, true).join('\n');
     expect(lines).toContain('Отсеяно (опыт):          5');
@@ -123,6 +131,8 @@ describe('formatSearchReport', () => {
     expect(lines).toContain('Отсеяно (стоп-слова):   2 (1С: 1, Битрикс: 1)');
     expect(lines).toContain('Отсеяно (заголовок):    4');
     expect(lines).toContain('Отсеяно (стажировка):    3');
+    expect(lines).toContain('Отсеяно (зарплата):      6');
+    expect(lines).toContain('Отсеяно (формат работы): 1');
   });
 
   it('Telegram: счётчики и пропущенные чаты — только когда есть что сказать', () => {

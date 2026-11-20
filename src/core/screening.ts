@@ -1,6 +1,7 @@
 import type { ExperienceLevel, Vacancy } from './vacancy.js';
 import { countInNormalized, hasInNormalized, normalizeForMatch } from './matching.js';
 import { BA_TITLE_WORDS, DEFAULT_EXPERIENCE_YEARS, DEFAULT_STOP_WORDS } from './specialty-defaults.js';
+import type { VacancyFilters } from './specialty.js';
 
 /**
  * Жёсткие фильтры-исключения. В отличие от scorer.ts (который ранжирует и
@@ -25,7 +26,11 @@ export type ScreenReason =
   | 'stopword'
   | 'internship'
   /** В заголовке нет ни одного слова заголовка специальности. Раньше — 'not_analyst'. */
-  | 'not_title';
+  | 'not_title'
+  /** Зарплата вне «от–до» фильтра специальности или не указана при снятом «Не указана». */
+  | 'salary'
+  /** Удалёнка, когда в фильтре формат работы выбран без «Удалённо». */
+  | 'format';
 
 export type ScreenResult =
   | { passed: true }
@@ -42,6 +47,23 @@ export interface ScreeningProfile {
    * не содержать (спека 4.6).
    */
   skipTitleGate?: boolean;
+  /**
+   * «Фильтр автоматического поиска» специальности (редизайн 2026-11-19).
+   * Локально проверяется то, для чего у вакансии есть данные: зарплата,
+   * удалёнка, стажировка. Занятость, график, часы, оформление — нет: у
+   * источников, кроме hh.ru, этих данных нет, а hh.ru фильтрует их сам
+   * параметрами URL. undefined — без фильтра.
+   */
+  filters?: VacancyFilters;
+  /**
+   * Наличие зарплаты здесь не проверять: площадка уже отобрала вакансии по нему
+   * (hh.ru: only_with_salary в URL) или зарплату не сообщает вовсе
+   * (Adapter.reportsSalary). Тогда «зарплата не указана» не повод для отсева:
+   * зарплату с карточки выдачи hh.ru адаптер почти никогда не читает
+   * (adapters/hh.ts, parseSalaryText), а careerist, hr.ge и Telegram не читают
+   * её совсем — без этого флага снятое «Не указана» вырезало бы всю их выдачу.
+   */
+  salaryPresenceCheckedAtSource?: boolean;
 }
 
 export const DEFAULT_SCREENING: ScreeningProfile = {
@@ -248,13 +270,53 @@ export function isAboveJuniorTitle(title: string): boolean {
 }
 
 // ============================================================================
+// 7. Фильтр специальности: зарплата и формат.
+// ============================================================================
+
+/** Валюты, в которых зарплата сравнима с рублёвым фильтром. null — валюта не указана, обычно рубли. */
+const RUB_CURRENCIES: ReadonlySet<string | null> = new Set([null, 'RUR', 'RUB']);
+
+/**
+ * null — зарплата подходит. Вилка вакансии отсеивается, только если она целиком
+ * вне «от–до» фильтра: «до 120 000» при «от 150 000» — мимо, «от 100 000» при
+ * «от 150 000» — может и подойти. Зарплату в другой валюте сравнить нельзя, но
+ * она указана — такая вакансия проходит.
+ */
+export function salaryMismatch(
+  v: Pick<Vacancy, 'salaryFrom' | 'salaryTo' | 'currency'>,
+  f: VacancyFilters,
+  presenceCheckedAtSource = false,
+): string | null {
+  if (v.salaryFrom === null && v.salaryTo === null) {
+    return !f.includeNoSalary && !presenceCheckedAtSource ? 'зарплата не указана' : null;
+  }
+  if (!RUB_CURRENCIES.has(v.currency)) return null;
+  if (v.salaryTo !== null && f.salaryFrom !== null && v.salaryTo < f.salaryFrom) {
+    return `зарплата до ${v.salaryTo} ниже заданных «от» ${f.salaryFrom}`;
+  }
+  if (v.salaryFrom !== null && f.salaryTo !== null && v.salaryFrom > f.salaryTo) {
+    return `зарплата от ${v.salaryFrom} выше заданных «до» ${f.salaryTo}`;
+  }
+  return null;
+}
+
+/**
+ * Только удалёнка против фильтра без «Удалённо». isRemote false не значит
+ * «офис»: у большинства источников сигнала нет вовсе, поэтому офис и гибрид
+ * локально не проверяются — такая вакансия проходит.
+ */
+export function isFormatMismatch(v: Pick<Vacancy, 'isRemote'>, f: VacancyFilters): boolean {
+  return f.workFormat.length > 0 && !f.workFormat.includes('REMOTE') && v.isRemote;
+}
+
+// ============================================================================
 // Сборка
 // ============================================================================
 
 /**
  * Чистая функция: без сети, БД, часов. Порядок проверок (опыт → грейд →
- * стоп-слова → стажировка → заголовок) определяет, какая причина попадёт в
- * отчёт, если вакансия нарушает сразу несколько условий.
+ * стоп-слова → зарплата → формат → стажировка → заголовок) определяет, какая
+ * причина попадёт в отчёт, если вакансия нарушает сразу несколько условий.
  */
 export function screenVacancy(v: Vacancy, profile: ScreeningProfile = DEFAULT_SCREENING): ScreenResult {
   const level = v.experience ?? parseExperienceFromText(v.description);
@@ -283,7 +345,17 @@ export function screenVacancy(v: Vacancy, profile: ScreeningProfile = DEFAULT_SC
   if (stopWord !== null) {
     return { passed: false, reason: 'stopword', detail: `стоп-слово: ${stopWord}`, stopWord };
   }
-  if (isInternshipTitle(v.title)) {
+  const filters = profile.filters;
+  if (filters !== undefined) {
+    const salary = salaryMismatch(v, filters, profile.salaryPresenceCheckedAtSource === true);
+    if (salary !== null) return { passed: false, reason: 'salary', detail: salary };
+    if (isFormatMismatch(v, filters)) {
+      return { passed: false, reason: 'format', detail: 'удалённая работа, а в фильтре формат без «Удалённо»' };
+    }
+  }
+  // Стажировку человек может искать сам — тогда «Стажировка» выбрана в типе
+  // занятости фильтра, и прежний безусловный отсев её не трогает.
+  if (filters?.employment.includes('INTERNSHIP') !== true && isInternshipTitle(v.title)) {
     return { passed: false, reason: 'internship', detail: 'стажировка' };
   }
   if (profile.skipTitleGate !== true && !hasTitleWord(v.title, profile.titleWords)) {

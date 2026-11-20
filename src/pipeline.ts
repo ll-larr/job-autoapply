@@ -111,6 +111,15 @@ export interface SearchReport {
   rejectedTitle: number;
   /** Стажировки. */
   rejectedInternship: number;
+  /**
+   * Зарплата вне «от–до» фильтра специальности или не указана при снятом
+   * «Не указана» (редизайн 2026-11-19). На hh.ru большую часть этого отсекает
+   * сам поиск параметрами URL — здесь то, что пришло с других площадок или
+   * чего у hh нет (зарплата «до»).
+   */
+  rejectedSalary: number;
+  /** Удалёнка, когда в фильтре специальности формат работы выбран без «Удалённо». */
+  rejectedFormat: number;
   /** Telegram: прочитанные посты, не похожие на вакансию (спека 4.6). */
   tgNotVacancy: number;
   /** Telegram: вакансии, где некому писать. */
@@ -234,7 +243,7 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
   const report: SearchReport = {
     found: 0, queued: 0, duplicates: 0, belowThreshold: 0, noCoreMatch: 0,
     rejectedExperience: 0, rejectedGrade: 0, rejectedStopword: 0, stopwordHits: {},
-    rejectedTitle: 0, rejectedInternship: 0,
+    rejectedTitle: 0, rejectedInternship: 0, rejectedSalary: 0, rejectedFormat: 0,
     tgNotVacancy: 0, tgNoContact: 0, tgSkippedChats: [], textDuplicates: 0,
     adapterErrors: [], stoppedBecause: 'exhausted',
   };
@@ -248,6 +257,8 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
     else if (screen.reason === 'grade') report.rejectedGrade++;
     else if (screen.reason === 'not_title') report.rejectedTitle++;
     else if (screen.reason === 'internship') report.rejectedInternship++;
+    else if (screen.reason === 'salary') report.rejectedSalary++;
+    else if (screen.reason === 'format') report.rejectedFormat++;
     else {
       report.rejectedStopword++;
       const word = screen.stopWord ?? '?';
@@ -354,6 +365,7 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
         query: task.qc.query,
         experienceYears: (task.qc.specialty ?? DEFAULT_SPECIALTY).experienceYears,
         titleWords: (task.qc.specialty ?? DEFAULT_SPECIALTY).titleWords,
+        vacancyFilters: (task.qc.specialty ?? DEFAULT_SPECIALTY).filters,
         maxResults: budget,
         skip: task.skip,
         seenThisRun,
@@ -457,6 +469,13 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchReport> {
           // Гейт заголовка для поста уже сыграла проверка слов по всему посту
           // выше, а заголовок из запасного правила может слов не содержать.
           skipTitleGate: queryless,
+          filters: candidate.filters,
+          // Наличие зарплаты проверяем только там, где пустая зарплата значит
+          // «не указана». hh.ru уже отобрал «только с зарплатой» параметром URL,
+          // а зарплату с карточки его выдачи адаптер почти не читает; прочие
+          // площадки зарплату не сообщают вовсе (Adapter.reportsSalary). Иначе
+          // снятое «Не указана» вырезало бы всю их выдачу (core/screening.ts).
+          salaryPresenceCheckedAtSource: task.adapter.name === 'hh' || task.adapter.reportsSalary !== true,
         });
         if (!screen.passed) { firstReject ??= screen; continue; }
         const s = scoreVacancy(v, candidate.skills);

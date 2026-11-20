@@ -220,7 +220,9 @@ export function buildSearchQueries(settings: Settings, args: readonly string[]):
 
   if (text === '') {
     const from = wanted === undefined ? enabled : [specialty];
-    return from.flatMap((s) => s.queries.map((query) => ({ query, specialty: s })));
+    // Запросы для поиска необязательны (в панели — «Искать ещё по другим
+    // названиям»): пусто — ищем по самой должности, то есть названию фильтра.
+    return from.flatMap((s) => (s.queries.length > 0 ? s.queries : [s.name]).map((query) => ({ query, specialty: s })));
   }
   return [{ query: text, specialty }];
 }
@@ -280,6 +282,8 @@ export function formatSearchReport(
   lines.push(`Отсеяно (стоп-слова):   ${report.rejectedStopword}${hits === '' ? '' : ` (${hits})`}`);
   lines.push(`Отсеяно (заголовок):    ${report.rejectedTitle}`);
   lines.push(`Отсеяно (стажировка):    ${report.rejectedInternship}`);
+  lines.push(`Отсеяно (зарплата):      ${report.rejectedSalary}`);
+  lines.push(`Отсеяно (формат работы): ${report.rejectedFormat}`);
   if (report.noDescription) {
     lines.push(`Без описания (пропущены): ${report.noDescription} — капча или недогрузка страницы, найдутся в следующий раз`);
   }
