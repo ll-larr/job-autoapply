@@ -6,7 +6,7 @@ import type { TgChat } from '../telegram/types.js';
 import type { ProxyDiscovery } from '../core/proxy.js';
 import type { Config } from '../core/config.js';
 import type { Adapter } from '../adapters/types.js';
-import type { Settings } from '../core/settings.js';
+import { searchBlocker, type Settings } from '../core/settings.js';
 import type { SpecialtySuggestion } from '../core/suggest.js';
 import type { Vacancy } from '../core/vacancy.js';
 import { Sender, clearStop, requestStop, type SendReport } from '../core/sender.js';
@@ -188,6 +188,15 @@ export interface PanelDeps {
     status(): HhLoginStatus;
     running(): boolean;
   };
+  /**
+   * Кнопка «Войти в careerist» (core/careerist-login.ts): то же окно входа на
+   * общем профиле, что и у hh.ru. Без неё кнопка отвечает «недоступно».
+   */
+  careeristLogin?: {
+    start(): { ok: true } | { ok: false; error: string };
+    status(): HhLoginStatus;
+    running(): boolean;
+  };
   /** Каталог для PDF, выбранных кнопкой «Обзор…» (по умолчанию data/resumes/pdf). Тесты подменяют на временный. */
   resumeUploadDir?: string;
   settings?: {
@@ -285,6 +294,7 @@ export async function startPanel(
     if (followups.running) return 'Уже идёт работа с дожимами.';
     if (hh.running) return 'Идёт проверка откликов hh.ru — она держит тот же браузерный профиль.';
     if (deps.hhLogin?.running()) return 'Открыто окно входа на hh.ru — сначала заверши вход.';
+    if (deps.careeristLogin?.running()) return 'Открыто окно входа на careerist — сначала заверши вход.';
     return null;
   };
 
@@ -406,6 +416,20 @@ export async function startPanel(
           if (hh.running) return json(res, { error: 'Идёт проверка откликов hh.ru — дождись её завершения.' }, 409);
           const r = deps.hhLogin.start();
           return r.ok ? json(res, { ok: true, ...deps.hhLogin.status() }, 202) : json(res, { error: r.error }, 409);
+        }
+      }
+      // «Войти в careerist»: то же окно входа на общем профиле, что у hh.ru.
+      if (req.url === '/api/careerist-login' || req.url === '/api/careerist-login/status') {
+        if (!deps.careeristLogin) {
+          return json(res, { error: 'Панель запущена без входа на careerist — открой её через npm run panel.' }, 409);
+        }
+        if (req.method === 'GET' && req.url === '/api/careerist-login/status') {
+          return json(res, deps.careeristLogin.status());
+        }
+        if (req.method === 'POST' && req.url === '/api/careerist-login') {
+          if (send.running) return json(res, { error: 'Идёт отправка откликов — дождись её завершения.' }, 409);
+          const r = deps.careeristLogin.start();
+          return r.ok ? json(res, { ok: true, ...deps.careeristLogin.status() }, 202) : json(res, { error: r.error }, 409);
         }
       }
       if (req.url !== undefined && req.url.startsWith('/api/hh/')) {
@@ -554,6 +578,9 @@ export async function startPanel(
         if (search.running) {
           return json(res, { error: 'Поиск уже идёт.' }, 409);
         }
+        // Без резюме искать нечего — отказываем сразу, до «Поиск идёт…».
+        const blocker = deps.settings ? searchBlocker(deps.settings.get()) : null;
+        if (blocker !== null) return json(res, { error: blocker, needResume: true }, 409);
 
         const body = await readJson(req);
         const limit = Number(body['limit']);
@@ -713,6 +740,9 @@ export async function startPanel(
         if (deps.hhLogin?.running()) {
           return json(res, { error: 'Открыто окно входа на hh.ru — сначала заверши вход (или закрой окно).' }, 409);
         }
+        if (deps.careeristLogin?.running()) {
+          return json(res, { error: 'Открыто окно входа на careerist — сначала заверши вход (или закрой окно).' }, 409);
+        }
         // Вторая отправка поверх идущей означала бы две попытки подать одну и
         // ту же заявку одновременно. Отказываем явно, а не молча.
         if (send.running) {
@@ -826,6 +856,9 @@ export async function startPanel(
       // JSON в теле запроса или ошибка чтения panel.html — остаётся
       // настоящей 500-кой: это сбой сервера, а не то, что пользователь мог
       // спровоцировать двойным кликом по кнопке в интерфейсе.
+      // Ответ уже начат (ошибка случилась после writeHead) — второй writeHead
+      // бросил бы ERR_HTTP_HEADERS_SENT из обработчика и уронил панель целиком.
+      if (res.headersSent) { res.end(); return; }
       json(res, { error: e instanceof Error ? e.message : String(e) }, 500);
     }
   });

@@ -602,3 +602,18 @@ export function saveSettings(path: string, settings: unknown): Settings {
 export function enabledSpecialties(s: Settings): Specialty[] {
   return s.specialties.filter((x) => x.enabled);
 }
+
+/**
+ * Почему искать нечего, или null, если есть что. Новый пользователь начинает
+ * без единого резюме (freshSettings), и «Найти вакансии» должно сразу сказать,
+ * что делать, а не отвечать «Поиск идёт…» и падать следом.
+ */
+export function searchBlocker(s: Settings): string | null {
+  if (s.specialties.length === 0) {
+    return 'Сначала добавь резюме: «Настройки» → «Фильтры поиска» → «Добавить резюме». По нему программа поймёт, какие вакансии искать.';
+  }
+  if (enabledSpecialties(s).length === 0) {
+    return 'Все резюме выключены — включи «Искать» хотя бы у одного во вкладке «Настройки» → «Фильтры поиска».';
+  }
+  return null;
+}

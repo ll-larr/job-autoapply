@@ -163,7 +163,7 @@ describe('panel.html — фильтр вакансий во вкладке «Н�
   it('разметка: все id, на которые завязаны JS, тесты и тур, на месте', () => {
     for (const id of [
       'settingsSave', 'settingsReset', 'settingsNote', 'settingsDirty', 'addSpec', 'specList', 'specPills', 'settingsNav',
-      'profileBlock', 'hhLoginBlock', 'llmBlock', 'captchaBlock', 'stopBlock', 'stopWords', 'tgBlock', 'autoBlock',
+      'profileBlock', 'hhLoginBlock', 'careeristLoginBlock', 'careeristLoginBtn', 'llmBlock', 'captchaBlock', 'stopBlock', 'stopWords', 'tgBlock', 'autoBlock',
       'secretaryBlock', 'calendarBlock', 'followupsBlock', 'hhInboxBlock',
     ]) expect(html, id).toContain(`id="${id}"`);
     for (const sec of ['filters', 'accounts', 'telegram', 'auto', 'chat']) expect(html).toContain(`data-sec="${sec}"`);
@@ -181,6 +181,51 @@ describe('panel.html — фильтр вакансий во вкладке «Н�
     expect(selectors.length).toBeGreaterThan(50);
     for (const sel of selectors) {
       for (const part of sel.split(',')) expect(part.trim(), sel).toMatch(/^#pane-settings\b/);
+    }
+  });
+});
+
+describe('panel.html — единый дизайн всей панели (2026-11-20)', () => {
+  const css = /<style>([\s\S]*?)<\/style>/.exec(html)![1]!;
+
+  it('дизайн-токены настроек живут на :root — ими пользуются все вкладки', () => {
+    const root = /:root\s*\{([^}]*)\}/.exec(css)![1]!;
+    for (const tok of ['--acc:', '--acc-soft:', '--acc-ink:', '--line:', '--mute:', '--card-shadow:']) expect(root, tok).toContain(tok);
+    // Старых серо-синих кнопок вне настроек больше нет.
+    expect(css).not.toMatch(/#2f5d8a/);
+  });
+
+  it('строки вакансии не попадают в шаблоны без esc()', () => {
+    // Название, компания, город и ссылка — чужой текст с площадок и из Telegram.
+    expect(html).not.toMatch(/\$\{r\.vacancy\.(title|company|geo|url)\}/);
+    expect(html).not.toMatch(/\$\{r\.(source|score)\}/);
+  });
+
+  it('scoreBadge: цвет по уровню — ≥70 зелёный, 40–69 лавандовый, ниже — серый', () => {
+    (globalThis as unknown as Record<string, unknown>)['esc'] = extractFunction(html, 'esc');
+    const scoreBadge = extractFunction(html, 'scoreBadge');
+    expect(scoreBadge(70)).toContain('score-badge hi');
+    expect(scoreBadge(69)).toContain('score-badge mid');
+    expect(scoreBadge(40)).toContain('score-badge mid');
+    expect(scoreBadge(39)).toContain('score-badge lo');
+  });
+
+  it('safeHref: кликается только http(s), кавычки экранируются', () => {
+    (globalThis as unknown as Record<string, unknown>)['esc'] = extractFunction(html, 'esc');
+    const safeHref = extractFunction(html, 'safeHref');
+    expect(safeHref('https://hh.ru/vacancy/1')).toBe('https://hh.ru/vacancy/1');
+    expect(safeHref('javascript:alert(1)')).toBe('#');
+    expect(safeHref(null)).toBe('#');
+    expect(safeHref('https://x.ru/"onmouseover="a')).not.toContain('"');
+  });
+
+  it('тур: шаги с целью, которой может не быть, знают, что показать вместо неё', () => {
+    expect(html).toContain("const TOUR_KEY = 'jobAutoapply.onboardingDone.v2'");
+    // Карточка резюме и карточка вакансии у новичка отсутствуют — у таких шагов есть запасная цель или текст «без цели».
+    const steps = html.slice(html.indexOf('const TOUR_STEPS'), html.indexOf('let tourIdx'));
+    for (const block of steps.split(/\n  \{\n/).slice(1)) {
+      if (/target: `\$\{TOUR_SPEC\}/.test(block)) expect(block, block.slice(0, 80)).toMatch(/textNoTarget:|fallback:/);
+      if (/target: '#list \.card'/.test(block)) expect(block).toMatch(/fallback:/);
     }
   });
 });

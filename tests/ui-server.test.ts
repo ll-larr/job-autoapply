@@ -5,7 +5,7 @@ import { tmpdir, networkInterfaces } from 'node:os';
 import { startPanel, safeResumeFileName, type PanelDeps } from '../src/ui/server.js';
 import { Queue } from '../src/core/queue.js';
 import { normalizeVacancy } from '../src/core/vacancy.js';
-import { seedSettings, validateSettings, type Settings } from '../src/core/settings.js';
+import { seedSettings, freshSettings, validateSettings, type Settings } from '../src/core/settings.js';
 import { clearStop, isStopRequested } from '../src/core/sender.js';
 
 // Порт 0 = система выдаёт свободный. Фиксированный порт создавал гонку между
@@ -1085,6 +1085,65 @@ describe('кнопка «Обзор…» — загрузка резюме', () 
     expect(safeResumeFileName(encodeURIComponent('../../etc/passwd'))).toBe('passwd.pdf');
     expect(safeResumeFileName(encodeURIComponent('CV: 2026?.PDF'))).toBe('CV 2026.PDF');
     expect(safeResumeFileName('')).toBe('resume.pdf');
+  });
+});
+
+describe('«Найти вакансии» у нового пользователя без резюме', () => {
+  it('поиск не стартует: 409, needResume и подсказка «Добавить резюме»', async () => {
+    let searched = 0;
+    const p = await startPanel(q, 0, {
+      startSearch: async () => { searched += 1; return { report: { found: 0, queued: 0 }, emptyLetters: 0 } as never; },
+      settings: {
+        get: () => freshSettings(),
+        save: async (raw) => validateSettings(raw),
+        suggest: async () => ({ ok: false, error: 'не нужен' }),
+      },
+    });
+    try {
+      const res = await post(`http://127.0.0.1:${p.port}/api/search/start`, { limit: 5 });
+      expect(res.status).toBe(409);
+      const body = await res.json() as { error: string; needResume?: boolean };
+      expect(body.needResume).toBe(true);
+      expect(body.error).toMatch(/Добавить резюме/);
+      expect(searched).toBe(0);
+    } finally { await p.close(); }
+  });
+});
+
+describe('кнопка «Войти в careerist»', () => {
+  it('без зависимости — 409 с объяснением', async () => {
+    const res = await fetch(`http://127.0.0.1:${PORT}/api/careerist-login/status`);
+    expect(res.status).toBe(409);
+  });
+
+  it('запуск и статус проходят через careeristLogin', async () => {
+    let started = 0;
+    const p = await startPanel(q, 0, {
+      careeristLogin: {
+        start: () => { started += 1; return { ok: true }; },
+        status: () => ({ state: started > 0 ? 'waiting' : 'idle', lastLoginAt: null, error: null }),
+        running: () => started > 0,
+      },
+    });
+    try {
+      expect(await (await fetch(`http://127.0.0.1:${p.port}/api/careerist-login/status`)).json()).toMatchObject({ state: 'idle' });
+      const res = await post(`http://127.0.0.1:${p.port}/api/careerist-login`, {});
+      expect(res.status).toBe(202);
+      expect(await res.json()).toMatchObject({ ok: true, state: 'waiting' });
+      expect(started).toBe(1);
+    } finally { await p.close(); }
+  });
+
+  it('пока открыто окно входа на careerist, отправка не запускается', async () => {
+    const p = await startPanel(q, 0, {
+      adapters: [], config: { minScore: 0, letterModels: ['m'], searchQueries: [], throttle: {} } as never,
+      careeristLogin: { start: () => ({ ok: true }), status: () => ({ state: 'waiting', lastLoginAt: null, error: null }), running: () => true },
+    });
+    try {
+      const res = await post(`http://127.0.0.1:${p.port}/api/send/start`, {});
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as { error: string }).error).toMatch(/careerist/);
+    } finally { await p.close(); }
   });
 });
 

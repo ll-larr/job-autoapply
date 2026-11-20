@@ -26,7 +26,7 @@ import type { Adapter } from '../src/adapters/types.js';
 import type { SearchReport } from '../src/pipeline.js';
 import type { SendReport } from '../src/core/sender.js';
 import type { Config } from '../src/core/config.js';
-import { seedSettings } from '../src/core/settings.js';
+import { seedSettings, freshSettings } from '../src/core/settings.js';
 import { DEFAULT_SPECIALTY } from '../src/core/specialty-defaults.js';
 
 const CONFIG = { minScore: 40, letterModels: ['m:free'], searchQueries: [], throttle: {} };
@@ -78,6 +78,10 @@ describe('buildSearchQueries', () => {
     const off = structuredClone(settings);
     for (const s of off.specialties) s.enabled = false;
     expect(() => buildSearchQueries(off, [])).toThrow(/включ/);
+  });
+
+  it('новый пользователь без резюме — ошибка зовёт добавить резюме', () => {
+    expect(() => buildSearchQueries(freshSettings(), [])).toThrow(/Добавить резюме/);
   });
 });
 

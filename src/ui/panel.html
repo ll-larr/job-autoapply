@@ -4,125 +4,418 @@
   <meta charset="utf-8">
   <title>Job Autoapply — очередь</title>
   <style>
-    body { font: 15px/1.5 system-ui, sans-serif; margin: 0; background: #f6f6f7; color: #1b1b1d; }
+    /* =====================================================================
+       Общий визуальный язык панели (2026-11-20): светлая «лавандовая» тема,
+       та же, что у вкладки «Настройки». Токены живут на :root, чтобы шапка,
+       вкладки очереди, «Диалоги» и тур говорили на одном языке с настройками,
+       а не держали свою копию цветов. Базовые кнопки и поля задают ровно те же
+       свойства, что и их двойники в #pane-settings: так настройки визуально
+       не меняются, а всё остальное выглядит как они.
+       ===================================================================== */
+    :root {
+      --acc: #5b45d6; --acc-h: #4c37c4; --acc-soft: #ece8ff; --acc-line: #b9adf5; --acc-ink: #3b2a9e;
+      --ring: 0 0 0 4px rgba(91, 69, 214, .15);
+      --line: #e2e2ea; --line-2: #efeff5; --field: #dcdce6; --ink: #1f1f2b; --ink-2: #3a3a48; --mute: #6b6b7b;
+      --bg: #f5f5fa; --panel: #f7f7fb;
+      --card-shadow: 0 1px 2px rgba(24, 20, 60, .04), 0 8px 28px rgba(24, 20, 60, .06);
+      --ok: #1e6b2f; --ok-soft: #e3f5e6; --ok-line: #b9e0c0;
+      --bad: #b42318; --bad-soft: #fdecec; --bad-line: #f5c2bd;
+      --warn-ink: #5a4500; --warn-soft: #fff7e6; --warn-line: #f3d19c;
+      --shell: 1200px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body { font: 15px/1.5 system-ui, sans-serif; margin: 0; background: var(--bg); color: var(--ink); }
+    a { color: var(--acc-ink); }
+    .ic { display: block; flex: none; }
+    [data-icon] { display: inline-flex; }
 
-    header { background: #fff; border-bottom: 1px solid #ddd; position: sticky; top: 0; z-index: 5; }
-    .bar { padding: 12px 20px 0; display: flex; gap: 12px; align-items: baseline; }
-    .bar strong { font-size: 16px; }
+    /* ---- Кнопки. Вторичная — белая с рамкой; .primary — акцент; .stop-btn и
+       .danger — мягко-красные (остановка процесса, необратимое); .ghost — без
+       рамки. Отключённая — полупрозрачная, без hover. */
+    button {
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      height: 40px; padding: 0 16px; border: 1px solid var(--field); border-radius: 12px;
+      background: #fff; color: var(--ink-2); font: 600 14px/1 system-ui, sans-serif; white-space: nowrap; cursor: pointer;
+      transition: background .15s, border-color .15s, color .15s, box-shadow .15s;
+    }
+    button:hover:not(:disabled) { background: #f6f5fb; border-color: #c9c9d6; }
+    button:focus-visible { outline: none; border-color: var(--acc); box-shadow: var(--ring); }
+    button:disabled { opacity: .5; cursor: default; }
+    button.primary { background: var(--acc); border-color: var(--acc); color: #fff; }
+    button.primary:hover:not(:disabled) { background: var(--acc-h); border-color: var(--acc-h); }
+    button.stop-btn, button.danger { background: var(--bad-soft); border-color: var(--bad-line); color: var(--bad); }
+    button.stop-btn:hover:not(:disabled), button.danger:hover:not(:disabled) { background: #fadcd9; border-color: #eea59d; }
+    button.ghost { background: transparent; border-color: transparent; color: var(--mute); }
+    button.ghost:hover:not(:disabled) { background: #efeef6; border-color: transparent; color: var(--ink-2); }
+    button.sm { height: 34px; padding: 0 12px; border-radius: 10px; font-size: 13px; gap: 6px; }
+    button .ic { color: currentColor; }
 
-    nav { display: flex; gap: 2px; padding: 10px 20px 0; }
+    /* ---- Поля: те же размеры и рамки, что у полей настроек. */
+    input[type=text], input[type=password], input[type=number], input[type=time], select, textarea {
+      font: 15px/1.4 system-ui, sans-serif; color: var(--ink); background-color: #fff;
+      height: 44px; padding: 0 14px; border: 1px solid var(--field); border-radius: 12px; max-width: 100%;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    textarea { display: block; width: 100%; height: auto; min-height: 120px; padding: 11px 14px; resize: vertical; line-height: 1.5; }
+    input:hover, select:hover, textarea:hover { border-color: #c6c6d4; }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--acc); box-shadow: var(--ring); }
+    input:disabled, textarea:disabled { background-color: #f4f4f8; color: var(--mute); cursor: default; }
+    input::placeholder, textarea::placeholder { color: #737382; }
+
+    .hint { font-size: 13px; color: var(--mute); }
+    .hint:empty { display: none; }
+
+    /* ---- Шапка: белая, липкая. Внутри — та же ширина, что у разделов. */
+    header {
+      position: sticky; top: 0; z-index: 5; background: rgba(255, 255, 255, .96); backdrop-filter: blur(8px);
+      border-bottom: 1px solid #e6e6ef; box-shadow: 0 6px 24px rgba(24, 20, 60, .04);
+    }
+    .wrap { max-width: var(--shell); margin: 0 auto; padding: 0 28px; }
+    .bar { display: flex; align-items: center; justify-content: space-between; gap: 12px 24px; flex-wrap: wrap; padding-top: 14px; }
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .brand-ic { width: 36px; height: 36px; border-radius: 10px; background: var(--acc-soft); color: var(--acc); place-items: center; display: grid; flex: none; }
+    .brand strong { font-size: 18px; font-weight: 800; letter-spacing: -.01em; white-space: nowrap; }
+    .search-box { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+    .search-box label { font-size: 14px; font-weight: 600; color: var(--ink-2); white-space: nowrap; }
+    .search-box input { width: 88px; height: 40px; }
+
+    /* Полосы шапки. Автоотклик — самая заметная (сплошная красная): после неё
+       отклики уходят без просмотра. VPN — жёлтое предупреждение, итог поиска —
+       спокойная лавандовая строка. */
+    .banner {
+      display: flex; align-items: flex-start; gap: 12px; margin-top: 12px; padding: 10px 14px;
+      border-radius: 12px; font-size: 14px; line-height: 1.45;
+    }
+    .banner .banner-ic { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; margin-top: -2px; }
+    .banner-text { min-width: 0; padding-top: 2px; }
+    #autoBanner { background: #b42318; color: #fff; font-weight: 700; box-shadow: 0 6px 18px rgba(180, 35, 24, .25); }
+    #autoBanner .banner-ic { background: rgba(255, 255, 255, .18); }
+    #proxyWarn { background: var(--warn-soft); border: 1px solid var(--warn-line); color: var(--warn-ink); }
+    #proxyWarn .banner-ic { background: #ffe9bf; color: #a15c00; }
+    #searchNote {
+      margin-top: 12px; padding: 8px 14px 8px 38px; position: relative;
+      background: #f7f5ff; border: 1px solid #e9e4ff; border-radius: 12px; font-size: 13px; color: var(--ink-2);
+    }
+    #searchNote::before {
+      content: ''; position: absolute; left: 14px; top: 11px; width: 14px; height: 14px; background: var(--acc);
+      -webkit-mask: var(--info-mask) center / contain no-repeat; mask: var(--info-mask) center / contain no-repeat;
+    }
+    #searchNote:empty { display: none; }
+    :root {
+      --info-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 11v5M12 7.5v.5'/%3E%3C/svg%3E");
+    }
+
+    /* Вкладки — как меню настроек: скруглённые пункты с иконками, активный —
+       лавандовый. На узком экране полоса прокручивается сама по себе, а не
+       раздвигает страницу. */
+    nav.tabs {
+      display: flex; gap: 4px; padding: 12px 0; margin: 0 -4px; overflow-x: auto; scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
+    }
+    nav.tabs::-webkit-scrollbar { display: none; }
     .tab {
-      appearance: none; border: 1px solid transparent; border-bottom: none;
-      background: transparent; font: inherit; cursor: pointer;
-      padding: 8px 16px; border-radius: 6px 6px 0 0; color: #555;
-      position: relative; top: 1px;
+      flex: none; height: 40px; padding: 0 14px; gap: 8px; margin: 0 4px 0 0; border: 0; border-radius: 12px;
+      background: transparent; color: var(--ink-2); font: 600 14px/1 system-ui, sans-serif;
     }
-    .tab:hover { background: #f0f0f2; }
-    .tab[aria-selected="true"] {
-      background: #f6f6f7; border-color: #ddd; color: #1b1b1d; font-weight: 600;
-    }
+    nav.tabs .tab:first-child { margin-left: 4px; }
+    .tab .ic { color: #8a8a9a; transition: color .15s; }
+    .tab:hover:not(:disabled) { background: #f3f2fa; border-color: transparent; }
+    /* Вес у выбранной тот же, что у остальных (600): жирный текст шире, и вся
+       полоса правее сдвигалась бы на пару пикселей при каждом переключении.
+       Выбранную и так видно по лавандовой подложке и цвету. */
+    .tab[aria-selected="true"], .tab[aria-selected="true"]:hover:not(:disabled) { background: var(--acc-soft); color: var(--acc-ink); }
+    .tab[aria-selected="true"] .ic { color: var(--acc); }
     .tab .n {
-      display: inline-block; margin-left: 7px; padding: 0 7px;
-      background: #e6e6ea; border-radius: 9px; font-size: 12px; font-weight: 500; color: #444;
+      display: inline-grid; place-items: center; min-width: 22px; height: 20px; padding: 0 7px; border-radius: 999px;
+      background: #efeef6; color: var(--mute); font-size: 12px; font-weight: 700;
     }
-    .tab[aria-selected="true"] .n { background: #dcdce2; }
-    .tab:focus-visible { outline: 2px solid #3b6ea5; outline-offset: 2px; }
-
-    .actions { padding: 12px 20px 0; display: flex; gap: 8px; align-items: center; }
-
-    .bar { justify-content: space-between; }
-    .search-box { display: flex; gap: 8px; align-items: center; }
-    .search-box label { font-size: 13px; color: #555; }
-    .search-box input {
-      width: 76px; padding: 5px 8px; font: inherit; font-size: 14px;
-      border: 1px solid #ccc; border-radius: 4px;
+    .tab[aria-selected="true"] .n { background: #fff; color: var(--acc-ink); }
+    .tab .n:empty { display: none; }
+    /* Полоса прокручивается без видимого скроллбара — за краем, где ещё есть
+       вкладки, она затухает: так видно, что «Настройки» дальше, их можно
+       долистать. Классы ставит updateTabsFade() по положению прокрутки. */
+    nav.tabs.more-r { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 48px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 48px), transparent); }
+    nav.tabs.more-l { -webkit-mask-image: linear-gradient(to right, transparent, #000 48px); mask-image: linear-gradient(to right, transparent, #000 48px); }
+    nav.tabs.more-l.more-r {
+      -webkit-mask-image: linear-gradient(to right, transparent, #000 48px, #000 calc(100% - 48px), transparent);
+      mask-image: linear-gradient(to right, transparent, #000 48px, #000 calc(100% - 48px), transparent);
     }
-    #searchNote { font-size: 12px; color: #666; padding: 0 20px 0; min-height: 16px; }
-    /* Кнопки «Остановить…» видны только пока идёт соответствующий процесс. */
-    .stop-btn { background: #fbe9e9; border: 1px solid #c97b7b; color: #7a1414; border-radius: 4px; }
-    .stop-btn:hover:not(:disabled) { background: #f6d3d3; }
-    .stop-btn:disabled { opacity: .7; cursor: default; }
-    .hint { font-size: 13px; color: #666; }
+    /* Ноутбук и планшет (до ~1040px): шесть вкладок со счётчиками в полный
+       размер шире строки. Ужимаем отступы, иконки и шрифт — на 900px полоса
+       помещается целиком, уже — прокручивается с затуханием у края. */
+    @media (max-width: 1040px) {
+      .tab { padding: 0 10px; gap: 6px; margin-right: 2px; font-size: 13px; }
+      .tab .ic { width: 16px; height: 16px; }
+      .tab .n { min-width: 20px; padding: 0 6px; }
+    }
 
-    .card { display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
-            background: #fff; margin: 16px 20px; padding: 16px;
-            border: 1px solid #ddd; border-radius: 8px; }
-    .card.slim { grid-template-columns: 1fr auto; align-items: center; }
-    .meta { font-size: 13px; color: #666; }
-    .score { font-weight: 700; }
-    .desc { max-height: 260px; overflow-y: auto; white-space: pre-wrap;
-            font-size: 13px; border: 1px solid #eee; padding: 8px; }
-    textarea { width: 100%; min-height: 260px; font: 13px/1.5 ui-monospace, monospace; }
-    button { padding: 6px 14px; cursor: pointer; }
-    .empty { padding: 40px 20px; color: #666; }
+    /* ---- Разделы вне настроек: та же ширина и отступы, что у .st-shell. */
+    .shell { max-width: var(--shell); margin: 0 auto; padding: 28px 28px 40px; display: flex; flex-direction: column; gap: 20px; }
+    .st-head h2 { margin: 0; font-size: 28px; line-height: 1.2; font-weight: 700; letter-spacing: -.01em; }
+    .st-head p { margin: 6px 0 0; color: var(--mute); font-size: 15px; max-width: 72ch; }
+    .pane-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px 24px; flex-wrap: wrap; }
+    .pane-head .st-head { flex: 1 1 420px; min-width: 0; }
+    .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    /* Строка состояния процесса (письма, отправка): итог — единственный ответ
+       на «сработало ли», поэтому заметной плашкой, а не серой мелочью. */
+    .status {
+      display: flex; gap: 10px; align-items: flex-start; padding: 10px 14px; border-radius: 12px;
+      background: #fff; border: 1px solid var(--line); font-size: 14px; color: var(--ink-2); box-shadow: 0 1px 2px rgba(24, 20, 60, .03);
+    }
+    .status::before { content: ''; flex: none; width: 8px; height: 8px; margin-top: 7px; border-radius: 50%; background: var(--acc); }
+    .status:empty { display: none; }
+    .status.warn { background: var(--warn-soft); border-color: var(--warn-line); color: var(--warn-ink); }
+    .status.warn::before { background: #f59e0b; }
 
-    .settings-block { background: #fff; margin: 16px 20px; padding: 16px; border: 1px solid #ddd; border-radius: 8px; }
-    .settings-block textarea { min-height: 110px; margin-top: 6px; font: 13px/1.4 system-ui, sans-serif; }
-    .contact-warn { margin: 6px 0; padding: 6px 10px; background: #fff3cd; border: 1px solid #e0c068;
-                    border-radius: 4px; font-size: 13px; color: #5a4500; }
-    .tg-chat { display: flex; gap: 8px; align-items: center; font-size: 14px; margin: 4px 0; }
-    #tgPicker label { display: block; font-size: 14px; margin: 2px 0; }
-    #autoBanner { margin: 8px 20px; padding: 10px 12px; background: #9b1c1c; color: #fff;
-                  border-radius: 4px; font-size: 14px; font-weight: 600; }
-    .tbl { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
-    .tbl th { text-align: left; font-weight: 500; color: #666; padding: 4px 8px; border-bottom: 1px solid #ddd; }
-    .tbl td { padding: 4px 8px; border-bottom: 1px solid #f0f0f2; vertical-align: top; }
-    .tbl .num { text-align: right; white-space: nowrap; }
-    .tbl tr.total td { font-weight: 600; background: #fafafb; }
-    .st { display: inline-block; padding: 0 8px; border-radius: 9px; font-size: 12px; background: #e6e6ea; }
-    .st.meeting, .st.invite { background: #d6efd8; color: #155724; }
-    .st.reject { background: #f6d3d3; color: #7a1414; }
-    .st.replied { background: #dbe8f7; color: #1d3f6e; }
-    .days label { margin-right: 10px; font-size: 14px; }
-    .fu-card { border-top: 1px solid #eee; padding: 10px 0; }
-    .fu-card textarea { min-height: 70px; font: 13px/1.4 system-ui, sans-serif; }
-    button.primary { background: #2f5d8a; border: 1px solid #244a6e; color: #fff; border-radius: 4px; }
-    button.primary:hover:not(:disabled) { background: #264d73; }
-    button.primary:disabled { opacity: .6; }
+    /* ---- Карточки (общие с настройками). */
+    .st-card { margin: 0; padding: 28px; border: 0; border-radius: 20px; background: #fff; box-shadow: var(--card-shadow); min-width: 0; }
+    .st-card-head { display: flex; gap: 16px; align-items: flex-start; margin-bottom: 18px; }
+    .st-card-head > div { min-width: 0; flex: 1; }
+    .st-card-head h3 { margin: 0; font-size: 18px; line-height: 1.3; font-weight: 700; }
+    .st-card-head p { margin: 4px 0 0; color: var(--mute); font-size: 14px; line-height: 1.5; max-width: 76ch; }
+    .st-card-head .actions { flex: none; }
+    .st-ic {
+      flex: none; width: 44px; height: 44px; border-radius: 12px;
+      background: var(--acc-soft); color: var(--acc); display: grid; place-items: center;
+    }
+
+    /* Пустое состояние — как «Добавьте своё первое резюме» в настройках.
+       Класс .empty оставлен как есть: на него опираются тесты; оформление —
+       на .empty-state, потому что .empty носит и пилюля фильтра в настройках. */
+    .empty-state {
+      display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px;
+      padding: 48px 28px; background: #fff; border: 1.5px dashed #cfc6f7; border-radius: 20px;
+    }
+    .empty-state .empty-ic { flex: none; display: grid; place-items: center; width: 64px; height: 64px; border-radius: 16px; background: var(--acc-soft); color: var(--acc); }
+    .empty-state h3 { margin: 6px 0 0; font-size: 20px; font-weight: 800; }
+    .empty-state p { margin: 0; max-width: 460px; color: var(--mute); font-size: 14px; line-height: 1.5; }
+    /* Внутри карточки «Диалогов» — тише: без рамки, на мягкой подложке. */
+    .empty-state.sm { flex-direction: row; text-align: left; gap: 14px; padding: 16px 18px; border: 0; background: var(--panel); border-radius: 14px; }
+    .empty-state > button { margin-top: 8px; }
+    .empty-state .cta-ic { display: inline-flex; }
+    .empty-state.sm .empty-ic { width: 40px; height: 40px; border-radius: 12px; }
+    .empty-state.sm h3 { margin: 0; font-size: 15px; font-weight: 700; }
+    .empty-state.sm p { font-size: 13px; }
+
+    /* ---- Карточка вакансии. */
+    .cards { display: flex; flex-direction: column; gap: 16px; }
+    .card {
+      display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 24px 28px;
+      background: #fff; padding: 24px 28px; border-radius: 20px; box-shadow: var(--card-shadow); min-width: 0;
+    }
+    .card-main, .card-side { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+    .card-top { display: flex; gap: 16px; align-items: flex-start; }
+    .card-title { min-width: 0; flex: 1; }
+    .card-title a.title {
+      display: block; font-size: 17px; line-height: 1.35; font-weight: 700; color: var(--ink); text-decoration: none;
+      overflow-wrap: anywhere;
+    }
+    .card-title a.title:hover { color: var(--acc); text-decoration: underline; text-underline-offset: 3px; }
+    .card-title a.title:focus-visible { outline: none; border-radius: 6px; box-shadow: var(--ring); }
+    .meta { font-size: 13px; color: var(--mute); margin-top: 4px; overflow-wrap: anywhere; }
+    .meta .sep { margin: 0 6px; color: #b5b5c3; }
+    /* Скор — заметный бейдж; цвет по уровню: ≥70 зелёный, 40–69 лавандовый, <40 серый. */
+    .score-badge {
+      flex: none; display: grid; place-items: center; align-content: center; width: 56px; height: 56px; border-radius: 16px;
+      background: #efeef6; color: var(--ink-2); text-align: center;
+    }
+    .score-badge .score { font-size: 20px; line-height: 1; font-weight: 800; }
+    .score-badge small { font-size: 10.5px; line-height: 1; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; opacity: .75; margin-top: 4px; }
+    .score-badge.hi { background: var(--ok-soft); color: var(--ok); }
+    .score-badge.mid { background: var(--acc-soft); color: var(--acc-ink); }
+    .score-badge.lo { background: #efeef6; color: var(--mute); }
+    .tags { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .tag {
+      display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 8px;
+      border: 1px solid #e4e2ee; background: #f1f0f7; color: var(--ink-2); font-size: 12.5px; font-weight: 600; white-space: nowrap;
+    }
+    .tag.mode { background: #fff; border-color: var(--line); color: var(--mute); font-weight: 500; }
+    .tag.none { background: transparent; border-style: dashed; color: var(--mute); font-weight: 500; }
+    .tag.ok { background: var(--ok-soft); border-color: var(--ok-line); color: var(--ok); }
+    .tag.auto { background: #fff1e0; border-color: #f6cfa0; color: #b45309; letter-spacing: .02em; }
+    .tag.tg { background: #e8f3fd; border-color: #bfdcf5; color: #1d5f99; }
+    .side-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; font-weight: 700; color: var(--ink-2); }
+    .side-label small { font-weight: 500; color: var(--mute); }
+    .desc {
+      max-height: 240px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+      font-size: 13.5px; line-height: 1.6; color: var(--ink-2);
+      background: var(--panel); border: 1px solid #ececf3; border-radius: 14px; padding: 14px 16px;
+    }
+    .letter-preview { max-height: none; background: #fff; border-color: var(--line); font-size: 14px; }
+    .letter-preview.missing { background: var(--bad-soft); border-color: var(--bad-line); color: var(--bad); font-weight: 600; }
+    .card textarea { min-height: 260px; font-size: 14px; line-height: 1.6; }
+    .card textarea.letter-edit { min-height: 160px; }
+    .card-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .contact-warn {
+      padding: 8px 12px; background: var(--warn-soft); border: 1px solid var(--warn-line);
+      border-radius: 10px; font-size: 13px; color: var(--warn-ink);
+    }
+    .tg-line { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; color: var(--ink-2); }
+    .tg-line .ic { color: #1d5f99; margin-top: 1px; }
+
+    /* Компактные строки «Отменённые» и «Отправлено». */
+    .card.slim { grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px 20px; padding: 16px 20px; }
+    .card.slim .card-top { align-items: center; }
+    .card.slim .score-badge { width: 44px; height: 44px; border-radius: 12px; }
+    .card.slim .score-badge .score { font-size: 16px; }
+    .card.slim .score-badge small { display: none; }
+    .card.slim .card-title a.title { font-size: 15px; }
+    .card.slim .meta { margin-top: 2px; }
+    .card.slim details { grid-column: 1 / -1; }
+    .card.slim .when { white-space: nowrap; }
+    .meta .tag { height: 20px; padding: 0 7px; font-size: 11px; border-radius: 6px; vertical-align: 1px; }
+    .sent-more > summary {
+      display: inline-flex; align-items: center; gap: 6px; list-style: none; cursor: pointer;
+      font-size: 13px; font-weight: 700; color: var(--acc-ink); border-radius: 8px; padding: 2px 4px; margin-left: -4px;
+    }
+    .sent-more > summary::-webkit-details-marker { display: none; }
+    .sent-more > summary .ic { transition: transform .2s; }
+    .sent-more[open] > summary .ic { transform: rotate(90deg); }
+    .sent-more > summary:hover { color: var(--acc); }
+    .sent-more > summary:focus-visible { outline: none; box-shadow: var(--ring); }
+    .sent-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px 16px; margin-top: 12px; }
+    .sent-body .side-label { margin-bottom: 6px; }
+    .sent-body .desc { max-height: 280px; }
+
+    /* ---- «Диалоги»: таблицы и статусы. */
+    .tbl-wrap { overflow-x: auto; margin: 0 -4px; padding: 0 4px; }
+    .tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .tbl th {
+      text-align: left; font-size: 12px; font-weight: 700; letter-spacing: .02em; color: var(--mute);
+      padding: 0 12px 10px; border-bottom: 1px solid var(--line); white-space: nowrap;
+    }
+    .tbl td { padding: 12px; border-bottom: 1px solid var(--line-2); vertical-align: top; color: var(--ink-2); }
+    .tbl tbody tr:hover td { background: #fafafe; }
+    .tbl th:first-child, .tbl td:first-child { padding-left: 4px; }
+    .tbl .nw { white-space: nowrap; }
+    /* Название вакансии в «Диалогах» не сжимается в столбик по слову: на узком экране таблица прокручивается. */
+    .tbl td.vac { min-width: 180px; }
+    .tbl .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .tbl tr.total td { font-weight: 700; color: var(--ink); background: var(--panel); border-bottom-color: var(--line); }
+    .tbl tr.total td:first-child { border-radius: 10px 0 0 10px; }
+    .tbl tr.total td:last-child { border-radius: 0 10px 10px 0; }
+    .tbl a { color: var(--acc-ink); text-decoration: none; font-weight: 600; }
+    .tbl a:hover { text-decoration: underline; }
+    .st {
+      display: inline-flex; align-items: center; height: 24px; padding: 0 10px; border-radius: 999px;
+      font-size: 12px; font-weight: 700; background: #efeef6; color: var(--mute); white-space: nowrap;
+    }
+    .st.meeting, .st.invite { background: var(--ok-soft); color: var(--ok); }
+    .st.reject { background: var(--bad-soft); color: var(--bad); }
+    .st.replied { background: var(--acc-soft); color: var(--acc-ink); }
+    .st.draft { background: #fff1e0; color: #b45309; }
+    .card-tools { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; margin-bottom: 14px; }
+    .card-tools .hint { flex: 1 1 200px; }
+    .state-line { margin: 0 0 14px; font-size: 14px; color: var(--ink-2); }
+    .state-line:empty { display: none; }
+    .fu-list { display: flex; flex-direction: column; gap: 10px; }
+    .fu-card { padding: 16px 18px; border: 1px solid var(--line); border-radius: 14px; display: flex; flex-direction: column; gap: 10px; }
+    .fu-head { display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; font-size: 14px; color: var(--ink-2); }
+    .fu-head b { color: var(--ink); }
+    .fu-card textarea { min-height: 90px; font-size: 14px; }
+    .fu-card .card-actions .hint { align-self: center; }
+    .fu-text { font-size: 13.5px; color: var(--ink-2); background: var(--panel); border-radius: 10px; padding: 10px 12px; }
+    .hh-report { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; border-radius: 14px; background: var(--panel); font-size: 14px; color: var(--ink-2); }
+    .hh-report .first { font-weight: 700; color: var(--ink); }
+
     .login-state { font-size: 14px; }
     .login-state.ok { color: #1e6b2f; font-weight: 600; }
     .login-state.wait { color: #5a4500; }
     .login-state.bad { color: #9b1c1c; }
-    #tourStart { background: transparent; border: 1px solid #c9c9d1; border-radius: 4px; color: #444; }
-    #tourStart:hover { background: #f0f0f2; }
+    /* Строки Telegram и рабочие дни в настройках опираются на эти базовые правила. */
+    .tg-chat { display: flex; gap: 8px; align-items: center; font-size: 14px; margin: 4px 0; }
+    #tgPicker label { display: block; font-size: 14px; margin: 2px 0; }
 
-    /* Онбординг: затемнение с «окном» над подсвеченным элементом и карточка подсказки. */
+    /* ---- Онбординг: затемнение с «окном» над подсвеченным элементом и карточка подсказки. */
     #tour { position: fixed; inset: 0; z-index: 1000; }
     #tour .tour-block { position: fixed; inset: 0; }
     #tour .tour-spot {
-      position: fixed; border-radius: 8px; pointer-events: none;
-      box-shadow: 0 0 0 4px #ffd54a, 0 0 0 9999px rgba(15, 18, 25, .62);
+      position: fixed; border-radius: 16px; pointer-events: none;
+      box-shadow: 0 0 0 3px var(--acc), 0 0 0 9px rgba(91, 69, 214, .28), 0 0 0 9999px rgba(20, 16, 48, .56);
       transition: top .25s, left .25s, width .25s, height .25s;
     }
-    #tour .tour-spot.none { box-shadow: 0 0 0 9999px rgba(15, 18, 25, .62); width: 0; height: 0; }
+    #tour .tour-spot.none { box-shadow: 0 0 0 9999px rgba(20, 16, 48, .56); width: 0; height: 0; }
     #tour .tour-card {
-      position: fixed; width: 360px; max-width: calc(100vw - 32px); box-sizing: border-box;
-      background: #fff; color: #1b1b1d; border-radius: 10px; padding: 16px 18px 14px;
-      box-shadow: 0 12px 40px rgba(0, 0, 0, .3); font-size: 14px; line-height: 1.5;
+      position: fixed; width: 380px; max-width: calc(100vw - 32px);
+      background: #fff; color: var(--ink); border-radius: 20px; padding: 22px 22px 18px;
+      box-shadow: 0 24px 60px rgba(20, 16, 48, .28), 0 2px 6px rgba(20, 16, 48, .08); font-size: 14px; line-height: 1.55;
       transition: top .25s, left .25s;
     }
-    #tour .tour-step { font-size: 12px; color: #777; margin-bottom: 4px; }
-    #tour .tour-title { font-size: 16px; font-weight: 600; margin: 0 0 6px; }
+    #tour .tour-top { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+    #tour .tour-ic { width: 40px; height: 40px; border-radius: 12px; background: var(--acc-soft); color: var(--acc); display: grid; place-items: center; flex: none; }
+    #tour .tour-step { font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--acc); }
+    #tour .tour-title { font-size: 18px; line-height: 1.3; font-weight: 800; margin: 2px 0 0; letter-spacing: -.01em; }
+    #tour .tour-text { color: var(--ink-2); }
     #tour .tour-text p { margin: 0 0 8px; }
-    #tour .tour-dots { display: flex; gap: 4px; margin: 10px 0 12px; flex-wrap: wrap; }
-    #tour .tour-dots span { width: 7px; height: 7px; border-radius: 50%; background: #d6d6dc; }
-    #tour .tour-dots span.on { background: #2f5d8a; }
+    #tour .tour-text p:last-child { margin-bottom: 0; }
+    #tour .tour-text b { color: var(--ink); }
+    #tour .tour-dots { display: flex; gap: 5px; margin: 16px 0 14px; flex-wrap: wrap; }
+    #tour .tour-dots span { width: 7px; height: 7px; border-radius: 999px; background: #dcdbe8; transition: width .2s, background .2s; }
+    #tour .tour-dots span.done { background: var(--acc-line); }
+    #tour .tour-dots span.on { width: 20px; background: var(--acc); }
     #tour .tour-nav { display: flex; gap: 8px; align-items: center; }
     #tour .tour-nav .grow { flex: 1; }
-    #tour .tour-skip { background: none; border: none; color: #666; padding: 6px 4px; text-decoration: underline; }
-    #tour .tour-card.center { left: 50% !important; top: 50% !important; transform: translate(-50%, -50%); width: 440px; }
+    #tour .tour-skip { padding: 0 8px; margin-left: -8px; }
+    #tour .tour-card.center { left: 50% !important; top: 50% !important; transform: translate(-50%, -50%); width: 460px; }
+
+    @media (max-width: 899px) {
+      .wrap { padding: 0 16px; }
+      .shell { padding: 20px 16px 32px; gap: 16px; }
+      .st-head h2 { font-size: 24px; }
+      .st-card { padding: 20px; border-radius: 18px; }
+      .card { grid-template-columns: minmax(0, 1fr); padding: 20px; border-radius: 18px; gap: 16px; }
+      .card textarea { min-height: 200px; }
+      .desc { max-height: 190px; }
+      .card.slim { padding: 14px 16px; }
+      .sent-body { grid-template-columns: minmax(0, 1fr); }
+      .bar { padding-top: 12px; }
+    }
+    @media (max-width: 560px) {
+      /* На телефоне шапка не липнет: с полосами VPN и автоотклика она заняла бы
+         полэкрана. Вкладки — вверху страницы, как и всё остальное. */
+      header { position: relative; }
+      /* Поиск — своей строкой на всю ширину: поле и кнопки в ряд. */
+      .bar { gap: 10px; }
+      .brand strong { font-size: 17px; }
+      .brand-ic { width: 32px; height: 32px; }
+      .search-box { width: 100%; justify-content: flex-start; gap: 8px; flex-wrap: nowrap; }
+      .search-box label { display: none; }
+      .search-box input { width: 72px; flex: none; }
+      .search-box #searchStart, .search-box #searchStop { flex: 1 1 auto; min-width: 0; padding: 0 12px; }
+      .search-box #searchStart .lbl, .search-box #searchStop .lbl { overflow: hidden; text-overflow: ellipsis; }
+      /* Пока поиск идёт, «Найти вакансии» всё равно неактивна, а главная
+         кнопка — «Остановить поиск»: ей вся строка, иначе обе подписи
+         обрезались бы до «Най…» и «Оста…». */
+      .search-box:has(#searchStop:not([hidden])) #searchStart { display: none; }
+      #tourStart { padding: 0 12px; }
+      #tourStart .lbl { display: none; }
+      nav.tabs { padding: 10px 0; }
+      .tab { padding: 0 12px; }
+      .banner { font-size: 13px; }
+      .pane-head .actions { width: 100%; }
+      /* Таблицы «Диалогов» на телефоне не сминаются в столбики по слову, а
+         прокручиваются вбок внутри .tbl-wrap. */
+      .tbl { min-width: 640px; }
+      .card-top { gap: 12px; }
+      .score-badge { width: 48px; height: 48px; border-radius: 14px; }
+      .score-badge .score { font-size: 18px; }
+      .card.slim { grid-template-columns: minmax(0, 1fr); }
+      .card.slim > div:last-child:not(.card-main) { justify-self: start; }
+      .empty-state { padding: 36px 20px; }
+      .st-card-head { gap: 12px; }
+      .st-ic { width: 40px; height: 40px; }
+      #tour .tour-card { padding: 18px 18px 14px; }
+      #tour .tour-card.center { width: calc(100vw - 32px); }
+    }
 
 
     /* =====================================================================
        Вкладка «Настройки» (редизайн 2026-11-19): светлая «лавандовая» тема
        по макету фильтра вакансий hh.ru. Каждый селектор начинается с
-       #pane-settings — остальные вкладки выглядят ровно как раньше.
+       #pane-settings; токены (--acc, --line, --card-shadow…) и базовые
+       кнопки/поля — общие для всей панели, они выше, на :root.
        ===================================================================== */
     #pane-settings {
-      --acc: #5b45d6; --acc-h: #4c37c4; --acc-soft: #ece8ff; --acc-line: #b9adf5; --acc-ink: #3b2a9e;
-      --ring: 0 0 0 4px rgba(91, 69, 214, .15);
-      --line: #e2e2ea; --field: #dcdce6; --ink: #1f1f2b; --ink-2: #3a3a48; --mute: #6b6b7b;
-      --card-shadow: 0 1px 2px rgba(24, 20, 60, .04), 0 8px 28px rgba(24, 20, 60, .06);
       background: #f5f5fa; color: var(--ink);
       min-height: calc(100vh - var(--hdr-h, 120px));
       display: flex; flex-direction: column;
@@ -313,6 +606,14 @@
     #pane-settings .suggest:hover:not(:disabled) { background: var(--acc); border-color: var(--acc); color: #fff; }
     #pane-settings .suggest:disabled { opacity: .75; }
     #pane-settings .suggest.busy .ic { animation: st-pulse 1s ease-in-out infinite; }
+    /* Между ~900 и ~1080px рядом с меню разделов колонке поля остаётся мало:
+       в три колонки поле пути сжималось до 30px, а «Заполнить с ИИ» наезжала
+       на «Обзор…». Здесь кнопка ИИ уходит под поле, в ту же колонку. Уже 900px
+       строка и так складывается в одну колонку (правило ниже). */
+    @media (min-width: 900px) and (max-width: 1080px) {
+      #pane-settings .resume-row { grid-template-columns: 176px minmax(0, 1fr); }
+      #pane-settings .resume-row .suggest { grid-column: 2; justify-self: start; }
+    }
     @keyframes st-pulse { 50% { opacity: .3; transform: scale(.85); } }
 
     /* Зарплата */
@@ -389,7 +690,15 @@
     #pane-settings .se-done { height: 44px; padding: 0 22px; }
 
     /* Расширенные настройки фильтра */
-    #pane-settings .spec-undo { display: flex; align-items: center; gap: 12px; margin: 0 0 14px; padding: 10px 14px;
+    #pane-settings .spec-empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px;
+      padding: 48px 28px; background: #fff; border: 1.5px dashed #cfc6f7; border-radius: 20px; }
+    #pane-settings .spec-empty-ic { display: grid; place-items: center; width: 64px; height: 64px; border-radius: 16px;
+      background: #ece8ff; color: var(--acc); }
+    #pane-settings .spec-empty h3 { margin: 6px 0 0; font-size: 20px; font-weight: 800; }
+    #pane-settings .spec-empty p { margin: 0; max-width: 440px; color: var(--mute); font-size: 14px; line-height: 1.5; }
+    #pane-settings .spec-empty button { margin-top: 8px; display: inline-flex; align-items: center; gap: 6px; }
+    #pane-settings #specList:empty { display: none; }
+    #pane-settings .spec-undo { display: flex; align-items: center; gap: 12px; margin: 0; padding: 10px 14px;
       background: #fff7e6; border: 1px solid #f3d19c; border-radius: 12px; font-size: 14px; color: #5a4500; }
     #pane-settings .spec-undo button { margin-left: auto; border-radius: 10px; padding: 6px 14px; font-weight: 600; }
     #pane-settings details.adv { margin-top: 14px; border-top: 1px solid #efeff5; }
@@ -503,100 +812,145 @@
 </head>
 <body>
   <header>
-    <div class="bar">
-      <strong>Очередь откликов</strong>
-      <div class="search-box">
-        <label for="searchLimit">Сколько вакансий найти</label>
-        <input type="number" id="searchLimit" value="20" min="1" max="500" step="10">
-        <button id="searchStart" class="primary">Найти вакансии</button>
-        <button id="searchStop" class="stop-btn" hidden>Остановить поиск</button>
-        <button id="tourStart" type="button" title="Показать подсказки по интерфейсу ещё раз">❓ Обучение</button>
+    <div class="wrap">
+      <div class="bar">
+        <div class="brand"><span class="brand-ic" data-icon="briefcase"></span><strong>Очередь откликов</strong></div>
+        <div class="search-box">
+          <label for="searchLimit">Сколько вакансий найти</label>
+          <input type="number" id="searchLimit" value="20" min="1" max="500" step="10">
+          <button id="searchStart" class="primary"><span data-icon="search" data-size="18"></span><span class="lbl">Найти вакансии</span></button>
+          <button id="searchStop" class="stop-btn" hidden><span data-icon="stop" data-size="18"></span><span class="lbl">Остановить поиск</span></button>
+          <button id="tourStart" type="button" title="Показать подсказки по интерфейсу ещё раз" aria-label="Обучение"><span data-icon="help" data-size="18"></span><span class="lbl">Обучение</span></button>
+        </div>
       </div>
+      <div id="proxyWarn" class="banner" role="alert" style="display:none"><span class="banner-ic" data-icon="alert" data-size="18"></span><span class="banner-text"></span></div>
+      <div id="autoBanner" class="banner" hidden><span class="banner-ic" data-icon="zap" data-size="18"></span><span class="banner-text">АВТООТКЛИК ВКЛЮЧЁН — поиск сам одобряет подходящее и отправляет отклики без твоего просмотра</span></div>
+      <div id="searchNote" role="status"></div>
+      <nav class="tabs" role="tablist" aria-label="Разделы панели">
+        <button class="tab" role="tab" id="tab-pending"  aria-selected="true"  aria-controls="pane-pending"><span data-icon="clock" data-size="18"></span>В ожидании<span class="n" id="n-pending">0</span></button>
+        <button class="tab" role="tab" id="tab-approved" aria-selected="false" aria-controls="pane-approved"><span data-icon="check" data-size="18"></span>Одобрено<span class="n" id="n-approved">0</span></button>
+        <button class="tab" role="tab" id="tab-skipped"  aria-selected="false" aria-controls="pane-skipped"><span data-icon="undo" data-size="18"></span>Отменённые<span class="n" id="n-skipped">0</span></button>
+        <button class="tab" role="tab" id="tab-sent"     aria-selected="false" aria-controls="pane-sent"><span data-icon="send" data-size="18"></span>Отправлено<span class="n" id="n-sent">0</span></button>
+        <button class="tab" role="tab" id="tab-dialogs"  aria-selected="false" aria-controls="pane-dialogs"><span data-icon="chat" data-size="18"></span>Диалоги<span class="n" id="n-dialogs">0</span></button>
+        <button class="tab" role="tab" id="tab-settings" aria-selected="false" aria-controls="pane-settings"><span data-icon="gear" data-size="18"></span>Настройки</button>
+      </nav>
     </div>
-    <div id="proxyWarn" style="display:none; margin:8px 20px; padding:10px 12px;
-         background:#fff3cd; border:1px solid #e0c068; border-radius:4px; font-size:13px; color:#5a4500;"></div>
-    <div id="autoBanner" hidden>АВТООТКЛИК ВКЛЮЧЁН — поиск сам одобряет подходящее и отправляет отклики</div>
-    <div id="searchNote"></div>
-    <nav role="tablist">
-      <button class="tab" role="tab" id="tab-pending"  aria-selected="true"  aria-controls="pane-pending">В ожидании<span class="n" id="n-pending">0</span></button>
-      <button class="tab" role="tab" id="tab-approved" aria-selected="false" aria-controls="pane-approved">Одобрено<span class="n" id="n-approved">0</span></button>
-      <button class="tab" role="tab" id="tab-skipped"  aria-selected="false" aria-controls="pane-skipped">Отменённые<span class="n" id="n-skipped">0</span></button>
-      <button class="tab" role="tab" id="tab-sent"     aria-selected="false" aria-controls="pane-sent">Отправлено<span class="n" id="n-sent">0</span></button>
-      <button class="tab" role="tab" id="tab-dialogs"  aria-selected="false" aria-controls="pane-dialogs">Диалоги<span class="n" id="n-dialogs">0</span></button>
-      <button class="tab" role="tab" id="tab-settings" aria-selected="false" aria-controls="pane-settings">Настройки</button>
-    </nav>
   </header>
 
   <section id="pane-pending" role="tabpanel" aria-labelledby="tab-pending">
-    <div class="actions">
-      <button id="approveAll">Одобрить всё</button>
-      <button id="fillLettersPending">Дописать письма</button>
-      <button id="stopLettersPending" class="stop-btn" hidden>Остановить написание писем</button>
-      <span class="hint" id="lettersHint"></span>
+    <div class="shell">
+      <div class="pane-head">
+        <div class="st-head">
+          <h2>В ожидании</h2>
+          <p>Найденные вакансии ждут твоего решения. Поправь письмо, если нужно, и нажми «Принять» — или «Пропустить», если не подходит. Без одобрения ничего не отправляется.</p>
+        </div>
+        <div class="actions">
+          <button id="approveAll"><span data-icon="checks" data-size="18"></span><span class="lbl">Одобрить всё</span></button>
+          <button id="fillLettersPending"><span data-icon="sparkles" data-size="18"></span><span class="lbl">Дописать письма</span></button>
+          <button id="stopLettersPending" class="stop-btn" hidden><span data-icon="stop" data-size="18"></span><span class="lbl">Остановить написание писем</span></button>
+        </div>
+      </div>
+      <div class="status" id="lettersHint" role="status"></div>
+      <div id="list" class="cards"></div>
     </div>
-    <div id="list"></div>
   </section>
 
   <section id="pane-approved" role="tabpanel" aria-labelledby="tab-approved" hidden>
-    <div class="actions">
-      <button id="sendAll">Отправить всё</button>
-      <button id="sendStop" class="stop-btn" hidden>Остановить отправку</button>
-      <button id="fillLetters">Дописать письма</button>
-      <button id="stopLetters" class="stop-btn" hidden>Остановить написание писем</button>
-      <span class="hint" id="sendHint">Отправка необратима: отклик на hh.ru нельзя отозвать.</span>
+    <div class="shell">
+      <div class="pane-head">
+        <div class="st-head">
+          <h2>Одобрено</h2>
+          <p>Принятые вакансии ждут отправки. «Отправить всё» подаёт отклики по одному, с паузами, чтобы площадки не приняли тебя за бота.</p>
+        </div>
+        <div class="actions">
+          <button id="sendAll" class="primary"><span data-icon="send" data-size="18"></span><span class="lbl">Отправить всё</span></button>
+          <button id="sendStop" class="stop-btn" hidden><span data-icon="stop" data-size="18"></span><span class="lbl">Остановить отправку</span></button>
+          <button id="fillLetters"><span data-icon="sparkles" data-size="18"></span><span class="lbl">Дописать письма</span></button>
+          <button id="stopLetters" class="stop-btn" hidden><span data-icon="stop" data-size="18"></span><span class="lbl">Остановить написание писем</span></button>
+        </div>
+      </div>
+      <div class="status" id="sendHint" role="status">Отправка необратима: отклик на hh.ru нельзя отозвать.</div>
+      <div id="approvedList" class="cards"></div>
     </div>
-    <div id="approvedList"></div>
   </section>
 
   <section id="pane-skipped" role="tabpanel" aria-labelledby="tab-skipped" hidden>
-    <div class="actions">
-      <button id="clearSkipped">Очистить вкладку</button>
-      <span class="hint">Записи уходят отсюда сами через сутки. Вакансии остаются отклонёнными и в поиске больше не всплывут.</span>
+    <div class="shell">
+      <div class="pane-head">
+        <div class="st-head">
+          <h2>Отменённые</h2>
+          <p>Пропущенное за последние сутки. Записи уходят отсюда сами; вакансии остаются отклонёнными и в поиске больше не всплывут. Передумал — «Восстановить».</p>
+        </div>
+        <div class="actions">
+          <button id="clearSkipped"><span data-icon="trash" data-size="18"></span><span class="lbl">Очистить вкладку</span></button>
+        </div>
+      </div>
+      <div id="skippedList" class="cards"></div>
     </div>
-    <div id="skippedList"></div>
   </section>
 
   <section id="pane-sent" role="tabpanel" aria-labelledby="tab-sent" hidden>
-    <div class="actions">
-      <span class="hint">Что ушло за последние 30 дней. «Авто» — одобрено автооткликом, без твоего взгляда.</span>
+    <div class="shell">
+      <div class="pane-head">
+        <div class="st-head">
+          <h2>Отправлено</h2>
+          <p>Что ушло за последние 30 дней, кому и кто это одобрил. Метка «АВТО» — отправлено автооткликом, без твоего просмотра: письмо можно перечитать здесь.</p>
+        </div>
+      </div>
+      <div id="sentList" class="cards"></div>
     </div>
-    <div id="sentList"></div>
   </section>
 
   <section id="pane-dialogs" role="tabpanel" aria-labelledby="tab-dialogs" hidden>
-    <div class="actions">
-      <span class="hint" id="dialogsNote">Только метаданные: кто, когда и чем кончилось. Тексты переписки нигде не хранятся.</span>
-    </div>
-    <div class="settings-block">
-      <strong>Воронка за 8 недель</strong>
-      <span class="hint">отправлено → ответил → собеседование. hr.ge и careerist ответов боту не отдают, у них только «отправлено».</span>
-      <div id="funnel"></div>
-    </div>
-    <div class="settings-block">
-      <strong>Диалоги</strong>
-      <span class="hint">личка рабочего аккаунта и чаты откликов hh.ru за последние 30 дней.</span>
-      <div id="dialogList"></div>
-    </div>
-    <div class="settings-block" id="followupsPane">
-      <strong>Дожимы</strong>
-      <span class="hint" id="fuState"></span>
-      <div class="actions" style="padding-left:0;">
-        <button id="fuPrepare">Подготовить тексты</button>
-        <button id="fuSendAll">Отправить все черновики</button>
-        <button id="fuStop" class="stop-btn" hidden>Остановить</button>
-        <span class="hint" id="fuNote"></span>
+    <div class="shell">
+      <div class="pane-head">
+        <div class="st-head">
+          <h2>Диалоги</h2>
+          <p>Кто ответил, сколько откликов дошло до собеседования, и напоминания тем, кто молчит. Только метаданные: кто, когда и чем кончилось — тексты переписки нигде не хранятся.</p>
+        </div>
       </div>
-      <div id="fuList"></div>
-    </div>
-    <div class="settings-block" id="hhPane">
-      <strong>Ящик откликов hh.ru</strong>
-      <span class="hint" id="hhState"></span>
-      <div class="actions" style="padding-left:0;">
-        <button id="hhCheck">Проверить сейчас</button>
-        <button id="hhStop" class="stop-btn" hidden>Остановить</button>
-        <span class="hint" id="hhNote"></span>
+      <div class="status warn" id="dialogsNote" role="status"></div>
+      <div class="st-card" id="funnelBlock">
+        <div class="st-card-head">
+          <span class="st-ic" data-icon="bars"></span>
+          <div><h3>Воронка за 8 недель</h3><p>Отправлено → ответил → собеседование. hr.ge и careerist ответов боту не отдают, у них только «отправлено».</p></div>
+        </div>
+        <div id="funnel"></div>
       </div>
-      <div id="hhReport"></div>
+      <div class="st-card" id="dialogsBlock">
+        <div class="st-card-head">
+          <span class="st-ic" data-icon="chat"></span>
+          <div><h3>Диалоги</h3><p>Личка рабочего аккаунта Telegram и чаты откликов hh.ru за последние 30 дней.</p></div>
+        </div>
+        <div id="dialogList"></div>
+      </div>
+      <div class="st-card" id="followupsPane">
+        <div class="st-card-head">
+          <span class="st-ic" data-icon="bell"></span>
+          <div><h3>Дожимы</h3><p>Одно повторное сообщение рекрутёру, который молчит. Уходит с рабочего Telegram-аккаунта и необратимо; разрешается в «Настройках» → «Переписка».</p></div>
+        </div>
+        <p class="state-line" id="fuState"></p>
+        <div class="card-tools">
+          <button id="fuPrepare"><span data-icon="sparkles" data-size="18"></span><span class="lbl">Подготовить тексты</span></button>
+          <button id="fuSendAll" class="primary"><span data-icon="send" data-size="18"></span><span class="lbl">Отправить все черновики</span></button>
+          <button id="fuStop" class="stop-btn" hidden><span data-icon="stop" data-size="18"></span><span class="lbl">Остановить</span></button>
+          <span class="hint" id="fuNote" role="status"></span>
+        </div>
+        <div id="fuList" class="fu-list"></div>
+      </div>
+      <div class="st-card" id="hhPane">
+        <div class="st-card-head">
+          <span class="st-ic" data-icon="inbox"></span>
+          <div><h3>Ящик откликов hh.ru</h3><p>Новые сообщения работодателей и приглашения в чатах откликов. Плановая проверка и ответы включаются в «Настройках» → «Переписка».</p></div>
+        </div>
+        <p class="state-line" id="hhState"></p>
+        <div class="card-tools">
+          <button id="hhCheck"><span data-icon="refresh" data-size="18"></span><span class="lbl">Проверить сейчас</span></button>
+          <button id="hhStop" class="stop-btn" hidden><span data-icon="stop" data-size="18"></span><span class="lbl">Остановить</span></button>
+          <span class="hint" id="hhNote" role="status"></span>
+        </div>
+        <div id="hhReport"></div>
+      </div>
     </div>
   </section>
 
@@ -638,6 +992,13 @@
             <button type="button" id="specUndoBtn">Вернуть</button>
           </div>
           <div id="specList"></div>
+          <div class="spec-empty" id="specEmpty" hidden>
+            <span class="spec-empty-ic" data-icon="file"></span>
+            <h3>Добавьте своё первое резюме</h3>
+            <p>Прикрепите PDF — нейросеть заполнит должность, ключевые слова и навыки.
+              По каждому резюме программа ищет свои вакансии и пишет письма от его лица.</p>
+            <button type="button" class="primary" id="specEmptyAdd"><span data-icon="plus"></span>Добавить резюме</button>
+          </div>
           <div class="settings-block st-card" id="stopBlock">
             <div class="st-card-head">
               <span class="st-ic" data-icon="ban"></span>
@@ -653,7 +1014,7 @@
         <div class="st-sec" data-sec="accounts" role="tabpanel" aria-label="Аккаунты и ключи" hidden>
           <div class="st-head">
             <h2>Аккаунты и ключи</h2>
-            <p>Вход на hh.ru и ключи сервисов. Всё хранится только на этом компьютере, в data/settings.json — в git этот каталог не попадает.</p>
+            <p>Вход на hh.ru и careerist.ru, ключи сервисов. Всё хранится только на этом компьютере, в data/settings.json — в git этот каталог не попадает.</p>
           </div>
           <div class="settings-block st-card" id="hhLoginBlock">
             <div class="st-card-head">
@@ -666,6 +1027,18 @@
             </div>
             <p class="st-hint">Откроется отдельное окно браузера с сайтом hh.ru. Введи там логин и пароль (или код из СМС) сам —
               программа не видит и не сохраняет пароль. Когда вход получится, окно закроется само.</p>
+          </div>
+          <div class="settings-block st-card" id="careeristLoginBlock">
+            <div class="st-card-head">
+              <span class="st-ic" data-icon="login"></span>
+              <div><h3>Вход на careerist.ru</h3><p>Нужен, чтобы откликаться на вакансии careerist.ru. Достаточно войти один раз — вход запоминается на этом компьютере.</p></div>
+            </div>
+            <div class="st-login">
+              <button type="button" id="careeristLoginBtn" class="primary">Войти в careerist</button>
+              <span id="careeristLoginState" class="login-state"></span>
+            </div>
+            <p class="st-hint">Откроется окно браузера с главной careerist.ru и формой входа. Если форма не появилась — нажми «Войти»
+              в правом верхнем углу сайта. Логин и пароль вводишь сам, программа их не видит. Когда вход получится, окно закроется само.</p>
           </div>
           <div class="settings-block st-card" id="llmBlock">
             <div class="st-card-head">
@@ -896,8 +1269,38 @@ function showTab(name) {
   // на первую: после «Восстановить» или «Очистить вкладку» человек остаётся
   // там, где работал.
   history.replaceState(null, '', '#' + name);
+  revealActiveTab();
   if (name === 'dialogs') loadDialogs();
 }
+
+/**
+ * На узком экране полоса вкладок прокручивается: выбранная должна быть видна
+ * целиком. Зовётся не только из showTab: при загрузке первый showTab идёт до
+ * того, как в слоты [data-icon] вставлены иконки и догрузились шрифты, — потом
+ * каждая вкладка становится шире, и посчитанная прокрутка устаревает.
+ */
+function revealActiveTab() {
+  const bar = document.querySelector('nav.tabs');
+  const btn = bar.querySelector('.tab[aria-selected="true"]');
+  if (btn && bar.scrollWidth > bar.clientWidth) {
+    const l = btn.offsetLeft - bar.offsetLeft;
+    if (l < bar.scrollLeft || l + btn.offsetWidth > bar.scrollLeft + bar.clientWidth) {
+      bar.scrollLeft = Math.max(0, l - (bar.clientWidth - btn.offsetWidth) / 2);
+    }
+  }
+  updateTabsFade();
+}
+
+/** Затухание у края полосы вкладок — там, где за краем ещё есть вкладки. */
+function updateTabsFade() {
+  const bar = document.querySelector('nav.tabs');
+  const max = bar.scrollWidth - bar.clientWidth;
+  bar.classList.toggle('more-l', max > 1 && bar.scrollLeft > 1);
+  bar.classList.toggle('more-r', max > 1 && bar.scrollLeft < max - 1);
+}
+
+document.querySelector('nav.tabs').addEventListener('scroll', updateTabsFade, { passive: true });
+window.addEventListener('resize', revealActiveTab);
 
 for (const t of TABS) {
   document.getElementById('tab-' + t).onclick = () => showTab(t);
@@ -915,6 +1318,9 @@ async function post(url, body) {
   });
 }
 
+/** Очередь хоть раз нарисована — тур может не ждать карточек, которых нет. */
+let queueLoaded = false;
+
 async function load() {
   const [pendingRows, approvedRows, skippedRows, sentRows] = await Promise.all([
     fetchJson('/api/pending'),
@@ -926,6 +1332,9 @@ async function load() {
   renderApproved(approvedRows);
   renderSkipped(skippedRows);
   renderSent(Array.isArray(sentRows) ? sentRows : []);
+  queueLoaded = true;
+  // Счётчики во вкладках поменяли их ширину.
+  revealActiveTab();
 
   // Кнопка «Дописать письма» имеет смысл, только когда есть что дописывать.
   // Считаем по обеим вкладкам сразу: пустое письмо мешает и в ожидании, и в
@@ -937,6 +1346,68 @@ async function load() {
 
 function setCount(name, n) {
   document.getElementById('n-' + name).textContent = n;
+}
+
+// ----------------------------------------------------------------------------
+// Общие куски разметки вкладок (единый дизайн 2026-11-20). Всё, что пришло из
+// вакансии (название, компания, город, ссылка), идёт через esc(): это чужой
+// текст со страниц площадок и из Telegram, и в innerHTML он не должен стать
+// разметкой.
+// ----------------------------------------------------------------------------
+
+/** Ссылка вакансии: только http(s). javascript: и прочее из чужого текста не кликается. */
+function safeHref(url) {
+  return /^https?:\/\//i.test(String(url ?? '')) ? esc(url) : '#';
+}
+
+/**
+ * Пустое состояние — как «Добавьте своё первое резюме» в настройках; sm — тихое,
+ * внутри карточки. action — готовая разметка кнопки-действия (как #specEmptyAdd).
+ */
+function emptyState(iconName, title, text, small, action) {
+  const body = `<h3>${esc(title)}</h3>${text ? `<p>${esc(text)}</p>` : ''}${action ?? ''}`;
+  return `<div class="empty empty-state${small ? ' sm' : ''}"><span class="empty-ic">${icon(iconName, small ? 20 : 30)}</span>`
+    + (small ? `<div>${body}</div>` : body) + '</div>';
+}
+
+/** Скор — бейдж с цветом по уровню: ≥70 хорошо подходит, 40–69 средне, ниже — слабо. */
+function scoreBadge(score) {
+  const n = Number(score);
+  const lvl = n >= 70 ? 'hi' : n >= 40 ? 'mid' : 'lo';
+  return `<span class="score-badge ${lvl}" title="Скоринг: насколько вакансия подходит, 0–100">`
+    + `<span class="score">${esc(score)}</span><small>скор</small></span>`;
+}
+
+/** Строка «компания · город · площадка»: пустые части (у Telegram нет компании) не оставляют висящих точек. */
+function metaParts(parts) {
+  return parts.filter((p) => p !== null && p !== undefined && p !== '').join('<span class="sep">·</span>');
+}
+
+/** Шапка карточки вакансии: скор, название-ссылка, мелкая строка о ней. extra — уже экранированные куски. */
+function vacancyHead(r, extra) {
+  const v = r.vacancy;
+  const parts = extra ?? [esc(v.company), esc(v.geo), esc(SOURCE_TITLES[r.source] ?? r.source)];
+  return `<div class="card-top">${scoreBadge(r.score)}<div class="card-title">
+      <a class="title" href="${safeHref(v.url)}" target="_blank" rel="noopener">${esc(v.title)}</a>
+      <div class="meta">${metaParts(parts)}</div></div></div>`;
+}
+
+const LETTER_MODE_TITLES = {
+  hybrid: 'письмо по шаблону', full: 'письмо с нуля', none: 'письма нет', manual: 'письмо вручную', dm: 'сообщение в Telegram',
+};
+
+function modeTag(mode) {
+  return `<span class="tag mode" title="Режим письма: ${esc(mode)}">${esc(LETTER_MODE_TITLES[mode] ?? 'режим ' + mode)}</span>`;
+}
+
+/** Надпись кнопки меняем в .lbl, а не textContent целиком: иначе стёрлась бы иконка. */
+function setLabel(btn, text) {
+  const lbl = btn.querySelector('.lbl');
+  (lbl ?? btn).textContent = text;
+}
+
+function btnHtml(act, iconName, label, cls) {
+  return `<button type="button" data-act="${act}"${cls ? ` class="${cls}"` : ''}>${icon(iconName, 18)}<span class="lbl">${esc(label)}</span></button>`;
 }
 
 // ----------------------------------------------------------------------------
@@ -968,39 +1439,45 @@ function ago(ms) {
 
 function renderFunnel(rows) {
   const box = document.getElementById('funnel');
-  if (rows.length === 0) { box.innerHTML = '<div class="empty">За 8 недель ничего не отправлено.</div>'; return; }
+  if (rows.length === 0) {
+    box.innerHTML = emptyState('bars', 'За 8 недель ничего не отправлено', 'Воронка появится после первых откликов.', true);
+    return;
+  }
   const body = rows.map((r) => {
     const tracked = r.replied !== null;
     return `<tr class="${r.week === 'total' ? 'total' : ''}">
-      <td>${r.week === 'total' ? '8 недель' : 'с ' + esc(r.week)}</td><td>${esc(SOURCE_TITLES[r.source] ?? r.source)}</td>
-      <td class="num">${r.sent}</td>
-      <td class="num">${tracked ? r.replied + pct(r.replied, r.sent) : '—'}</td>
-      <td class="num">${tracked ? r.meetings + pct(r.meetings, r.sent) : '—'}</td>
-      <td class="num">${tracked ? hoursText(r.medianHours) : '—'}</td></tr>`;
+      <td class="nw">${r.week === 'total' ? 'Итого за 8 недель' : 'с ' + esc(r.week)}</td><td class="nw">${esc(SOURCE_TITLES[r.source] ?? r.source)}</td>
+      <td class="num">${esc(r.sent)}</td>
+      <td class="num">${tracked ? esc(r.replied + pct(r.replied, r.sent)) : '—'}</td>
+      <td class="num">${tracked ? esc(r.meetings + pct(r.meetings, r.sent)) : '—'}</td>
+      <td class="num">${tracked ? esc(hoursText(r.medianHours)) : '—'}</td></tr>`;
   }).join('');
-  box.innerHTML = '<table class="tbl"><thead><tr><th>Неделя</th><th>Площадка</th><th class="num">Отправлено</th>'
+  box.innerHTML = '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Неделя</th><th>Площадка</th><th class="num">Отправлено</th>'
     + '<th class="num">Ответили</th><th class="num">Собеседований</th><th class="num">Медиана до ответа</th></tr></thead>'
-    + '<tbody>' + body + '</tbody></table>';
+    + '<tbody>' + body + '</tbody></table></div>';
 }
 
 function renderDialogs(rows) {
   const box = document.getElementById('dialogList');
-  if (rows.length === 0) { box.innerHTML = '<div class="empty">Диалогов пока нет.</div>'; return; }
+  if (rows.length === 0) {
+    box.innerHTML = emptyState('chat', 'Диалогов пока нет', 'Здесь появятся рекрутёры, которые ответили в Telegram или в чатах откликов hh.ru.', true);
+    return;
+  }
   const body = rows.map((d) => {
-    const vac = d.vacancy ? (d.vacancy.url ? `<a href="${esc(d.vacancy.url)}" target="_blank" rel="noopener">${esc(d.vacancy.title)}</a>` : esc(d.vacancy.title)) : '—';
+    const vac = d.vacancy ? (d.vacancy.url ? `<a href="${safeHref(d.vacancy.url)}" target="_blank" rel="noopener">${esc(d.vacancy.title)}</a>` : esc(d.vacancy.title)) : '—';
     const when = new Date(d.updatedAt).toLocaleString('ru-RU');
-    const meet = d.meetingAt ? ' · ' + new Date(d.meetingAt).toLocaleString('ru-RU') : '';
-    return `<tr><td>${d.channel === 'hh' ? 'hh.ru' : 'Telegram'}</td><td>${esc(d.who)}</td><td>${vac}</td>
+    const meet = d.meetingAt ? `<div class="hint">${esc(new Date(d.meetingAt).toLocaleString('ru-RU'))}</div>` : '';
+    return `<tr><td class="nw">${d.channel === 'hh' ? 'hh.ru' : 'Telegram'}</td><td class="nw">${esc(d.who)}</td><td class="vac">${vac}</td>
       <td class="num">${d.sentAt ? esc(new Date(d.sentAt).toLocaleDateString('ru-RU')) : '—'}</td>
-      <td class="num">${ago(d.repliedAfterMs)}</td>
-      <td class="num">${d.inCount} / ${d.outCount} / ${d.botCount}</td>
-      <td><span class="st ${esc(d.status)}">${esc(STATUS_TITLES[d.status] ?? d.status)}</span>${esc(meet)}</td>
+      <td class="num">${esc(ago(d.repliedAfterMs))}</td>
+      <td class="num">${esc(d.inCount)} / ${esc(d.outCount)} / ${esc(d.botCount)}</td>
+      <td><span class="st ${esc(d.status)}">${esc(STATUS_TITLES[d.status] ?? d.status)}</span>${meet}</td>
       <td>${d.silenced ? esc(SILENCE_TITLES[d.silenced] ?? d.silenced) : ''}</td>
       <td class="num">${esc(when)}</td></tr>`;
   }).join('');
-  box.innerHTML = '<table class="tbl"><thead><tr><th>Канал</th><th>Кто</th><th>Вакансия</th><th class="num">Написали</th>'
-    + '<th class="num">Ответил через</th><th class="num">Входящих / от аккаунта / от бота</th><th>Статус</th><th>Молчание</th>'
-    + '<th class="num">Активность</th></tr></thead><tbody>' + body + '</tbody></table>';
+  box.innerHTML = '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Канал</th><th>Кто</th><th>Вакансия</th><th class="num">Написали</th>'
+    + '<th class="num">Ответил через</th><th class="num" title="Входящих / от аккаунта / от бота">Вх. / акк. / бот</th><th>Статус</th><th>Молчание</th>'
+    + '<th class="num">Активность</th></tr></thead><tbody>' + body + '</tbody></table></div>';
 }
 
 // ----------------------------------------------------------------------------
@@ -1030,29 +1507,35 @@ function renderFollowups(body) {
     : `Выключены в настройках («Дожимы») — отправка недоступна. Ждут текста: ${body.waiting}.`;
   document.getElementById('fuSendAll').disabled = !body.enabled;
   const box = document.getElementById('fuList');
-  if (body.items.length === 0) { box.innerHTML = '<div class="empty">Дожимов пока нет.</div>'; return; }
+  if (body.items.length === 0) {
+    box.innerHTML = emptyState('bell', 'Дожимов пока нет', '«Подготовить тексты» напишет черновики тем, кто молчит дольше заданного в настройках.', true);
+    return;
+  }
   box.innerHTML = '';
   for (const it of body.items) {
     const days = fuDays(it.firstSentAt);
     const el = document.createElement('div');
     el.className = 'fu-card';
     el.dataset.id = it.id;
-    const head = `<div><b>@${esc(it.contact)}</b> · «${esc(it.title)}»${days === null ? '' : ` · писали ${days} дн. назад`}
-      · <span class="st ${it.status === 'sent' ? 'meeting' : it.status === 'draft' ? '' : 'reject'}">${esc(FU_STATUS[it.status] ?? it.status)}</span>
-      <span class="hint">${esc(it.textMode === 'manual' ? 'текст правлен вручную' : it.textMode === 'model' ? 'текст написала модель' : 'шаблон')}</span></div>`;
+    const st = it.status === 'sent' ? 'meeting' : it.status === 'draft' ? 'draft' : 'reject';
+    const head = `<div class="fu-head"><b>@${esc(it.contact)}</b><span class="sep">·</span><span>«${esc(it.title)}»</span>`
+      + `${days === null ? '' : `<span class="sep">·</span><span>писали ${days} дн. назад</span>`}`
+      + `<span class="st ${st}">${esc(FU_STATUS[it.status] ?? it.status)}</span>`
+      + `<span class="hint">${esc(it.textMode === 'manual' ? 'текст правлен вручную' : it.textMode === 'model' ? 'текст написала модель' : 'шаблон')}</span></div>`;
     if (it.status === 'draft') {
-      el.innerHTML = `${head}<textarea></textarea>
-        <div class="actions" style="padding-left:0;">
-          <button data-act="save">Сохранить текст</button>
-          <button data-act="send" ${fuEnabled ? '' : 'disabled'}>Отправить</button>
-          <button data-act="cancel">Не дожимать</button>
-          <span class="hint" data-role="note"></span>
+      el.innerHTML = `${head}<textarea aria-label="Текст дожима для @${esc(it.contact)}"></textarea>
+        <div class="card-actions">
+          ${btnHtml('send', 'send', 'Отправить', 'primary sm')}
+          ${btnHtml('save', 'check', 'Сохранить текст', 'sm')}
+          ${btnHtml('cancel', 'x', 'Не дожимать', 'ghost sm')}
+          <span class="hint" data-role="note" role="status"></span>
         </div>`;
       el.querySelector('textarea').value = it.text;
+      el.querySelector('[data-act="send"]').disabled = !fuEnabled;
     } else {
       const when = it.sentAt ? new Date(it.sentAt).toLocaleString('ru-RU') : '';
-      el.innerHTML = `${head}<div class="hint"></div>`;
-      el.querySelector('.hint:last-child').textContent = [it.text, it.reason ? `— ${it.reason}` : '', when].filter(Boolean).join(' ');
+      el.innerHTML = `${head}<div class="fu-text"></div>`;
+      el.querySelector('.fu-text').textContent = [it.text, it.reason ? `— ${it.reason}` : '', when].filter(Boolean).join(' ');
     }
     box.appendChild(el);
   }
@@ -1062,7 +1545,18 @@ async function loadFollowups() {
   let res;
   try { res = await fetch('/api/followups'); } catch { return; }
   const body = await res.json();
-  if (!res.ok) { document.getElementById('fuState').textContent = body.error; return; }
+  if (!res.ok) {
+    // Панель без дожимов (поднята не из npm run panel): кнопки звать некуда —
+    // вместо неактивных кнопок и серой строки такое же тихое пустое состояние,
+    // как у «Воронки» и «Диалогов».
+    document.getElementById('fuState').textContent = '';
+    document.getElementById('fuPrepare').disabled = true;
+    document.getElementById('fuSendAll').disabled = true;
+    document.querySelector('#followupsPane .card-tools').hidden = true;
+    document.getElementById('fuList').innerHTML = emptyState('bell', 'Дожимы недоступны', body.error, true);
+    return;
+  }
+  document.querySelector('#followupsPane .card-tools').hidden = false;
   renderFollowups(body);
 }
 
@@ -1154,7 +1648,10 @@ function renderHh(st) {
     : 'ответы работодателям выключены');
   stateEl.textContent = parts.join(' · ');
   const r = st.report;
-  if (!r) { reportEl.innerHTML = '<div class="empty">Проверок ещё не было.</div>'; return; }
+  if (!r) {
+    reportEl.innerHTML = emptyState('inbox', 'Проверок ещё не было', '«Проверить сейчас» откроет окно браузера профиля и прочитает чаты откликов.', true);
+    return;
+  }
   const lines = [`${hhWhen(r.at)} — ${HH_OUTCOME[r.outcome] || r.outcome}`];
   if (r.outcome === 'ok') {
     lines.push(`откликов: ${r.topics}, новых ответов: ${r.newReplies}, приглашений: ${r.invites}, отказов: ${r.rejects}`
@@ -1162,14 +1659,23 @@ function renderHh(st) {
   }
   if (r.error) lines.push('причина: ' + r.error);
   for (const issue of r.replyIssues || []) lines.push('ответы: ' + issue);
-  reportEl.innerHTML = lines.map((l) => `<div class="hint">${esc(l)}</div>`).join('');
+  reportEl.innerHTML = '<div class="hh-report">'
+    + lines.map((l, i) => `<div${i === 0 ? ' class="first"' : ''}>${esc(l)}</div>`).join('') + '</div>';
 }
 
 async function loadHh() {
   let res;
   try { res = await fetch('/api/hh/status'); } catch { return; }
   const body = await res.json();
-  if (!res.ok) { document.getElementById('hhState').textContent = body.error; return; }
+  if (!res.ok) {
+    // Как у дожимов: без ящика hh.ru — пустое состояние, а не неактивная кнопка.
+    document.getElementById('hhState').textContent = '';
+    document.getElementById('hhCheck').disabled = true;
+    document.querySelector('#hhPane .card-tools').hidden = true;
+    document.getElementById('hhReport').innerHTML = emptyState('inbox', 'Ящик откликов недоступен', body.error, true);
+    return;
+  }
+  document.querySelector('#hhPane .card-tools').hidden = false;
   renderHh(body);
   if (body.running && !hhPolling) pollHh();
 }
@@ -1210,7 +1716,17 @@ async function loadDialogs() {
     return;
   }
   const body = await res.json();
-  if (!res.ok) { note.textContent = body.error; return; }
+  if (!res.ok) {
+    // Причину — заметной плашкой, а карточки — с пустыми состояниями, а не
+    // голыми заголовками: иначе вкладка выглядела бы сломанной.
+    note.textContent = body.error;
+    renderFunnel([]);
+    renderDialogs([]);
+    loadFollowups();
+    loadHh();
+    return;
+  }
+  note.textContent = '';
   setCount('dialogs', body.active ?? 0);
   renderFunnel(body.funnel ?? []);
   renderDialogs(body.dialogs ?? []);
@@ -1228,48 +1744,69 @@ function tgMeta(r) {
   const warn = r.contactWarning
     ? `<div class="contact-warn">${esc(r.contactWarning)}</div>`
     : '';
-  return `<div class="meta">Telegram: @${esc(r.contact)}${r.vacancy.channel ? ' · ' + esc(r.vacancy.channel) : ''}
-    · справа — сообщение рекрутёру, к нему приложится PDF резюме</div>${warn}`;
+  return `<div class="tg-line">${icon('send', 16)}<span>Telegram: <b>@${esc(r.contact)}</b>${r.vacancy.channel ? ' · ' + esc(r.vacancy.channel) : ''}.
+    Справа — сообщение рекрутёру, к нему приложится PDF резюме.</span></div>${warn}`;
+}
+
+/** Совпавшие навыки — маленькими чипами; режим письма — отдельным бейджем. */
+function matchedTags(r) {
+  const skills = (r.matched ?? []).length > 0
+    ? r.matched.map((m) => `<span class="tag">${esc(m)}</span>`).join('')
+    : '<span class="tag none">без совпадений</span>';
+  return `<div class="tags">${skills}${modeTag(r.letterMode)}</div>`;
 }
 
 /**
  * Вкладка «Отправлено» (спека 7.4): что ушло, кому и кто это одобрил. Нужна
  * именно из-за автоотклика: отправленное без человеческого взгляда он должен
- * иметь возможность прочитать хотя бы потом.
+ * иметь возможность прочитать хотя бы потом — поэтому строка компактная, а
+ * письмо и описание раскрываются по клику.
  */
 function renderSent(rows) {
   setCount('sent', rows.length);
   const list = document.getElementById('sentList');
   list.innerHTML = '';
   if (rows.length === 0) {
-    list.innerHTML = '<div class="empty">За последние 30 дней ничего не отправлено.</div>';
+    list.innerHTML = emptyState('send', 'Пока ничего не отправлено',
+      'Здесь будет история откликов за последние 30 дней: куда, когда и с каким письмом.');
     return;
   }
   for (const r of rows) {
     const el = document.createElement('div');
-    el.className = 'card';
-    const when = r.sentAt ? new Date(r.sentAt).toLocaleString('ru-RU') : '';
-    const who = r.approvedBy === 'auto' ? 'АВТО' : 'одобрено вручную';
+    el.className = 'card slim';
+    const when = r.sentAt ? new Date(r.sentAt).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+    const who = r.approvedBy === 'auto'
+      ? '<span class="tag auto" title="Одобрено автооткликом, без твоего просмотра">АВТО</span>'
+      : 'одобрено вручную';
     el.innerHTML = `
-      <div>
-        <div><a href="${r.vacancy.url}" target="_blank" rel="noopener">${esc(r.vacancy.title)}</a></div>
-        <div class="meta">${esc(when)} · ${esc(r.source)} · ${who}${r.contact ? ' · @' + esc(r.contact) : ''}</div>
-        <div class="desc"></div>
-      </div>
-      <div><div class="desc" style="max-height:none;"></div></div>`;
-    el.querySelectorAll('.desc')[0].textContent = r.vacancy.description;
-    el.querySelectorAll('.desc')[1].textContent = r.letter;
+      <div class="card-main">${vacancyHead(r, [esc(r.vacancy.company), esc(r.vacancy.geo), esc(SOURCE_TITLES[r.source] ?? r.source), who, r.contact ? '@' + esc(r.contact) : ''])}</div>
+      <div class="when hint">${esc(when)}</div>
+      <details class="sent-more">
+        <summary>${icon('chevron', 16)}<span>${r.source === 'tg' ? 'Сообщение' : 'Письмо'} и описание вакансии</span></summary>
+        <div class="sent-body">
+          <div><div class="side-label">${r.source === 'tg' ? 'Сообщение рекрутёру' : 'Письмо'}</div><div class="desc letter-preview"></div></div>
+          <div><div class="side-label">Описание вакансии</div><div class="desc vac-desc"></div></div>
+        </div>
+      </details>`;
+    el.querySelector('.vac-desc').textContent = r.vacancy.description;
+    el.querySelector('.letter-preview').textContent = r.letter.trim() === '' ? 'Ушло без письма.' : r.letter;
     list.appendChild(el);
   }
 }
 
 function renderPending(rows) {
   setCount('pending', rows.length);
+  // Одобрять нечего — кнопка не должна выглядеть рабочей.
+  document.getElementById('approveAll').disabled = rows.length === 0;
   const list = document.getElementById('list');
   list.innerHTML = '';
 
   if (rows.length === 0) {
-    list.innerHTML = '<div class="empty">Пусто. Запусти поиск.</div>';
+    list.innerHTML = emptyState('search', 'Очередь пуста',
+      'Нажми «Найти вакансии» вверху — программа отберёт подходящие и напишет к ним письма. '
+      + 'Новенький? Сначала добавь резюме и ключ OpenRouter в «Настройках».', false,
+      '<button type="button" class="primary" id="pendingEmptyCta"><span class="cta-ic"></span><span class="lbl"></span></button>');
+    updatePendingEmptyCta();
     return;
   }
 
@@ -1278,20 +1815,20 @@ function renderPending(rows) {
     el.className = 'card';
     el.dataset.id = r.id;
     el.dataset.score = r.score;
+    const tg = r.source === 'tg';
     el.innerHTML = `
-      <div>
-        <div><a href="${r.vacancy.url}" target="_blank" rel="noopener">${r.vacancy.title}</a></div>
-        <div class="meta">${r.vacancy.company} · ${r.vacancy.geo} · ${r.source}</div>
-        <div class="meta">скор <span class="score">${r.score}</span> ·
-             ${r.matched.join(', ') || 'без совпадений'} · режим ${r.letterMode}</div>
+      <div class="card-main">
+        ${vacancyHead(r)}
+        ${matchedTags(r)}
         ${tgMeta(r)}
         <div class="desc"></div>
       </div>
-      <div>
-        <textarea></textarea>
-        <div style="margin-top:8px; display:flex; gap:8px;">
-          <button data-act="approve">Принять</button>
-          <button data-act="skip">Пропустить</button>
+      <div class="card-side">
+        <label class="side-label" for="letter-${esc(r.id)}">${tg ? 'Сообщение рекрутёру' : 'Сопроводительное письмо'}<small>можно поправить</small></label>
+        <textarea id="letter-${esc(r.id)}" placeholder="Письма нет — впиши его сам или нажми «Дописать письма»."></textarea>
+        <div class="card-actions">
+          ${btnHtml('approve', 'check', 'Принять', 'primary')}
+          ${btnHtml('skip', 'x', 'Пропустить')}
         </div>
       </div>`;
     el.querySelector('.desc').textContent = r.vacancy.description;
@@ -1309,6 +1846,25 @@ function renderPending(rows) {
   }
 }
 
+/**
+ * Кнопка пустой очереди — следующий шаг новичка, а не просто текст: нет ни
+ * одного резюме — «Открыть настройки» (искать не по чему), иначе — «Найти
+ * вакансии». Резюме приходят с /api/settings позже очереди, поэтому
+ * renderSpecSwitch зовёт её ещё раз.
+ */
+function updatePendingEmptyCta() {
+  const btn = document.getElementById('pendingEmptyCta');
+  if (!btn) return;
+  const noSpecs = settingsReady && specCards().length === 0;
+  btn.querySelector('.cta-ic').innerHTML = icon(noSpecs ? 'gear' : 'search', 18);
+  btn.querySelector('.lbl').textContent = noSpecs ? 'Открыть настройки' : 'Найти вакансии';
+  btn.disabled = !noSpecs && searchBtn.disabled;
+  btn.onclick = () => {
+    if (noSpecs) { showSettingsSection('filters', false); showTab('settings'); window.scrollTo({ top: 0 }); }
+    else searchBtn.click();
+  };
+}
+
 function renderApproved(rows) {
   setCount('approved', rows.length);
   // Любая перерисовка снимает взвод: если человек успел кликнуть что-то
@@ -1319,34 +1875,37 @@ function renderApproved(rows) {
   list.innerHTML = '';
 
   if (rows.length === 0) {
-    list.innerHTML = '<div class="empty">Нет одобренных заявок, ожидающих отправки.</div>';
+    list.innerHTML = emptyState('check', 'Нет одобренных вакансий',
+      'Нажми «Принять» на карточке во вкладке «В ожидании» — вакансия придёт сюда и будет ждать отправки.');
     return;
   }
 
   for (const r of rows) {
     const el = document.createElement('div');
     el.className = 'card';
+    const tg = r.source === 'tg';
     el.innerHTML = `
-      <div>
-        <div><a href="${r.vacancy.url}" target="_blank" rel="noopener">${r.vacancy.title}</a></div>
-        <div class="meta">${r.vacancy.company} · ${r.vacancy.geo} · ${r.source}</div>
-        <div class="meta">скор <span class="score">${r.score}</span> · одобрено, ждёт отправки</div>
+      <div class="card-main">
+        ${vacancyHead(r)}
+        <div class="tags"><span class="tag ok">${icon('check', 14)}одобрено, ждёт отправки</span>${modeTag(r.letterMode)}</div>
         ${tgMeta(r)}
         <div class="desc"></div>
       </div>
-      <div>
-        <div class="desc letter-preview" style="max-height:none;"></div>
-        <textarea class="letter-edit" style="display:none;"
+      <div class="card-side">
+        <div class="side-label">${tg ? 'Сообщение рекрутёру' : 'Сопроводительное письмо'}</div>
+        <div class="desc letter-preview"></div>
+        <textarea class="letter-edit" style="display:none;" aria-label="Письмо к вакансии"
                   placeholder="Впиши сопроводительное письмо. Пусто — отклик уйдёт без письма (панель предупредит перед отправкой)."></textarea>
-        <div style="margin-top:8px; display:flex; gap:8px;">
-          <button data-act="save" style="display:none;">Сохранить письмо</button>
-          <button data-act="cancel">Отменить</button>
+        <div class="card-actions">
+          ${btnHtml('save', 'check', 'Сохранить письмо', 'primary')}
+          ${btnHtml('cancel', 'x', 'Отменить')}
         </div>
       </div>`;
     el.querySelector('.desc').textContent = r.vacancy.description;
     const preview = el.querySelector('.letter-preview');
     const edit = el.querySelector('.letter-edit');
     const save = el.querySelector('[data-act="save"]');
+    save.style.display = 'none';
 
     if (r.letter.trim() === '') {
       // Пустое письмо на одобренной заявке — не мелочь: отправка её пропустит
@@ -1355,8 +1914,7 @@ function renderApproved(rows) {
       // существовало, и вписать текст было некуда. Теперь и поле, и кнопка.
       preview.textContent = 'ПИСЬМА НЕТ — «Отправить всё» предупредит и отправит без письма, если согласишься '
         + '(в Telegram без текста не уйдёт). Впиши текст ниже или нажми «Дописать письма».';
-      preview.style.color = '#b00';
-      preview.style.fontWeight = '600';
+      preview.classList.add('missing');
       edit.style.display = '';
       save.style.display = '';
       save.onclick = async () => {
@@ -1391,7 +1949,8 @@ function renderSkipped(rows) {
   list.innerHTML = '';
 
   if (rows.length === 0) {
-    list.innerHTML = '<div class="empty">Пусто. Сюда попадает отменённое за последние сутки.</div>';
+    list.innerHTML = emptyState('undo', 'Отменённых нет',
+      'Сюда попадает пропущенное за последние сутки — на случай, если передумаешь.');
     return;
   }
 
@@ -1399,11 +1958,8 @@ function renderSkipped(rows) {
     const el = document.createElement('div');
     el.className = 'card slim';
     el.innerHTML = `
-      <div>
-        <div><a href="${r.vacancy.url}" target="_blank" rel="noopener">${r.vacancy.title}</a></div>
-        <div class="meta">${r.vacancy.company} · ${r.vacancy.geo} · ${r.source} · скор ${r.score}</div>
-      </div>
-      <div><button data-act="unskip">Восстановить</button></div>`;
+      <div class="card-main">${vacancyHead(r)}</div>
+      <div>${btnHtml('unskip', 'undo', 'Восстановить', 'sm')}</div>`;
 
     el.querySelector('[data-act="unskip"]').onclick = async () => {
       await post('/api/unskip', { id: r.id });
@@ -1424,13 +1980,13 @@ function renderSkipped(rows) {
 function showStop(btn, running, stopping, label) {
   btn.hidden = !running;
   btn.disabled = stopping;
-  btn.textContent = stopping ? 'Останавливаю…' : label;
+  setLabel(btn, stopping ? 'Останавливаю…' : label);
 }
 
 /** Нажатие на «Остановить …»: POST на ручку, ошибка — в подсказку процесса. */
 async function requestStop(url, btn, label, say) {
   btn.disabled = true;
-  btn.textContent = 'Останавливаю…';
+  setLabel(btn, 'Останавливаю…');
   const res = await post(url, {});
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -1470,6 +2026,21 @@ searchBtn.onclick = async () => {
   if (!res.ok) {
     const err = await res.json();
     searchNote.textContent = err.error ?? 'Не удалось запустить поиск.';
+    // Новичок без резюме: рядом с объяснением — кнопка, ведущая прямо к нему.
+    if (err.needResume) {
+      const go = document.createElement('button');
+      go.type = 'button';
+      go.className = 'sm';
+      go.id = 'searchNoteAddResume';
+      go.textContent = 'Добавить резюме';
+      go.style.marginLeft = '10px';
+      go.onclick = () => {
+        showTab('settings');
+        showSettingsSection('filters');
+        document.getElementById('addSpec').click();
+      };
+      searchNote.append(go);
+    }
     return;
   }
   pollSearch();
@@ -1578,7 +2149,7 @@ function setLettersBtns(disabled, text) {
   for (const b of lettersBtns) {
     if (!b) continue;
     b.disabled = disabled;
-    b.textContent = text;
+    setLabel(b, text);
   }
 }
 
@@ -1768,7 +2339,7 @@ function buildSendResultText(r) {
 
 function resetSendButton(approved) {
   sendBtn.disabled = approved === 0;
-  sendBtn.textContent = 'Отправить всё';
+  setLabel(sendBtn, 'Отправить всё');
   // Итог прошлой отправки главнее подсказки: он единственный ответ на вопрос
   // "сработало ли". Держится до следующего запуска.
   sendHint.textContent = sendResultText ?? (approved === 0
@@ -1790,7 +2361,7 @@ sendBtn.onclick = async () => {
   // "running". Сервер такой второй запуск отобьёт (409), но человеку не
   // должно казаться, что первый клик не сработал.
   sendBtn.disabled = true;
-  sendBtn.textContent = 'Отправка идёт...';
+  setLabel(sendBtn, 'Отправка идёт...');
   sendResultText = null;
   sendHint.textContent = `Запускаю подачу: ${st.approved}.`;
 
@@ -1811,7 +2382,7 @@ async function pollSend() {
     const st = await fetchJson('/api/send/status');
     if (st.running) {
       sendBtn.disabled = true;
-      sendBtn.textContent = 'Отправка идёт...';
+      setLabel(sendBtn, 'Отправка идёт...');
       showStop(sendStopBtn, true, st.stopping, SEND_STOP_LABEL);
       sendHint.textContent = st.stopping
         ? 'Останавливаю: текущая подача доедет до конца, остальные останутся в «Одобрено».'
@@ -1831,7 +2402,7 @@ async function pollSend() {
     }
     sendHint.textContent = sendResultText ?? sendHint.textContent;
     sendBtn.disabled = false;
-    sendBtn.textContent = 'Отправить всё';
+    setLabel(sendBtn, 'Отправить всё');
     // Убирает со вкладки строки, которые только что уехали. Итог отправки эта
     // перерисовка больше не затирает — см. sendResultText.
     load();
@@ -1898,7 +2469,7 @@ async function checkProxy() {
   if (st.usable !== false) { w.style.display = 'none'; return; }
 
   w.style.display = '';
-  w.textContent = 'Для работы требуется включить VPN. Пока он выключен, письма писаться '
+  w.querySelector('.banner-text').textContent = 'Для работы требуется включить VPN. Пока он выключен, письма писаться '
     + 'не будут: запросы к OpenRouter упрутся в блокировку провайдера. Поиск, одобрение '
     + 'и отправка при этом работают. Как только VPN заработает, полоса пропадёт сама.';
   w.title = st.checked && st.checked.length ? 'Проверены: ' + st.checked.join(', ') : '';
@@ -2022,6 +2593,17 @@ const ICON_PATHS = {
   bell: '<path d="M6 16v-5a6 6 0 1 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
   inbox: '<path d="M3 13h5l1.5 3h5l1.5-3h5"/><path d="M5.5 5h13L21 13v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5z"/>',
   chevron: '<path d="m9 6 6 6-6 6"/>',
+  // Иконки остальных вкладок, шапки и тура (2026-11-20) — в той же линейной манере.
+  check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  checks: '<path d="m2.5 12.5 4.5 4.5 9.5-9.5"/><path d="m12 17 .5.5L22 8"/>',
+  x: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
+  undo: '<path d="M9 14 4.5 9.5 9 5"/><path d="M4.5 9.5H15a5 5 0 0 1 0 10h-3.5"/>',
+  help: '<circle cx="12" cy="12" r="9"/><path d="M9.6 9.3a2.5 2.5 0 0 1 4.9.7c0 1.7-2.5 2.2-2.5 3.8"/><path d="M12 17.3v.2"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+  stop: '<rect x="6.5" y="6.5" width="11" height="11" rx="2.5"/>',
+  refresh: '<path d="M20 11a8 8 0 0 0-14.6-4.5L4 8"/><path d="M4 3.5V8h4.5"/><path d="M4 13a8 8 0 0 0 14.6 4.5L20 16"/><path d="M20 20.5V16h-4.5"/>',
+  alert: '<path d="M10.3 4.2 2.8 17.5A2 2 0 0 0 4.5 20.5h15a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0z"/><path d="M12 9.5v4.5M12 17.3v.2"/>',
+  flag: '<path d="M5 21V4.5"/><path d="M5 4.5h11.5l-2 4 2 4H5"/>',
 };
 
 /** Линейная иконка: inline SVG, цвет — currentColor, без внешних ресурсов. */
@@ -2554,6 +3136,11 @@ function activateSpec(i) {
 }
 
 function renderSpecSwitch() {
+  // Ни одного резюме: вместо пустой формы — призыв добавить первое.
+  const none = specCards().length === 0;
+  document.getElementById('specEmpty').hidden = !none;
+  updatePendingEmptyCta();
+  document.querySelector('#pane-settings .spec-switch').hidden = none;
   document.getElementById('specPills').innerHTML = specCards().map((c, k) => {
     const name = c.querySelector('[data-f="name"]').value.trim();
     const on = c.querySelector('[data-f="enabled"]').checked;
@@ -2575,16 +3162,9 @@ function removeSpecCard(card) {
   const cards = specCards();
   const idx = cards.indexOf(card);
   const blank = isBlankSpecCard(card);
-  if (blank && cards.length === 1) {
-    // Единственная пустая заготовка: удалять нечего, она и так не сохраняется.
-    // Без этой ветки на её месте сразу вставала бы новая такая же, и казалось
-    // бы, что кнопка не сработала.
-    setSettingsNote('Это пустая карточка — она не сохраняется, удалять нечего.', '');
-    return;
-  }
   card.remove();
-  // Без карточек форме нечего показать — оставляем пустую заготовку (она не сохраняется).
-  if (specCards().length === 0) document.getElementById('specList').appendChild(specCard(blankSpecialty()));
+  // Последнюю карточку не подменяем пустой заготовкой: иначе удаление выглядит
+  // так, будто карточка осталась. Без карточек виден призыв добавить резюме.
   activateSpec(Math.max(0, idx - 1));
   refreshSettingsDirty();
   if (blank) { hideSpecUndo(); return; }
@@ -2599,9 +3179,6 @@ document.getElementById('specUndoBtn').onclick = () => {
   if (!removedSpec) return;
   const { card, idx } = removedSpec;
   hideSpecUndo();
-  // Если на месте удалённой встала пустая заготовка — она больше не нужна.
-  const only = specCards();
-  if (only.length === 1 && isBlankSpecCard(only[0])) only[0].remove();
   document.getElementById('specList').insertBefore(card, specCards()[idx] ?? null);
   activateSpec(specCards().indexOf(card));
   refreshSettingsDirty();
@@ -2635,7 +3212,7 @@ document.getElementById('settingsNav').addEventListener('click', (e) => {
   showSettingsSection(item.dataset.sec);
   // На узком экране меню над контентом: после выбора раздела — к его началу.
   const top = document.querySelector('#pane-settings .st-main').getBoundingClientRect().top;
-  const hdr = document.querySelector('header').getBoundingClientRect().height;
+  const hdr = stickyHeaderHeight();
   if (top < hdr) window.scrollBy({ top: top - hdr - 12, behavior: 'instant' });
 });
 document.getElementById('settingsNav').addEventListener('keydown', (e) => {
@@ -2649,15 +3226,28 @@ document.getElementById('settingsNav').addEventListener('keydown', (e) => {
   next.focus();
 });
 
-for (const slot of document.querySelectorAll('#pane-settings [data-icon]')) {
-  slot.innerHTML = icon(slot.dataset.icon, slot.classList.contains('st-ic') ? 22 : 20);
+// Слоты иконок во всём документе: шапка, вкладки, кнопки, карточки «Диалогов»
+// и настройки. Размер — из data-size, иначе по роли слота.
+for (const slot of document.querySelectorAll('[data-icon]')) {
+  const size = Number(slot.dataset.size) || (slot.classList.contains('spec-empty-ic') ? 30 : slot.classList.contains('st-ic') ? 22 : 20);
+  slot.innerHTML = icon(slot.dataset.icon, size);
 }
+// Иконки сделали вкладки шире — выбранную (её открыл хэш адреса) показываем
+// заново; то же после догрузки шрифтов, они тоже меняют ширину подписей.
+revealActiveTab();
+if (document.fonts) document.fonts.ready.then(revealActiveTab);
 
 (function restoreSettingsSection() {
   let saved = null;
   try { saved = localStorage.getItem(SETTINGS_SECTION_KEY); } catch { /* нет хранилища — первый раздел */ }
   showSettingsSection(saved || 'filters', false);
 })();
+
+/** Сколько экрана закрывает липкая шапка; на телефоне она не липнет — 0. */
+function stickyHeaderHeight() {
+  const header = document.querySelector('header');
+  return getComputedStyle(header).position === 'sticky' ? header.getBoundingClientRect().height : 0;
+}
 
 // Липкие меню и подвал считают отступ от липкой шапки, а её высота меняется
 // (полосы VPN и автоотклика появляются и пропадают).
@@ -2748,8 +3338,7 @@ function renderSettings(s, keepIdx) {
   const list = document.getElementById('specList');
   list.innerHTML = '';
   for (const spec of s.specialties) list.appendChild(specCard(spec));
-  // Новый пользователь: специальностей ещё нет — показываем пустую заготовку.
-  if (s.specialties.length === 0) list.appendChild(specCard(blankSpecialty()));
+  // Новый пользователь без резюме видит призыв «Добавьте своё первое резюме» (renderSpecSwitch).
   activateSpec(typeof keepIdx === 'number' ? keepIdx : 0);
   document.getElementById('stopWords').value = s.stopWords.join('\n');
   const auto = s.autoApply ?? { enabled: false, minScore: null };
@@ -2947,11 +3536,20 @@ function collectSettings() {
   };
 }
 
+/** Ответ /api/settings пришёл (любой): тур перестаёт ждать карточки резюме. */
+let settingsReady = false;
+
 async function loadSettings() {
-  const res = await fetch('/api/settings');
-  const body = await res.json();
-  if (!res.ok) { setSettingsNote(body.error, 'bad'); return; }
-  renderSettings(body);
+  try {
+    const res = await fetch('/api/settings');
+    const body = await res.json();
+    if (!res.ok) { setSettingsNote(body.error, 'bad'); return; }
+    renderSettings(body);
+  } finally {
+    settingsReady = true;
+    // Теперь известно, есть ли резюме: кнопка пустой очереди выбирает действие.
+    updatePendingEmptyCta();
+  }
 }
 
 document.getElementById('llmModel').onchange = (e) => {
@@ -2979,6 +3577,7 @@ document.getElementById('addSpec').onclick = () => {
   activateSpec(specCards().indexOf(card));
   card.querySelector('[data-f="name"]').focus();
 };
+document.getElementById('specEmptyAdd').onclick = () => document.getElementById('addSpec').click();
 
 document.getElementById('settingsReset').onclick = () => {
   if (!settingsLoaded) return;
@@ -3042,176 +3641,250 @@ document.getElementById('settingsSave').onclick = async () => {
 loadSettings();
 
 // ----------------------------------------------------------------------------
-// Вход на hh.ru: кнопка открывает окно браузера, панель опрашивает, вошёл ли
-// человек. Пароль вводится только в окне hh.ru — панель его не видит.
+// Вход на площадки (hh.ru, careerist.ru): кнопка открывает окно браузера,
+// панель опрашивает, вошёл ли человек. Пароль вводится только в окне сайта —
+// панель его не видит. Обе кнопки устроены одинаково, отличаются адресом API
+// и подписями.
 // ----------------------------------------------------------------------------
-let hhLoginTimer = null;
-
 function fmtLoginDate(ms) {
   return new Date(ms).toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
 }
 
-function renderHhLogin(s) {
-  const el = document.getElementById('hhLoginState');
-  const btn = document.getElementById('hhLoginBtn');
-  const last = s.lastLoginAt ? ' (последний вход — ' + fmtLoginDate(s.lastLoginAt) + ')' : '';
-  const set = (cls, text) => { el.className = 'login-state ' + cls; el.textContent = text; };
-  btn.textContent = 'Войти в hh.ru';
-  if (s.state === 'opening') set('wait', 'Открываю окно браузера…');
-  else if (s.state === 'waiting') {
-    set('wait', 'Окно hh.ru открыто — войди в свой аккаунт в нём. Жду…');
-    btn.textContent = 'Показать окно входа';
-  } else if (s.state === 'done') set('ok', '✓ Вход выполнен' + last + '. Можно отправлять отклики.');
-  else if (s.state === 'closed') set('bad', 'Окно входа закрыто до завершения входа. Если ты успел войти — нажми кнопку ещё раз, окно закроется само.');
-  else if (s.state === 'timeout') set('bad', 'Не дождался входа за 30 минут — окно закрыто. Нажми кнопку, чтобы попробовать снова.');
-  else if (s.state === 'error') set('bad', 'Не удалось открыть окно: ' + s.error);
-  else if (s.lastLoginAt) set('ok', '✓ Вход выполнен' + last + '. Если отклики перестали уходить — войди заново.');
-  else set('bad', 'Вход ещё не выполнен — без него отклики на hh.ru не отправятся.');
-  return s.state === 'opening' || s.state === 'waiting';
+function setupSiteLogin({ api, blockId, btnId, stateId, label, site }) {
+  let timer = null;
+  const btn = document.getElementById(btnId);
+
+  function render(s) {
+    const el = document.getElementById(stateId);
+    const last = s.lastLoginAt ? ' (последний вход — ' + fmtLoginDate(s.lastLoginAt) + ')' : '';
+    const set = (cls, text) => { el.className = 'login-state ' + cls; el.textContent = text; };
+    setLabel(btn, label);
+    if (s.state === 'opening') set('wait', 'Открываю окно браузера…');
+    else if (s.state === 'waiting') {
+      set('wait', 'Окно ' + site + ' открыто — войди в свой аккаунт в нём. Жду…');
+      setLabel(btn, 'Показать окно входа');
+    } else if (s.state === 'done') set('ok', '✓ Вход выполнен' + last + '. Можно отправлять отклики.');
+    else if (s.state === 'closed') set('bad', 'Окно входа закрыто до завершения входа. Если ты успел войти — нажми кнопку ещё раз, окно закроется само.');
+    else if (s.state === 'timeout') set('bad', 'Не дождался входа за 30 минут — окно закрыто. Нажми кнопку, чтобы попробовать снова.');
+    else if (s.state === 'error') set('bad', 'Не удалось открыть окно: ' + s.error);
+    else if (s.lastLoginAt) set('ok', '✓ Вход выполнен' + last + '. Если отклики перестали уходить — войди заново.');
+    else set('bad', 'Вход ещё не выполнен — без него отклики на ' + site + ' не отправятся.');
+    return s.state === 'opening' || s.state === 'waiting';
+  }
+
+  async function poll() {
+    clearTimeout(timer);
+    let s;
+    try {
+      const res = await fetch(api + '/status');
+      // Панель поднята без этой площадки (стенд, тесты) — блок прячем.
+      if (!res.ok) { document.getElementById(blockId).hidden = true; return; }
+      s = await res.json();
+    } catch { return; }
+    if (render(s)) timer = setTimeout(poll, 2000);
+  }
+
+  btn.onclick = async () => {
+    const el = document.getElementById(stateId);
+    const res = await post(api, {});
+    const body = await res.json();
+    if (!res.ok) { el.className = 'login-state bad'; el.textContent = body.error; return; }
+    render(body);
+    timer = setTimeout(poll, 1000);
+  };
+
+  poll();
 }
 
-async function pollHhLogin() {
-  clearTimeout(hhLoginTimer);
-  let s;
-  try {
-    const res = await fetch('/api/hh-login/status');
-    if (!res.ok) { document.getElementById('hhLoginBlock').hidden = true; return; }
-    s = await res.json();
-  } catch { return; }
-  if (renderHhLogin(s)) hhLoginTimer = setTimeout(pollHhLogin, 2000);
-}
-
-document.getElementById('hhLoginBtn').onclick = async () => {
-  const el = document.getElementById('hhLoginState');
-  const res = await post('/api/hh-login', {});
-  const body = await res.json();
-  if (!res.ok) { el.className = 'login-state bad'; el.textContent = body.error; return; }
-  renderHhLogin(body);
-  hhLoginTimer = setTimeout(pollHhLogin, 1000);
-};
-
-pollHhLogin();
+setupSiteLogin({ api: '/api/hh-login', blockId: 'hhLoginBlock', btnId: 'hhLoginBtn', stateId: 'hhLoginState', label: 'Войти в hh.ru', site: 'hh.ru' });
+setupSiteLogin({
+  api: '/api/careerist-login', blockId: 'careeristLoginBlock', btnId: 'careeristLoginBtn',
+  stateId: 'careeristLoginState', label: 'Войти в careerist', site: 'careerist.ru',
+});
 
 // ----------------------------------------------------------------------------
 // Онбординг: при первом входе панель по шагам подсвечивает кнопки и объясняет,
 // за что они отвечают. Пройденный (или пропущенный) тур помечается в
-// localStorage и сам больше не открывается; повторить — кнопка «❓ Обучение».
+// localStorage и сам больше не открывается; повторить — кнопка «Обучение».
+//
+// Ключ .v2 (2026-11-20): тур переписан под новый интерфейс, и тем, кто прошёл
+// старый, обновлённое обучение один раз покажется снова.
+//
+// Порядок шагов: короткий обзор (что это и где вкладки) → настройки → работа с
+// очередью. Новичку очередь пуста — показывать в ней нечего, а первое, что ему
+// нужно сделать, — ключ OpenRouter (без него не пишутся письма и не работает
+// «Заполнить с ИИ») и резюме. Поэтому настройки идут сразу за обзором, в том
+// порядке, в каком их заполняют: ключ → вход на hh.ru → резюме и ИИ → поля
+// фильтра → сохранение. Очередь — потом, когда уже понятно, откуда в ней
+// берутся вакансии. Последний шаг открывает «Аккаунты и ключи»: с ключа и
+// начинается работа.
+//
+// Шаг: target — что подсветить (первый ВИДИМЫЙ элемент по селектору);
+// targetTo — до какого элемента тянуть «окно» (группа строк формы целиком);
+// fallback — запасная цель, если основной нет (нет резюме, нет карточек), и
+// textFallback — текст под неё; textNoTarget — текст, если нет ни той, ни
+// другой: тогда карточка встаёт по центру. targetNarrow и textNarrow — цель и
+// текст для узкого экрана (до 899px), где раскладка другая. Тур не ломается ни у нового
+// пользователя (нет резюме, пустая очередь), ни у опытного.
 // ----------------------------------------------------------------------------
-const TOUR_KEY = 'jobAutoapply.onboardingDone.v1';
+const TOUR_KEY = 'jobAutoapply.onboardingDone.v2';
+
+/** Карточка резюме, которая сейчас на экране (их в DOM столько, сколько резюме). */
+const TOUR_SPEC = '#specList .spec:not([hidden])';
 
 const TOUR_STEPS = [
   {
-    title: 'Добро пожаловать! 👋',
-    text: '<p>Это панель автоматических откликов на вакансии. Программа сама ищет вакансии на hh.ru, hr.ge, careerist.ru и в Telegram, оценивает, насколько они тебе подходят, и пишет к каждой сопроводительное письмо.</p>'
+    icon: 'sparkles',
+    title: 'Добро пожаловать!',
+    text: '<p>Это панель автоматических откликов. Программа сама ищет вакансии на hh.ru, hr.ge, careerist.ru и в Telegram, оценивает, насколько они тебе подходят, и пишет к каждой сопроводительное письмо.</p>'
       + '<p><b>Без твоего одобрения ничего не отправляется.</b></p>'
-      + '<p>Покажу за пару минут, где что находится. Подсказки можно листать стрелками ← → на клавиатуре.</p>',
+      + '<p>Покажу за пару минут, где что находится. Листать можно стрелками ← → на клавиатуре.</p>',
   },
   {
-    target: '#tab-settings', tab: 'settings',
-    title: 'Начни с настроек',
-    text: '<p>Во вкладке «Настройки» ты один раз рассказываешь программе о себе: кем ищешь работу, какие у тебя навыки и какое резюме прикладывать.</p>'
-      + '<p>Слева — разделы: фильтры поиска, аккаунты и ключи, Telegram, автоотклик и переписка.</p>',
+    target: 'nav.tabs', icon: 'layers',
+    title: 'Разделы панели',
+    text: '<p>Вверху — вкладки: <b>«В ожидании»</b>, <b>«Одобрено»</b>, <b>«Отменённые»</b>, <b>«Отправлено»</b>, <b>«Диалоги»</b> и <b>«Настройки»</b>. Цифра рядом — сколько в разделе записей.</p>'
+      + '<p>Начнём с настроек: пока программа не знает, кого искать, искать нечего.</p>',
+    textNarrow: '<p>Вверху — вкладки: <b>«В ожидании»</b>, <b>«Одобрено»</b>, <b>«Отменённые»</b>, <b>«Отправлено»</b>, <b>«Диалоги»</b> и <b>«Настройки»</b>. Цифра рядом — сколько в разделе записей.</p>'
+      + '<p>На узком экране все не помещаются: <b>полосу вкладок можно листать вбок</b>, «Настройки» — в её конце.</p>'
+      + '<p>Начнём с настроек: пока программа не знает, кого искать, искать нечего.</p>',
   },
   {
-    target: '#profileBlock', tab: 'settings', section: 'filters',
-    title: 'Имя',
-    text: '<p>Впиши имя и фамилию — ими подписываются письма и сообщения рекрутёрам. Если оставить пустым, письма пишутся от лица «кандидата» без подписи.</p>',
+    target: '#settingsNav', tab: 'settings', section: 'accounts', icon: 'gear',
+    title: 'Настройки: меню разделов',
+    text: '<p>Настройки разбиты на разделы: фильтры поиска, аккаунты и ключи, Telegram, автоотклик и переписка. На телефоне меню стоит над формой.</p>',
   },
   {
-    target: '#llmBlock', tab: 'settings', section: 'accounts',
-    title: 'Нейросеть для писем',
-    text: '<p>Письма пишет нейросеть через сервис OpenRouter. Получи ключ на <b>openrouter.ai/keys</b> и вставь его сюда.</p>'
-      + '<p>Ниже выбери модель: есть бесплатные. Ключ хранится только на твоём компьютере.</p>',
+    target: '#llmBlock', tab: 'settings', section: 'accounts', icon: 'key',
+    title: 'Ключ OpenRouter',
+    text: '<p>Письма, сообщения рекрутёрам и «Заполнить с ИИ» работают через нейросеть сервиса OpenRouter. Получи ключ на <b>openrouter.ai/keys</b> и вставь его в поле «Ключ OpenRouter».</p>'
+      + '<p>Ниже можно выбрать модель — есть бесплатные. Ключ хранится только на этом компьютере.</p>',
   },
   {
-    target: '#hhLoginBlock', tab: 'settings', section: 'accounts',
-    title: 'Вход на hh.ru',
-    text: '<p>Чтобы программа могла откликаться от твоего имени, один раз войди в свой аккаунт hh.ru: нажми <b>«Войти в hh.ru»</b>.</p>'
-      + '<p>Откроется окно браузера — логин и пароль вводишь ты сам, программа их не видит. Когда вход получится, окно закроется само.</p>',
+    target: '#hhLoginBlock:not([hidden])', fallback: '#captchaBlock', tab: 'settings', section: 'accounts', icon: 'login',
+    title: 'Вход на hh.ru и careerist',
+    text: '<p>Чтобы откликаться от твоего имени, один раз войди на сайты: кнопки <b>«Войти в hh.ru»</b> и ниже <b>«Войти в careerist»</b>. Откроется окно браузера — логин и пароль вводишь ты сам, программа их не видит.</p>'
+      + '<p>Ещё ниже — «Капча hh.ru»: её можно поручить сервису распознавания, тогда поиск не встаёт на капче.</p>',
+    textFallback: '<p>Капчу hh.ru можно поручить сервису распознавания — тогда поиск не встаёт на ней. Нужен ключ ruCaptcha или 2captcha.</p>'
+      + '<p>Кнопки «Войти в hh.ru» и «Войти в careerist» появляются в этом разделе, когда панель запущена через npm run panel.</p>',
   },
   {
-    target: '#specList .spec:not([hidden])', tab: 'settings', section: 'filters',
-    title: 'Фильтр — какие вакансии искать',
-    text: '<p>Фильтр устроен как поиск вакансий на hh.ru: должность, зарплата, опыт, тип занятости, график, формат работы и навыки.</p>'
-      + '<p>Не выбрал ничего в группе — подходит любое значение. Фильтров может быть несколько (например, под разные должности): кнопка <b>«+ Добавить резюме»</b> над карточкой.</p>',
+    target: '#profileBlock', tab: 'settings', section: 'filters', icon: 'user',
+    title: 'О тебе',
+    text: '<p>Теперь раздел «Фильтры поиска». Карточка «О тебе»: имя и фамилия подставляются в письма и сообщения рекрутёрам.</p>'
+      + '<p>Пусто — письма пишутся от лица «кандидата» без подписи.</p>',
   },
   {
-    target: '#specList .spec:not([hidden]) .resume-row', tab: 'settings', section: 'filters',
-    title: 'Прикрепи резюме',
-    text: '<p>Нажми <b>«Обзор…»</b> и выбери своё резюме в формате PDF. По нему нейросеть пишет письма и отвечает рекрутёрам.</p>'
-      + '<p>Без резюме письма не пишутся.</p>',
+    target: '#pane-settings .spec-switch', fallback: '#specEmpty', tab: 'settings', section: 'filters', icon: 'file',
+    title: 'Резюме',
+    text: '<p>Каждое резюме — свой фильтр: программа ищет по нему вакансии и пишет письма от его лица. Между резюме переключают эти кнопки, новое — <b>«+ Добавить резюме»</b>.</p>'
+      + '<p>Например, одно резюме — под аналитика, другое — под менеджера продукта.</p>',
+    textFallback: '<p>Начни с резюме: нажми <b>«Добавить резюме»</b>. Каждое резюме — свой фильтр: программа ищет по нему вакансии и пишет письма от его лица.</p>'
+      + '<p>Резюме можно завести несколько — под разные должности.</p>',
   },
   {
-    target: '#specList .spec:not([hidden]) .suggest', tab: 'settings', section: 'filters',
-    title: '«Заполнить с ИИ»',
-    text: '<p>Нейросеть прочитает резюме и заполнит должность, поисковые запросы, опыт и навыки — останется только поправить. Зарплату — только если она указана в резюме.</p>'
-      + '<p>Навыки дают вакансии баллы: чем больше «вес», тем навык важнее; ★ «обязательный» должен быть в вакансии, иначе она отсеивается. Нажми на навык, чтобы поправить.</p>',
+    target: `${TOUR_SPEC} .resume-row`, tab: 'settings', section: 'filters', icon: 'sparkles',
+    title: 'PDF и «Заполнить с ИИ»',
+    text: '<p>Нажми <b>«Обзор…»</b> и выбери резюме в PDF, затем <b>«Заполнить с ИИ»</b>: нейросеть прочитает его и заполнит должность, ключевые слова, запросы, опыт и навыки.</p>'
+      + '<p>Ничего не сохраняется само — проверь, поправь и нажми «Сохранить».</p>',
+    textNoTarget: '<p>В карточке резюме будут кнопки <b>«Обзор…»</b> — выбрать PDF — и <b>«Заполнить с ИИ»</b>: нейросеть прочитает резюме и заполнит должность, ключевые слова, опыт и навыки.</p>'
+      + '<p>Для этого нужен ключ OpenRouter из раздела «Аккаунты и ключи».</p>',
   },
   {
-    target: '#stopBlock', tab: 'settings', section: 'filters',
-    title: 'Стоп-слова',
-    text: '<p>Слова, при которых вакансия сразу отбрасывается: например, «вахта», «1С» или название компании, куда ты не хочешь.</p>',
+    // «Окно» — от «Зарплаты» до подсказки под чипами: текст начинается с зарплаты и опыта.
+    target: `${TOUR_SPEC} .f-row:has([data-f="salaryFrom"])`, targetTo: `${TOUR_SPEC} .f-row-hint`,
+    tab: 'settings', section: 'filters', icon: 'funnel',
+    title: 'Поля фильтра',
+    text: '<p>Фильтр устроен как поиск на hh.ru: зарплата, опыт, тип занятости, оформление, график и формат работы. Чипы нажимаются — выбранные подсвечены.</p>'
+      + '<p><b>Ничего не выбрано в группе — подходит любое значение.</b></p>',
+    textNoTarget: '<p>В карточке резюме — поля фильтра, как в поиске hh.ru: зарплата, опыт, тип занятости, график и формат работы. Значения выбираются чипами.</p>'
+      + '<p><b>Ничего не выбрано в группе — подходит любое значение.</b></p>',
   },
   {
-    target: '#autoBlock', tab: 'settings', section: 'auto',
+    target: `${TOUR_SPEC} .f-row-skills`, tab: 'settings', section: 'filters', icon: 'layers',
+    title: 'Навыки',
+    text: '<p>Навыки дают вакансии баллы скоринга. Нажми на навык, чтобы задать синонимы и вес; <b>★ — обязательный</b>: без него вакансия отсеивается.</p>'
+      + '<p>Новый навык — впиши в поле и нажми Enter.</p>',
+    textNoTarget: '<p>Навыки из резюме дают вакансии баллы скоринга: у каждого есть синонимы и вес, а ★ «обязательный» отсеивает вакансии без него. Их заполнит «Заполнить с ИИ».</p>',
+  },
+  {
+    target: `${TOUR_SPEC} .f-row:has([data-f="titleWords"])`, tab: 'settings', section: 'filters', icon: 'type',
+    title: 'Ключевые слова',
+    text: '<p>Слова, которые должны быть в <b>названии</b> вакансии, через запятую. Вакансия без единого такого слова в заголовке отбрасывается сразу — так отсекаются чужие профессии.</p>',
+    textNoTarget: '<p>«Ключевые слова» в карточке резюме — слова, которые должны быть в названии вакансии. Без них в заголовке вакансия отбрасывается сразу: так отсекаются чужие профессии.</p>',
+  },
+  {
+    target: `${TOUR_SPEC} details.adv`, tab: 'settings', section: 'filters', icon: 'search',
+    title: 'Искать ещё по другим названиям',
+    text: '<p>Раскрой, чтобы добавить другие названия той же работы — например, по-английски. Программа вобьёт их в поиск hh.ru, hr.ge и careerist. Пусто — ищет по должности.</p>',
+    textNoTarget: '<p>В карточке резюме можно добавить другие названия той же работы (например, по-английски) — так находится больше вакансий. Пусто — поиск идёт по должности.</p>',
+  },
+  {
+    target: '#stopBlock', tab: 'settings', section: 'filters', icon: 'ban',
+    title: 'Исключить вакансии со словами',
+    text: '<p>Карточка <b>«Исключить вакансии со словами»</b> — стоп-слова. Действует для всех фильтров: вакансия отсеивается, если слово есть в названии или дважды и больше в описании. Например, «вахта», «1С» или компания, куда ты не хочешь.</p>',
+  },
+  {
+    target: '#autoBlock', tab: 'settings', section: 'auto', icon: 'zap',
     title: 'Автоотклик — осторожно',
-    text: '<p>Если включить, программа будет сама отправлять отклики без твоего просмотра. По умолчанию выключено — советуем сначала поработать вручную.</p>',
+    text: '<p>Если включить, поиск сам одобряет и отправляет отклики без твоего просмотра — только на вакансии со скорингом не ниже значения в поле <b>«Порог скоринга»</b>.</p>'
+      + '<p>По умолчанию выключено; советуем сначала поработать вручную.</p>',
   },
   {
-    target: '#settingsSave', tab: 'settings',
-    title: 'Не забудь сохранить',
-    text: '<p>Изменения в настройках применяются только после нажатия <b>«Сохранить»</b> внизу экрана. Пока есть несохранённое, рядом горит подсказка; <b>«Сбросить»</b> вернёт всё как было.</p>',
+    target: '#settingsSave', tab: 'settings', icon: 'check',
+    title: 'Сохранить',
+    text: '<p>Изменения применяются только после <b>«Сохранить»</b> в подвале — он виден из любого раздела. Пока есть несохранённое, рядом горит пометка; <b>«Сбросить»</b> вернёт как было.</p>',
   },
   {
-    target: '.search-box', tab: 'pending',
+    target: '.search-box', tab: 'pending', icon: 'search',
     title: 'Поиск вакансий',
-    text: '<p>Укажи, сколько вакансий найти, и нажми <b>«Найти вакансии»</b>. Программа откроет сайты, отберёт подходящее и напишет письма. Это занимает несколько минут.</p>'
-      + '<p>Поиск можно остановить в любой момент — найденное сохранится.</p>',
+    text: '<p>Когда настройки сохранены, укажи, сколько вакансий найти, и нажми <b>«Найти вакансии»</b>. Программа откроет сайты, отберёт подходящее и напишет письма — это несколько минут.</p>'
+      + '<p>Остановить можно в любой момент: найденное останется.</p>',
   },
   {
-    target: '#tab-pending', tab: 'pending',
-    title: 'В ожидании — твоё решение',
-    text: '<p>Сюда попадают найденные вакансии: оценка, совпавшие навыки и готовое письмо. Письмо можно поправить прямо в карточке.</p>'
-      + '<p><b>«Принять»</b> — откликнуться, <b>«Пропустить»</b> — вакансия не подходит.</p>',
+    // На узком экране карточка в одну колонку и выше экрана: «окно» на всю
+    // карточку ушло бы под подсказку вместе с кнопками, о которых этот шаг.
+    // Там подсвечивается её нижняя часть — письмо и «Принять»/«Пропустить».
+    target: '#list .card', targetNarrow: '#list .card .card-side', fallback: '#list .empty-state', tab: 'pending', icon: 'clock',
+    title: '«В ожидании» — твоё решение',
+    text: '<p>Каждая найденная вакансия — карточка. Слева <b>скоринг</b> 0–100 (зелёный — хорошо подходит, лавандовый — средне, серый — слабо), совпавшие навыки и описание; справа — готовое письмо, его можно поправить.</p>'
+      + '<p><b>«Принять»</b> — откликнуться, <b>«Пропустить»</b> — не подходит.</p>',
+    textNarrow: '<p>Каждая найденная вакансия — карточка. Вверху <b>скоринг</b> 0–100 (зелёный — хорошо подходит, лавандовый — средне, серый — слабо), совпавшие навыки и описание; под ними — готовое письмо, его можно поправить.</p>'
+      + '<p><b>«Принять»</b> — откликнуться, <b>«Пропустить»</b> — не подходит.</p>',
+    textFallback: '<p>Здесь появятся найденные вакансии — по карточке на каждую: скоринг 0–100, совпавшие навыки, описание и готовое письмо, которое можно поправить.</p>'
+      + '<p><b>«Принять»</b> — откликнуться, <b>«Пропустить»</b> — не подходит.</p>',
   },
   {
-    target: '#tab-approved', tab: 'approved',
-    title: 'Одобрено — готово к отправке',
-    text: '<p>Принятые вакансии ждут здесь. Кнопка <b>«Отправить всё»</b> отправляет отклики с паузами, чтобы сайты не заблокировали аккаунт.</p>'
-      + '<p>Отклик на hh.ru нельзя отозвать — проверь письма перед отправкой.</p>',
+    target: '#sendAll', tab: 'approved', icon: 'send',
+    title: '«Одобрено» и «Отправить всё»',
+    text: '<p>Принятые вакансии ждут здесь. <b>«Отправить всё»</b> подаёт отклики по одному, с паузами, чтобы площадки не заблокировали аккаунт. Отклик нельзя отозвать — перечитай письма.</p>'
+      + '<p>Письмо не написалось (нет ключа, выключен VPN) — <b>«Дописать письма»</b>.</p>',
   },
   {
-    target: '#sendAll', tab: 'approved',
-    title: '«Отправить всё» и «Дописать письма»',
-    text: '<p>«Отправить всё» — отправить все одобренные отклики.</p>'
-      + '<p>«Дописать письма» — если какие-то письма не написались (нет ключа, выключен VPN), нейросеть попробует ещё раз.</p>',
+    target: '#tab-skipped', tab: 'skipped', icon: 'undo',
+    title: '«Отменённые» и «Отправлено»',
+    text: '<p>«Отменённые» хранят пропущенное сутки — если передумал, нажми «Восстановить».</p>'
+      + '<p>«Отправлено» — история откликов за 30 дней вместе с письмами. Метка «АВТО» — ушло автооткликом.</p>',
   },
   {
-    target: '#tab-skipped', tab: 'skipped',
-    title: 'Отменённые',
-    text: '<p>Пропущенные вакансии хранятся здесь сутки. Если передумал — нажми «Восстановить». В поиске они больше не появятся.</p>',
-  },
-  {
-    target: '#tab-sent', tab: 'sent',
-    title: 'Отправлено',
-    text: '<p>История откликов за последние 30 дней: куда и когда ушло.</p>',
-  },
-  {
-    target: '#tab-dialogs', tab: 'dialogs',
+    target: '#tab-dialogs', tab: 'dialogs', icon: 'chat',
     title: 'Диалоги',
-    text: '<p>Кто из рекрутёров ответил, сколько откликов дошло до собеседования, и напоминания тем, кто молчит. Работает, если подключён Telegram и ящик hh.ru.</p>',
+    text: '<p>Кто из рекрутёров ответил, воронка «отправлено → ответил → собеседование» и дожимы — напоминания тем, кто молчит.</p>'
+      + '<p>Работает, если подключены Telegram и ящик hh.ru (раздел настроек «Переписка»).</p>',
   },
   {
-    target: '#tourStart',
-    title: 'Готово! 🎉',
-    text: '<p>Чтобы пройти обучение ещё раз, нажми эту кнопку.</p>'
-      + '<p>Сейчас открою «Настройки» — начни с ключа, фильтра и резюме. И не забудь войти в hh.ru кнопкой <b>«Войти в hh.ru»</b> в разделе «Аккаунты и ключи».</p>',
+    target: '#tourStart', icon: 'flag',
+    title: 'Готово!',
+    text: '<p>Обучение можно пройти ещё раз этой кнопкой.</p>'
+      + '<p>Сейчас открою «Настройки» → «Аккаунты и ключи»: начни с ключа OpenRouter, потом добавь резюме во «Фильтрах поиска» и нажми «Сохранить».</p>',
     finishTab: 'settings',
   },
 ];
 
 let tourIdx = -1;
 let tourRoot = null;
+/** Элемент, подсвеченный на текущем шаге (null — карточка по центру). */
+let tourTargetEl = null;
 
 function tourEl(html) {
   const d = document.createElement('div');
@@ -3219,12 +3892,41 @@ function tourEl(html) {
   return d.firstElementChild;
 }
 
-function tourWaitFor(selector, ms) {
+/** Первый видимый элемент по селектору: скрытая карточка резюме или раздел не годятся. */
+function tourVisible(selector) {
+  if (!selector) return null;
+  for (const el of document.querySelectorAll(selector)) if (el.getClientRects().length > 0) return el;
+  return null;
+}
+
+/** Узкий экран: карточки в одну колонку, вкладки прокручиваются (тот же порог, что в CSS). */
+function tourNarrow() {
+  return window.matchMedia('(max-width: 899px)').matches;
+}
+
+/**
+ * Цель шага: основная, иначе запасная. kind говорит, какой текст показывать.
+ * targetNarrow — основная цель на узком экране (часть элемента, который выше экрана).
+ */
+function tourResolve(step) {
+  const main = (step.targetNarrow && tourNarrow() && tourVisible(step.targetNarrow)) || tourVisible(step.target);
+  if (main) return { el: main, kind: 'target' };
+  const alt = tourVisible(step.fallback);
+  return alt ? { el: alt, kind: 'fallback' } : { el: null, kind: 'none' };
+}
+
+/**
+ * Карточки резюме и вакансий приходят с сервера не сразу — ждём цель, но не
+ * дольше, чем нужно: когда очередь и настройки уже загружены, а цели нет, её
+ * и не будет (новый пользователь), и тур идёт дальше с запасной целью.
+ */
+function tourWaitFor(step, ms) {
   return new Promise((resolveWait) => {
     const t0 = Date.now();
     (function poll() {
-      const el = document.querySelector(selector);
-      if (el || Date.now() - t0 > ms) resolveWait(el);
+      const r = tourResolve(step);
+      const loaded = queueLoaded && settingsReady;
+      if (r.kind === 'target' || (loaded && Date.now() - t0 > 150) || Date.now() - t0 > ms) resolveWait(r);
       else setTimeout(poll, 100);
     })();
   });
@@ -3233,6 +3935,10 @@ function tourWaitFor(selector, ms) {
 // Раздел настроек, открытый до тура: тур листает разделы, но выбор человека
 // (и запомненный в localStorage раздел) трогать не должен.
 let tourPrevSection = null;
+// Вкладка и прокрутка до тура: уже третий шаг уводит в «Настройки», и при
+// досрочном выходе человек должен вернуться туда, откуда начал.
+let tourPrevTab = null;
+let tourPrevY = 0;
 
 function currentSettingsSection() {
   const cur = document.querySelector('#settingsNav .st-nav-item[aria-selected="true"]');
@@ -3242,19 +3948,24 @@ function currentSettingsSection() {
 function startTour() {
   if (tourRoot) return;
   tourPrevSection = currentSettingsSection();
+  const curTab = document.querySelector('nav.tabs .tab[aria-selected="true"]');
+  tourPrevTab = curTab ? curTab.id.replace(/^tab-/, '') : null;
+  tourPrevY = window.scrollY;
   tourRoot = tourEl(`<div id="tour" role="dialog" aria-modal="true" aria-labelledby="tourTitle">
     <div class="tour-block"></div>
     <div class="tour-spot none"></div>
     <div class="tour-card">
-      <div class="tour-step"></div>
-      <h2 class="tour-title" id="tourTitle"></h2>
+      <div class="tour-top">
+        <span class="tour-ic"></span>
+        <div><div class="tour-step"></div><h2 class="tour-title" id="tourTitle"></h2></div>
+      </div>
       <div class="tour-text"></div>
-      <div class="tour-dots"></div>
+      <div class="tour-dots" aria-hidden="true"></div>
       <div class="tour-nav">
-        <button type="button" class="tour-skip">Пропустить обучение</button>
+        <button type="button" class="tour-skip ghost sm">Пропустить</button>
         <span class="grow"></span>
-        <button type="button" class="tour-back">← Назад</button>
-        <button type="button" class="tour-next primary">Далее →</button>
+        <button type="button" class="tour-back">Назад</button>
+        <button type="button" class="tour-next primary">Далее</button>
       </div>
     </div>
   </div>`);
@@ -3270,7 +3981,21 @@ function startTour() {
 
 function tourKeys(e) {
   if (!tourRoot) return;
+  if (e.key === 'Tab') {
+    // Тур — модальный диалог: Tab ходит по его кнопкам по кругу и не уходит
+    // под затемнение (к полю поиска, «Найти вакансии», вкладкам).
+    e.preventDefault();
+    const btns = [...tourRoot.querySelectorAll('.tour-card button')].filter((b) => !b.hidden);
+    const i = btns.indexOf(document.activeElement);
+    const next = e.shiftKey ? (i <= 0 ? btns.length - 1 : i - 1) : (i + 1) % btns.length;
+    btns[next].focus();
+    return;
+  }
+  // Enter на «Назад» и «Пропустить» — их собственное нажатие (кнопка сама
+  // сработает), а не «дальше»: иначе «Пропустить» с клавиатуры листал бы вперёд.
+  const onOwnBtn = e.target instanceof Element && e.target.closest('#tour button') && !e.target.closest('.tour-next');
   if (e.key === 'Escape') { e.preventDefault(); endTour(); }
+  else if (e.key === 'Enter' && onOwnBtn) return;
   else if (e.key === 'ArrowRight' || e.key === 'Enter') { e.preventDefault(); goTour(tourIdx + 1); }
   else if (e.key === 'ArrowLeft') { e.preventDefault(); goTour(tourIdx - 1); }
 }
@@ -3285,23 +4010,31 @@ async function goTour(i) {
   // Цель может жить в другом разделе настроек — иначе она скрыта и подсветить нечего.
   if (step.section) showSettingsSection(step.section, false);
   const card = tourRoot.querySelector('.tour-card');
+  const last = i === TOUR_STEPS.length - 1;
+  tourRoot.querySelector('.tour-ic').innerHTML = icon(step.icon || 'sparkles', 22);
   tourRoot.querySelector('.tour-step').textContent = `Шаг ${i + 1} из ${TOUR_STEPS.length}`;
   tourRoot.querySelector('.tour-title').textContent = step.title;
-  tourRoot.querySelector('.tour-text').innerHTML = step.text;
   tourRoot.querySelector('.tour-dots').innerHTML = TOUR_STEPS
-    .map((_, k) => `<span class="${k === i ? 'on' : ''}"></span>`).join('');
+    .map((_, k) => `<span class="${k === i ? 'on' : k < i ? 'done' : ''}"></span>`).join('');
   tourRoot.querySelector('.tour-back').hidden = i === 0;
-  tourRoot.querySelector('.tour-next').textContent = i === TOUR_STEPS.length - 1 ? 'Начать работу' : (i === 0 ? 'Начать обучение →' : 'Далее →');
-  // Карточки специальностей приходят с сервера не сразу — ждём их немного.
-  const target = step.target ? await tourWaitFor(step.target, 2000) : null;
+  tourRoot.querySelector('.tour-next').textContent = last ? 'Начать работу' : (i === 0 ? 'Начать обучение' : 'Далее');
+  tourRoot.querySelector('.tour-text').innerHTML = step.text;
+  const found = step.target ? await tourWaitFor(step, 2000) : { el: null, kind: 'none' };
   if (tourIdx !== i || !tourRoot) return;
-  card.classList.toggle('center', target === null);
-  // Липкие шапка и подвал настроек видны всегда — прокручивать к ним незачем.
-  if (target && !target.closest('header') && !target.closest('.st-footer')) {
-    // Шапка липкая и закрыла бы цель: ставим цель сразу под шапкой, чтобы
-    // под ней осталось место для карточки.
-    const headerH = document.querySelector('header').getBoundingClientRect().height;
-    window.scrollBy({ top: target.getBoundingClientRect().top - (headerH + 16), behavior: 'instant' });
+  tourTargetEl = found.el;
+  const text = found.kind === 'fallback' && step.textFallback ? step.textFallback
+    : found.kind === 'none' && step.textNoTarget ? step.textNoTarget
+      : found.kind === 'target' && step.textNarrow && tourNarrow() ? step.textNarrow : step.text;
+  tourRoot.querySelector('.tour-text').innerHTML = text;
+  card.classList.toggle('center', tourTargetEl === null);
+  const inHeader = tourTargetEl && tourTargetEl.closest('header');
+  if (inHeader && stickyHeaderHeight() === 0) {
+    // На телефоне шапка не липнет: её цель видна только в начале страницы.
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  } else if (tourTargetEl && !inHeader && !tourTargetEl.closest('.st-footer')) {
+    // Липкие шапка и подвал настроек видны всегда — прокручивать к ним незачем.
+    // Остальное ставим сразу под шапкой, чтобы под целью осталось место для карточки.
+    window.scrollBy({ top: tourTargetEl.getBoundingClientRect().top - (stickyHeaderHeight() + 16), behavior: 'instant' });
   }
   placeTour();
   tourRoot.querySelector('.tour-next').focus();
@@ -3309,10 +4042,9 @@ async function goTour(i) {
 
 function placeTour() {
   if (!tourRoot || tourIdx < 0) return;
-  const step = TOUR_STEPS[tourIdx];
   const spot = tourRoot.querySelector('.tour-spot');
   const card = tourRoot.querySelector('.tour-card');
-  const target = step.target ? document.querySelector(step.target) : null;
+  const target = tourTargetEl && tourTargetEl.isConnected ? tourTargetEl : null;
   if (!target || card.classList.contains('center')) {
     spot.classList.add('none');
     spot.style.cssText = 'top:50%;left:50%;';
@@ -3321,15 +4053,24 @@ function placeTour() {
     return;
   }
   spot.classList.remove('none');
-  const pad = 6;
-  const r = target.getBoundingClientRect();
+  const pad = 8;
+  let r = target.getBoundingClientRect();
+  // «Окно» на группу строк: от цели до targetTo (например, все чипы фильтра разом).
+  const step = TOUR_STEPS[tourIdx];
+  const to = step.targetTo && target.matches(step.target) ? tourVisible(step.targetTo) : null;
+  if (to) {
+    const r2 = to.getBoundingClientRect();
+    const t = Math.min(r.top, r2.top);
+    const l = Math.min(r.left, r2.left);
+    r = { top: t, left: l, width: Math.max(r.right, r2.right) - l, height: Math.max(r.bottom, r2.bottom) - t };
+  }
   const top = Math.max(4, r.top - pad);
   const left = Math.max(4, r.left - pad);
-  const height = Math.min(r.height + pad * 2, window.innerHeight - top - 4);
-  const width = Math.min(r.width + pad * 2, window.innerWidth - left - 4);
+  const height = Math.max(0, Math.min(r.height + pad * 2, window.innerHeight - top - 4));
+  const width = Math.max(0, Math.min(r.width + pad * 2, window.innerWidth - left - 4));
   spot.style.cssText = `top:${top}px;left:${left}px;width:${width}px;height:${height}px;`;
 
-  const gap = 14;
+  const gap = 16;
   const cw = card.offsetWidth;
   const ch = card.offsetHeight;
   const vw = window.innerWidth;
@@ -3361,12 +4102,18 @@ function endTour() {
   tourRoot.remove();
   tourRoot = null;
   tourIdx = -1;
+  tourTargetEl = null;
   // Последний шаг зовёт к ключу и входу в hh.ru — они в «Аккаунтах и ключах».
   // Тур прерван — возвращаем раздел, открытый до него.
   if (finishTab === 'settings') showSettingsSection('accounts', false);
   else if (tourPrevSection) showSettingsSection(tourPrevSection, false);
   tourPrevSection = null;
   if (finishTab) showTab(finishTab);
+  else if (tourPrevTab && TABS.includes(tourPrevTab)) {
+    showTab(tourPrevTab);
+    window.scrollTo({ top: tourPrevY, behavior: 'instant' });
+  }
+  tourPrevTab = null;
 }
 
 document.getElementById('tourStart').onclick = () => startTour();

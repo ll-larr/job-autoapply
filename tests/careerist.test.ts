@@ -447,6 +447,8 @@ describe('CareeristAdapter.apply — на подставном контекст�
   function mkCtx(opts: {
     responds?: string[];        // тело /responds/ на последовательных вызовах
     respondsOk?: boolean;
+    /** Куда в итоге привёл запрос кабинета (редирект гостя). */
+    respondsUrl?: string;
     vacancyPage?: string;
     formOutput?: string | null;
     formOk?: boolean;
@@ -474,7 +476,7 @@ describe('CareeristAdapter.apply — на подставном контекст�
           calls.push({ method: 'GET', url });
           if (url.includes('/responds/')) {
             const body = responds[Math.min(respondsCall++, responds.length - 1)]!;
-            return reply(body, opts.respondsOk ?? true, url);
+            return reply(body, opts.respondsOk ?? true, opts.respondsUrl ?? url);
           }
           return reply(opts.vacancyPage ?? "vfShowInFrame('x','resume/send/1/14292072',true,true,false)");
         },
@@ -522,6 +524,15 @@ describe('CareeristAdapter.apply — на подставном контекст�
   it('кабинет недоступен — auth_required, а не failed', async () => {
     // Заявка обязана остаться approved: письмо уже написано и одобрено.
     const { ctx, calls } = mkCtx({ respondsOk: false });
+    const a = new CareeristAdapter({ context: ctx as never });
+
+    expect(await a.apply(VAC, 'письмо')).toEqual({ status: 'auth_required' });
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(0);
+  });
+
+  it('кабинет увёл гостя на /no-access (ответ 200) — auth_required, без подачи', async () => {
+    // Так careerist отвечает разлогиненному с 2026-11-20 (проверено живым запросом).
+    const { ctx, calls } = mkCtx({ respondsUrl: 'https://careerist.ru/no-access' });
     const a = new CareeristAdapter({ context: ctx as never });
 
     expect(await a.apply(VAC, 'письмо')).toEqual({ status: 'auth_required' });

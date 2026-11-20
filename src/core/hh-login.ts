@@ -46,6 +46,16 @@ export interface HhLoginDeps<P extends LoginPage> {
   /** Новая вкладка в общем профиле (видимое окно). */
   openPage(): Promise<P>;
   isLoggedIn(page: P): Promise<boolean>;
+  /**
+   * Какую страницу входа открыть. По умолчанию hh.ru; тот же механизм
+   * обслуживает и вход на careerist.ru (core/careerist-login.ts).
+   */
+  loginUrl?: string;
+  /**
+   * Что сделать после открытия страницы — например, нажать «Войти», чтобы
+   * показать форму (careerist). Ошибка здесь не мешает входу: человек нажмёт сам.
+   */
+  afterOpen?: (page: P) => Promise<void>;
   markerPath?: string;
   now?: () => number;
   pollMs?: number;
@@ -102,7 +112,8 @@ export function createHhLogin<P extends LoginPage>(deps: HhLoginDeps<P>): HhLogi
       page = p;
       let windowClosed = false;
       p.once('close', () => { windowClosed = true; });
-      await p.goto(HH_LOGIN_URL);
+      await p.goto(deps.loginUrl ?? HH_LOGIN_URL);
+      if (deps.afterOpen) await deps.afterOpen(p).catch(() => {});
       state = 'waiting';
       const deadline = now() + timeoutMs;
       for (;;) {

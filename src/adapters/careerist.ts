@@ -3,6 +3,7 @@ import type { Adapter, ApplyResult, SearchFilters } from './types.js';
 import { normalizeVacancy, type Vacancy } from '../core/vacancy.js';
 import { parseExperienceFromText } from '../core/screening.js';
 import { makeContextCache, sharedProfile } from '../browser.js';
+import { CAREERIST_GUEST_REDIRECT } from '../core/careerist-login.js';
 
 /**
  * careerist.ru. Контракт снят живьём, см. docs/careerist-selectors.md — там же
@@ -519,8 +520,10 @@ export class CareeristAdapter implements Adapter {
     const res = await ctx.request.get(`${ORIGIN}/responds/`);
     if (!res.ok()) return 'auth';
     const html = await res.text();
-    // Разлогиненному кабинет не показывают — его редиректит на вход.
-    if (/\/login\.html|register\.html/.test(res.url())) return 'auth';
+    // Разлогиненному кабинет не показывают — его уводит на вход или, как
+    // проверено 2026-11-20, на /no-access (тот отвечает 200, поэтому один
+    // res.ok() гостя не отличает). Признак общий с кнопкой входа в панели.
+    if (CAREERIST_GUEST_REDIRECT.test(res.url())) return 'auth';
     return html.includes(vacancyId);
   }
 

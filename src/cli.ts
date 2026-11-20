@@ -30,7 +30,7 @@ import {
 import type { Vacancy } from './core/vacancy.js';
 import { runSearch, type SearchReport, type SearchQuery } from './pipeline.js';
 import {
-  loadSettings, freshSettings, saveSettings, validateSettings, mergeMissingSections, enabledSpecialties, SETTINGS_PATH,
+  loadSettings, freshSettings, saveSettings, validateSettings, mergeMissingSections, enabledSpecialties, searchBlocker, SETTINGS_PATH,
   type Settings,
 } from './core/settings.js';
 import type { Specialty } from './core/specialty.js';
@@ -63,6 +63,9 @@ import {
 } from './hh/inbox.js';
 import { sharedProfile, closeSharedProfile, isLoggedIn } from './browser.js';
 import { createHhLogin } from './core/hh-login.js';
+import {
+  CAREERIST_LOGIN_LINK, CAREERIST_LOGIN_MARKER, CAREERIST_LOGIN_URL, isCareeristLoggedIn,
+} from './core/careerist-login.js';
 import { generateSecretaryReply } from './bot/secretary-prompt.js';
 import { ChatMemory } from './bot/memory.js';
 import { readFacts } from './core/facts.js';
@@ -199,10 +202,9 @@ const STATUS_ORDER: readonly Status[] = ['pending', 'approved', 'sent', 'failed'
  * задаёт `--specialty "<название>"`, иначе первая включённая.
  */
 export function buildSearchQueries(settings: Settings, args: readonly string[]): SearchQuery[] {
+  const blocker = searchBlocker(settings);
+  if (blocker !== null) throw new Error(blocker);
   const enabled = enabledSpecialties(settings);
-  if (enabled.length === 0) {
-    throw new Error('Нет включённых специальностей — включи хотя бы одну во вкладке «Настройки».');
-  }
 
   const i = args.indexOf('--specialty');
   const wanted = i === -1 ? undefined : args[i + 1];
@@ -1023,6 +1025,16 @@ async function main(): Promise<void> {
             if (role !== undefined) return role.value !== '' && role.value !== 'anonymous';
             return isLoggedIn(page);
           },
+        }),
+        // Кнопка «Войти в careerist»: та же вкладка в общем профиле. Формы
+        // входа отдельной страницей у careerist нет — открываем главную и
+        // жмём «Войти» в шапке; вход определяем по личному кабинету.
+        careeristLogin: createHhLogin({
+          openPage: async () => (await sharedProfile()).newPage(),
+          loginUrl: CAREERIST_LOGIN_URL,
+          markerPath: CAREERIST_LOGIN_MARKER,
+          afterOpen: async (page) => { await page.locator(CAREERIST_LOGIN_LINK).first().click({ timeout: 8000 }); },
+          isLoggedIn: async (page) => isCareeristLoggedIn(page.context().request),
         }),
         // Отправка из панели — тот же отклик, что и `npm run send` (I2).
         onSent: gigarecruiterOnSent(config),
